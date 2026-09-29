@@ -10,9 +10,14 @@
 <body>
   <div class="app">
     <header class="header">
-      <h1>Click2Copy</h1>
+      <h1>Click2Copy <span class="app-version" id="app-version"></span></h1>
       <p class="subtitle">Build prompts from parts — click to append</p>
     </header>
+
+    <section class="documents-section" aria-label="Prompt documents">
+      <span class="documents-label">Prompt files</span>
+      <div class="document-bar" id="document-bar" role="tablist" aria-label="Open prompt documents"></div>
+    </section>
 
     <section class="separator-section" aria-label="Append separators">
       <label class="separator-control">
@@ -50,11 +55,23 @@
       <div class="actions-row">
         <button type="button" class="btn btn-primary" id="btn-append">Append all non-empty</button>
       </div>
+      <details class="master-library" id="master-library">
+        <summary>Master parts <span class="master-library-hint">— click an item to add it to this part</span></summary>
+        <div class="master-library-items" id="master-library-items"></div>
+      </details>
     </section>
+
+    <div class="section-resizer" id="combined-resizer" role="separator" aria-orientation="horizontal" aria-label="Resize combined prompt height" tabindex="0" title="Drag to resize combined prompt"></div>
 
     <section class="combined-section">
       <div class="section-label-row">
-        <label class="section-label" for="combined-prompt">Combined prompt</label>
+        <div class="combined-title">
+          <label class="section-label" for="combined-prompt">Combined prompt</label>
+          <label class="global-toggle" title="Share appended text across all parts">
+            <input type="checkbox" id="global-combined" checked />
+            <span>Global</span>
+          </label>
+        </div>
         <div class="combined-actions">
           <button type="button" class="btn btn-secondary" id="btn-export" title="Export all tabs and prompt to a JSON file">Export</button>
           <button type="button" class="btn btn-secondary" id="btn-import" title="Import tabs and prompt from a JSON backup">Import</button>

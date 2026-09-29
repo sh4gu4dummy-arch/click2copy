@@ -1,8 +1,12 @@
-const { app, BrowserWindow, ipcMain, dialog } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, Menu } = require('electron');
 const path = require('path');
 const fs = require('fs');
 
 const STORE_FILE = 'click2copy-data.json';
+const SESSION_FILE = 'click2copy-session.json';
+const DOCUMENT_EXTENSION = 'c2copy';
+const DOCUMENT_FORMAT = 'click2copy-document';
+const DOCUMENT_VERSION = 1;
 const DEFAULT_COLS = 3;
 const DEFAULT_ROWS = 8;
 const MIN_COLUMN_WIDTH = 100;
@@ -28,6 +32,7 @@ function makeDefaultTab(id, title) {
 
 const DEFAULT_DATA = {
   tabs: [
+    makeDefaultTab('master', 'Master'),
     makeDefaultTab('tab-1', 'Part 1'),
     makeDefaultTab('tab-2', 'Part 2'),
     makeDefaultTab('tab-3', 'Part 3')
@@ -39,6 +44,10 @@ const DEFAULT_DATA = {
 
 function storePath() {
   return path.join(app.getPath('userData'), STORE_FILE);
+}
+
+function sessionPath() {
+  return path.join(app.getPath('userData'), SESSION_FILE);
 }
 
 function normalizeColumnWidths(widths, cols) {
@@ -125,6 +134,16 @@ function normalizeData(parsed) {
     if (!normalized) return null;
     tabs.push(normalized);
   }
+  const masterIndex = tabs.findIndex((tab) =>
+    tab.id === 'master' || tab.title.trim().toLowerCase() === 'master'
+  );
+  if (masterIndex === -1) {
+    tabs.unshift(makeDefaultTab('master', 'Master'));
+  } else {
+    const [master] = tabs.splice(masterIndex, 1);
+    master.title = 'Master';
+    tabs.unshift(master);
+  }
   let activeTabId = typeof parsed.activeTabId === 'string' ? parsed.activeTabId : tabs[0].id;
   if (!tabs.some((t) => t.id === activeTabId)) {
     activeTabId = tabs[0].id;
@@ -133,6 +152,11 @@ function normalizeData(parsed) {
     tabs,
     activeTabId,
     combinedPrompt: typeof parsed.combinedPrompt === 'string' ? parsed.combinedPrompt : '',
+    globalCombined: typeof parsed.globalCombined === 'boolean' ? parsed.globalCombined : true,
+    partPrompts: parsed.partPrompts && typeof parsed.partPrompts === 'object' && !Array.isArray(parsed.partPrompts)
+      ? Object.fromEntries(Object.entries(parsed.partPrompts)
+        .filter(([, prompt]) => typeof prompt === 'string'))
+      : {},
     separators: normalizeSeparators(parsed.separators)
   };
 }
@@ -152,6 +176,125 @@ function loadData() {
   return structuredClone(DEFAULT_DATA);
 }
 
+function loadSession() {
+  try {
+    const file = sessionPath();
+    if (fs.existsSync(file)) {
+      const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+      if (parsed && Array.isArray(parsed.documents)) {
+        const documents = parsed.documents.map((document) => {
+          const data = normalizeData(document.data);
+          if (!data || typeof document.id !== 'string' || typeof document.title !== 'string') {
+            return null;
+          }
+          return {
+            id: document.id,
+            title: document.title,
+            filePath: typeof document.filePath === 'string' ? document.filePath : null,
+            data
+          };
+        }).filter(Boolean);
+        if (documents.length > 0) {
+          const activeDocumentId = documents.some((document) => document.id === parsed.activeDocumentId)
+            ? parsed.activeDocumentId
+            : documents[0].id;
+          return { documents, activeDocumentId };
+        }
+      }
+    }
+  } catch (err) {
+    console.error('Failed to load session:', err);
+  }
+
+  return {
+    documents: [{
+      id: 'document-default',
+      title: 'Untitled',
+      filePath: null,
+      data: loadData()
+    }],
+    activeDocumentId: 'document-default'
+  };
+}
+
+function saveSession(session) {
+  if (!session || !Array.isArray(session.documents)) {
+    return { ok: false, error: 'Cannot save an invalid prompt session.' };
+  }
+  if (session.documents.length === 0) return { ok: true, skipped: true };
+
+  const documents = [];
+  for (const document of session.documents) {
+    if (!document || typeof document.id !== 'string' || typeof document.title !== 'string') {
+      return { ok: false, error: 'Cannot save an invalid prompt document.' };
+    }
+    const data = normalizeData(document && document.data);
+    if (!data) {
+      return { ok: false, error: 'Cannot save an invalid prompt document.' };
+    }
+    documents.push({
+      id: document.id,
+      title: document.title,
+      filePath: typeof document.filePath === 'string' ? document.filePath : null,
+      data
+    });
+  }
+
+  const activeDocumentId = documents.some((document) => document.id === session.activeDocumentId)
+    ? session.activeDocumentId
+    : documents[0].id;
+  try {
+    const file = sessionPath();
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify({ documents, activeDocumentId }, null, 2), 'utf8');
+    return { ok: true };
+  } catch (err) {
+    console.error('Failed to save session:', err);
+    return { ok: false, error: err.message || 'Failed to save open prompt documents.' };
+  }
+}
+
+function normalizeDocument(parsed) {
+  if (parsed && parsed.format === DOCUMENT_FORMAT && parsed.version === DOCUMENT_VERSION) {
+    return normalizeData(parsed.data);
+  }
+  return normalizeData(parsed);
+}
+
+function readDocument(filePath) {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    const data = normalizeDocument(parsed);
+    if (!data) {
+      return { ok: false, error: 'This file is not a valid Click2Copy prompt document.' };
+    }
+    return { ok: true, filePath, data };
+  } catch (err) {
+    console.error('Failed to open prompt document:', err);
+    return { ok: false, error: err instanceof SyntaxError ? 'File is not valid JSON.' : (err.message || 'Failed to read file.') };
+  }
+}
+
+function writeDocument(filePath, data) {
+  const normalized = normalizeData(data);
+  if (!normalized) return { ok: false, error: 'Cannot save an invalid prompt document.' };
+
+  const targetPath = path.extname(filePath).toLowerCase() === `.${DOCUMENT_EXTENSION}`
+    ? filePath
+    : `${filePath}.${DOCUMENT_EXTENSION}`;
+  try {
+    fs.writeFileSync(targetPath, JSON.stringify({
+      format: DOCUMENT_FORMAT,
+      version: DOCUMENT_VERSION,
+      data: normalized
+    }, null, 2), 'utf8');
+    return { ok: true, filePath: targetPath };
+  } catch (err) {
+    console.error('Failed to save prompt document:', err);
+    return { ok: false, error: err.message || 'Failed to save file.' };
+  }
+}
+
 function saveData(data) {
   try {
     const file = storePath();
@@ -165,6 +308,37 @@ function saveData(data) {
 }
 
 let mainWindow = null;
+let mainWindowLoaded = false;
+const pendingOpenPaths = [];
+
+function documentPathFromArgs(args) {
+  return args.find((arg) => typeof arg === 'string' &&
+    path.extname(arg).toLowerCase() === `.${DOCUMENT_EXTENSION}`) || null;
+}
+
+function deliverOpenPath(filePath) {
+  if (!filePath) return;
+  if (!mainWindow || !mainWindowLoaded) {
+    pendingOpenPaths.push(filePath);
+    return;
+  }
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.focus();
+  mainWindow.webContents.send('document:open-path', filePath);
+}
+
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
+if (!hasSingleInstanceLock) {
+  app.quit();
+} else {
+  app.on('second-instance', (_event, commandLine) => {
+    deliverOpenPath(documentPathFromArgs(commandLine));
+  });
+  app.on('open-file', (event, filePath) => {
+    event.preventDefault();
+    deliverOpenPath(filePath);
+  });
+}
 
 function getParentWindow() {
   return mainWindow || BrowserWindow.getFocusedWindow();
@@ -172,11 +346,11 @@ function getParentWindow() {
 
 function createWindow() {
   mainWindow = new BrowserWindow({
-    width: 1000,
+    width: 1440,
     height: 720,
-    minWidth: 720,
+    minWidth: 960,
     minHeight: 520,
-    title: 'Click2Copy',
+    title: `Click2Copy v${app.getVersion()}`,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -185,14 +359,50 @@ function createWindow() {
   });
 
   mainWindow.loadFile('index.html');
+  mainWindow.webContents.once('did-finish-load', () => {
+    mainWindowLoaded = true;
+    while (pendingOpenPaths.length > 0) {
+      mainWindow.webContents.send('document:open-path', pendingOpenPaths.shift());
+    }
+  });
 
   mainWindow.on('closed', () => {
     mainWindow = null;
+    mainWindowLoaded = false;
   });
 }
 
+function createApplicationMenu() {
+  const menu = Menu.buildFromTemplate([
+    {
+      label: 'File',
+      submenu: [
+        { label: 'New Prompt', accelerator: 'CmdOrCtrl+N', click: () => sendMenuAction('new-document') },
+        { label: 'Open Prompt Files…', accelerator: 'CmdOrCtrl+O', click: () => sendMenuAction('open-documents') },
+        { type: 'separator' },
+        { label: 'Save', accelerator: 'CmdOrCtrl+S', click: () => sendMenuAction('save-document') },
+        { label: 'Save As…', accelerator: 'CmdOrCtrl+Shift+S', click: () => sendMenuAction('save-document-as') },
+        { type: 'separator' },
+        { role: 'quit' }
+      ]
+    },
+    { role: 'editMenu' },
+    { role: 'viewMenu' },
+    { role: 'windowMenu' }
+  ]);
+  Menu.setApplicationMenu(menu);
+}
+
+function sendMenuAction(action) {
+  if (mainWindow && mainWindowLoaded) mainWindow.webContents.send('app:menu-action', action);
+}
+
 app.whenReady().then(() => {
+  if (!hasSingleInstanceLock) return;
+  createApplicationMenu();
   createWindow();
+  const initialPath = documentPathFromArgs(process.argv);
+  if (initialPath) pendingOpenPaths.push(initialPath);
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
@@ -210,6 +420,33 @@ app.on('window-all-closed', () => {
 ipcMain.handle('store:load', () => loadData());
 
 ipcMain.handle('store:save', (_event, data) => saveData(data));
+ipcMain.handle('app:version', () => app.getVersion());
+ipcMain.on('window:set-title', (event, title) => {
+  const window = BrowserWindow.fromWebContents(event.sender);
+  if (window && typeof title === 'string') window.setTitle(`${title} v${app.getVersion()}`);
+});
+ipcMain.handle('documents:load-session', () => loadSession());
+ipcMain.handle('documents:save-session', (_event, session) => saveSession(session));
+ipcMain.handle('documents:open', async (event) => {
+  const result = await dialog.showOpenDialog(BrowserWindow.fromWebContents(event.sender), {
+    title: 'Open Click2Copy prompt',
+    properties: ['openFile', 'multiSelections'],
+    filters: [{ name: 'Click2Copy prompts', extensions: [DOCUMENT_EXTENSION] }]
+  });
+  if (result.canceled) return { ok: false, canceled: true };
+  return { ok: true, documents: result.filePaths.map(readDocument) };
+});
+ipcMain.handle('documents:open-path', (_event, filePath) => readDocument(filePath));
+ipcMain.handle('documents:save', (_event, filePath, data) => writeDocument(filePath, data));
+ipcMain.handle('documents:save-as', async (event, data, suggestedName) => {
+  const result = await dialog.showSaveDialog(BrowserWindow.fromWebContents(event.sender), {
+    title: 'Save Click2Copy prompt',
+    defaultPath: suggestedName || `Untitled.${DOCUMENT_EXTENSION}`,
+    filters: [{ name: 'Click2Copy prompts', extensions: [DOCUMENT_EXTENSION] }]
+  });
+  if (result.canceled || !result.filePath) return { ok: false, canceled: true };
+  return writeDocument(result.filePath, data);
+});
 
 ipcMain.handle('store:export', async (_event, data) => {
   const normalized = normalizeData(data);
