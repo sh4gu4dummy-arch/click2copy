@@ -1,11 +1,13 @@
 {
   "name": "click2copy",
-  "version": "0.003",
+  "version": "0.004",
   "description": "Click2Copy \u2014 a simple prompt builder desktop app",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "electron": "electron ."
+    "electron": "electron .",
+    "setup": "npm install && node scripts/ensure-electron.js",
+    "postinstall": "node scripts/ensure-electron.js"
   },
   "keywords": [
     "electron",
@@ -16,5 +18,12 @@
   "license": "MIT",
   "devDependencies": {
     "electron": "^33.2.0"
+  },
+  "allowScripts": {
+    "electron": true
+  },
+  "config": {},
+  "engines": {
+    "node": ">=18"
   }
 }
