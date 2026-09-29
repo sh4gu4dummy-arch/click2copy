@@ -6,7 +6,7 @@
   "scripts": {
     "start": "electron .",
     "electron": "electron .",
-    "setup": "npm install && node scripts/ensure-electron.js",
+    "setup": "npm install --ignore-scripts && node scripts/ensure-electron.js --strict",
     "postinstall": "node scripts/ensure-electron.js",
     "rebuild-electron": "node node_modules/electron/install.js"
   },
