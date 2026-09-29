@@ -1,13 +1,14 @@
 {
   "name": "click2copy",
-  "version": "0.004",
+  "version": "0.005",
   "description": "Click2Copy \u2014 a simple prompt builder desktop app",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
     "electron": "electron .",
     "setup": "npm install && node scripts/ensure-electron.js",
-    "postinstall": "node scripts/ensure-electron.js"
+    "postinstall": "node scripts/ensure-electron.js",
+    "rebuild-electron": "node node_modules/electron/install.js"
   },
   "keywords": [
     "electron",
