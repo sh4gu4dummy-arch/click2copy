@@ -55,6 +55,48 @@ body {
   font-size: 0.85rem;
 }
 
+.separator-section {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.separator-control {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.separator-control > span {
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.separator-input {
+  width: 100%;
+  min-height: 32px;
+  max-height: 72px;
+  padding: 7px 9px;
+  resize: vertical;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font-family: "Cascadia Code", "Consolas", "SF Mono", ui-monospace, monospace;
+  font-size: 12px;
+  line-height: 1.35;
+  outline: none;
+}
+
+.separator-input:focus {
+  border-color: var(--accent);
+}
+
 .tabs-section {
   display: flex;
   align-items: center;
@@ -166,19 +208,76 @@ body {
 
 .cell-grid {
   display: grid;
-  gap: 8px;
+  gap: 0;
   width: 100%;
   min-height: 100%;
   align-content: start;
+  border-top: 1px solid var(--border);
+  border-left: 1px solid var(--border);
+}
+
+/* Spreadsheet-like header row and resize affordances. */
+.grid-corner,
+.column-header {
+  min-height: 32px;
+  padding: 7px 12px;
+  background: var(--surface-2);
+  color: var(--muted);
+  border-right: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+
+.grid-corner {
+  padding: 0;
+}
+
+.column-header {
+  position: relative;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  user-select: none;
+}
+
+.column-resize-handle {
+  position: absolute;
+  z-index: 2;
+  top: 0;
+  right: -5px;
+  width: 10px;
+  height: 100%;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.column-resize-handle:hover,
+.column-resize-handle:focus-visible,
+.cell-grid.resizing .column-resize-handle {
+  background: var(--accent);
+  opacity: 0.8;
+  outline: none;
+}
+
+body.resizing-columns,
+body.resizing-columns * {
+  cursor: col-resize !important;
+  user-select: none !important;
 }
 
 .cell {
   resize: vertical;
+  min-width: 0;
   min-height: var(--cell-min-h);
   height: var(--cell-min-h);
   padding: 8px 10px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
+  border: 0;
+  border-right: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
   background: var(--bg);
   color: var(--text);
   font-family: "Cascadia Code", "Consolas", "SF Mono", ui-monospace, monospace;
@@ -316,7 +415,7 @@ body {
 /* Row append click-box (left of each grid row) */
 .row-append {
   appearance: none;
-  width: 32px;
+  width: 100%;
   height: var(--cell-min-h);
   min-height: var(--cell-min-h);
   align-self: stretch;
@@ -325,8 +424,10 @@ body {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border: 1px solid var(--border);
-  border-radius: 6px;
+  border: 0;
+  border-right: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
   background: var(--surface-2);
   color: var(--muted);
   cursor: pointer;

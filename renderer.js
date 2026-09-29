@@ -3,11 +3,23 @@
 
   const DEFAULT_COLS = 3;
   const DEFAULT_ROWS = 8;
+  const DEFAULT_COLUMN_WIDTH = 160;
+  const MIN_COLUMN_WIDTH = 100;
+  const DEFAULT_SEPARATORS = {
+    part: '\\n\\n',
+    column: ' | ',
+    row: '\\n'
+  };
 
   const state = {
     tabs: [],
     activeTabId: null,
     combinedPrompt: '',
+    separators: {
+      part: DEFAULT_SEPARATORS.part,
+      column: DEFAULT_SEPARATORS.column,
+      row: DEFAULT_SEPARATORS.row
+    },
     saveTimer: null
   };
 
@@ -26,7 +38,10 @@
     btnCopy: document.getElementById('btn-copy'),
     btnClear: document.getElementById('btn-clear'),
     btnExport: document.getElementById('btn-export'),
-    btnImport: document.getElementById('btn-import')
+    btnImport: document.getElementById('btn-import'),
+    partSeparator: document.getElementById('part-separator'),
+    columnSeparator: document.getElementById('column-separator'),
+    rowSeparator: document.getElementById('row-separator')
   };
 
   function uid() {
@@ -45,6 +60,34 @@
       rows: DEFAULT_ROWS,
       cells: emptyCells(DEFAULT_COLS, DEFAULT_ROWS)
     };
+  }
+
+  function normalizeColumnWidths(widths, cols) {
+    if (!Array.isArray(widths) || widths.length !== cols) return null;
+    const normalized = widths.map(function (width) {
+      const value = Number(width);
+      return Number.isFinite(value) && value >= MIN_COLUMN_WIDTH ? value : null;
+    });
+    return normalized.every(function (width) { return width !== null; })
+      ? normalized
+      : null;
+  }
+
+  function normalizeSeparators(separators) {
+    const source = separators && typeof separators === 'object' ? separators : {};
+    return {
+      part: typeof source.part === 'string' ? source.part : DEFAULT_SEPARATORS.part,
+      column: typeof source.column === 'string' ? source.column : DEFAULT_SEPARATORS.column,
+      row: typeof source.row === 'string' ? source.row : DEFAULT_SEPARATORS.row
+    };
+  }
+
+  // The UI stores visible escape sequences so line separators are easy to edit.
+  function separatorValue(value) {
+    return String(value || '')
+      .replace(/\\r/g, '\r')
+      .replace(/\\n/g, '\n')
+      .replace(/\\t/g, '\t');
   }
 
   /**
@@ -81,7 +124,10 @@
       cells = cells.slice(0, needed);
     }
 
-    return { id: t.id, title: t.title, cols: cols, rows: rows, cells: cells };
+    const columnWidths = normalizeColumnWidths(t.columnWidths, cols);
+    const normalized = { id: t.id, title: t.title, cols: cols, rows: rows, cells: cells };
+    if (columnWidths) normalized.columnWidths = columnWidths;
+    return normalized;
   }
 
   function activeTab() {
@@ -94,7 +140,8 @@
     return {
       tabs: state.tabs,
       activeTabId: state.activeTabId,
-      combinedPrompt: state.combinedPrompt
+      combinedPrompt: state.combinedPrompt,
+      separators: state.separators
     };
   }
 
@@ -125,24 +172,24 @@
     }
   }
 
-  /** Join non-empty cells of one row with " | ". */
+  /** Join non-empty cells of one row with the configured column separator. */
   function rowText(tab, rowIndex) {
     const parts = [];
     for (let c = 0; c < tab.cols; c++) {
       const v = (tab.cells[rowIndex * tab.cols + c] || '').trim();
       if (v) parts.push(v);
     }
-    return parts.join(' | ');
+    return parts.join(separatorValue(state.separators.column));
   }
 
-  /** All non-empty cells, row-major, joined by newlines. */
+  /** All non-empty rows, joined by the configured row separator. */
   function partText(tab) {
     const lines = [];
     for (let r = 0; r < tab.rows; r++) {
       const line = rowText(tab, r);
       if (line) lines.push(line);
     }
-    return lines.join('\n');
+    return lines.join(separatorValue(state.separators.row));
   }
 
   function tabHasContent(tab) {
@@ -156,8 +203,9 @@
       setStatus('Nothing to append', 'err');
       return;
     }
-    if (state.combinedPrompt && !state.combinedPrompt.endsWith('\n')) {
-      state.combinedPrompt += '\n';
+    const partSeparator = separatorValue(state.separators.part);
+    if (state.combinedPrompt && partSeparator && !state.combinedPrompt.endsWith(partSeparator)) {
+      state.combinedPrompt += partSeparator;
     }
     state.combinedPrompt += text;
     el.combined.value = state.combinedPrompt;
@@ -182,6 +230,10 @@
       state.activeTabId = state.tabs[0].id;
     }
     state.combinedPrompt = typeof data.combinedPrompt === 'string' ? data.combinedPrompt : '';
+    state.separators = normalizeSeparators(data.separators);
+    el.partSeparator.value = state.separators.part;
+    el.columnSeparator.value = state.separators.column;
+    el.rowSeparator.value = state.separators.row;
 
     el.combined.value = state.combinedPrompt;
     renderTabs();
@@ -227,14 +279,64 @@
     el.btnDelete.disabled = state.tabs.length <= 1;
   }
 
+  function currentColumnWidths(tab) {
+    const headers = el.cellGrid.querySelectorAll('.column-header');
+    if (headers.length !== tab.cols) return null;
+    return Array.prototype.map.call(headers, function (header) {
+      return Math.max(MIN_COLUMN_WIDTH, header.getBoundingClientRect().width);
+    });
+  }
+
+  function applyGridColumns(tab) {
+    if (Array.isArray(tab.columnWidths) && tab.columnWidths.length === tab.cols) {
+      el.cellGrid.style.gridTemplateColumns = '40px ' + tab.columnWidths.map(function (width) {
+        return width + 'px';
+      }).join(' ');
+      return;
+    }
+    // Until the first resize, let the browser distribute columns equally.
+    el.cellGrid.style.gridTemplateColumns =
+      '40px repeat(' + tab.cols + ', minmax(120px, 1fr))';
+  }
+
   function renderGrid() {
     const tab = activeTab();
     el.cellGrid.innerHTML = '';
     if (!tab) return;
 
-    // CSS grid: first column = row append button, then N cell columns
-    el.cellGrid.style.gridTemplateColumns =
-      '40px repeat(' + tab.cols + ', minmax(120px, 1fr))';
+    // The first grid row is a header row. Its handles resize the matching cell column.
+    applyGridColumns(tab);
+
+    const corner = document.createElement('div');
+    corner.className = 'grid-corner';
+    corner.setAttribute('aria-hidden', 'true');
+    el.cellGrid.appendChild(corner);
+
+    for (let c = 0; c < tab.cols; c++) {
+      const header = document.createElement('div');
+      header.className = 'column-header';
+      header.dataset.col = String(c);
+      header.setAttribute('role', 'columnheader');
+      header.textContent = 'Column ' + (c + 1);
+
+      const handle = document.createElement('span');
+      handle.className = 'column-resize-handle';
+      handle.setAttribute('role', 'separator');
+      handle.setAttribute('aria-orientation', 'vertical');
+      handle.setAttribute('aria-label', 'Resize column ' + (c + 1));
+      handle.title = 'Drag to resize column ' + (c + 1);
+      handle.tabIndex = 0;
+      handle.addEventListener('pointerdown', function (e) {
+        beginColumnResize(e, c, handle);
+      });
+      handle.addEventListener('keydown', function (e) {
+        if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+        e.preventDefault();
+        resizeColumnByKeyboard(tab, c, e.key === 'ArrowRight' ? 16 : -16);
+      });
+      header.appendChild(handle);
+      el.cellGrid.appendChild(header);
+    }
 
     for (let r = 0; r < tab.rows; r++) {
       const rowBtn = document.createElement('button');
@@ -264,6 +366,72 @@
         ta.addEventListener('input', onCellInput);
         el.cellGrid.appendChild(ta);
       }
+    }
+  }
+
+  function resizeColumnByKeyboard(tab, col, delta) {
+    const widths = Array.isArray(tab.columnWidths) && tab.columnWidths.length === tab.cols
+      ? tab.columnWidths.slice()
+      : currentColumnWidths(tab);
+    if (!widths) return;
+    const next = Math.max(MIN_COLUMN_WIDTH, widths[col] + delta);
+    if (col < widths.length - 1) {
+      const available = widths[col] + widths[col + 1] - MIN_COLUMN_WIDTH;
+      widths[col] = Math.min(next, available);
+      widths[col + 1] = available - widths[col] + MIN_COLUMN_WIDTH;
+    } else {
+      widths[col] = next;
+    }
+    tab.columnWidths = widths;
+    applyGridColumns(tab);
+    scheduleSave();
+  }
+
+  function beginColumnResize(e, col, handle) {
+    const tab = activeTab();
+    if (!tab) return;
+    e.preventDefault();
+    e.stopPropagation();
+
+    const widths = currentColumnWidths(tab);
+    if (!widths) return;
+    const startX = e.clientX;
+    const startWidths = widths.slice();
+    const hasNext = col < tab.cols - 1;
+    let moved = false;
+    document.body.classList.add('resizing-columns');
+    el.cellGrid.classList.add('resizing');
+
+    function onMove(moveEvent) {
+      const delta = moveEvent.clientX - startX;
+      let nextWidth = Math.max(MIN_COLUMN_WIDTH, startWidths[col] + delta);
+      const nextWidths = startWidths.slice();
+      if (hasNext) {
+        const pairWidth = startWidths[col] + startWidths[col + 1];
+        nextWidth = Math.min(nextWidth, pairWidth - MIN_COLUMN_WIDTH);
+        nextWidths[col + 1] = pairWidth - nextWidth;
+      }
+      nextWidths[col] = nextWidth;
+      tab.columnWidths = nextWidths;
+      applyGridColumns(tab);
+      moved = moved || Math.abs(delta) > 1;
+      scheduleSave();
+    }
+
+    function finish() {
+      document.removeEventListener('pointermove', onMove);
+      document.removeEventListener('pointerup', finish);
+      document.removeEventListener('pointercancel', finish);
+      document.body.classList.remove('resizing-columns');
+      el.cellGrid.classList.remove('resizing');
+      if (moved) setStatus('Column resized', 'ok');
+    }
+
+    document.addEventListener('pointermove', onMove);
+    document.addEventListener('pointerup', finish);
+    document.addEventListener('pointercancel', finish);
+    if (handle.setPointerCapture) {
+      try { handle.setPointerCapture(e.pointerId); } catch (err) { /* no-op */ }
     }
   }
 
@@ -410,6 +578,10 @@
       }
       newCells.push('');
     }
+    if (Array.isArray(tab.columnWidths) && tab.columnWidths.length === tab.cols) {
+      const defaultWidth = tab.columnWidths[tab.columnWidths.length - 1] || DEFAULT_COLUMN_WIDTH;
+      tab.columnWidths = tab.columnWidths.concat([defaultWidth]);
+    }
     tab.cols += 1;
     tab.cells = newCells;
     renderTabs();
@@ -532,6 +704,17 @@
   el.btnExport.addEventListener('click', exportBackup);
   el.btnImport.addEventListener('click', importBackup);
 
+  function onSeparatorInput(key, input) {
+    input.addEventListener('input', function () {
+      state.separators[key] = input.value;
+      scheduleSave();
+    });
+  }
+
+  onSeparatorInput('part', el.partSeparator);
+  onSeparatorInput('column', el.columnSeparator);
+  onSeparatorInput('row', el.rowSeparator);
+
   el.combined.addEventListener('input', function () {
     state.combinedPrompt = el.combined.value;
     scheduleSave();
@@ -554,7 +737,8 @@
           makeTab('tab-3', 'Part 3')
         ],
         activeTabId: 'tab-1',
-        combinedPrompt: ''
+        combinedPrompt: '',
+        separators: DEFAULT_SEPARATORS
       };
     }
 

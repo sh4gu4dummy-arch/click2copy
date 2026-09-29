@@ -5,6 +5,12 @@ const fs = require('fs');
 const STORE_FILE = 'click2copy-data.json';
 const DEFAULT_COLS = 3;
 const DEFAULT_ROWS = 8;
+const MIN_COLUMN_WIDTH = 100;
+const DEFAULT_SEPARATORS = {
+  part: '\\n\\n',
+  column: ' | ',
+  row: '\\n'
+};
 
 function emptyCells(cols, rows) {
   return Array(cols * rows).fill('');
@@ -27,11 +33,30 @@ const DEFAULT_DATA = {
     makeDefaultTab('tab-3', 'Part 3')
   ],
   activeTabId: 'tab-1',
-  combinedPrompt: ''
+  combinedPrompt: '',
+  separators: { ...DEFAULT_SEPARATORS }
 };
 
 function storePath() {
   return path.join(app.getPath('userData'), STORE_FILE);
+}
+
+function normalizeColumnWidths(widths, cols) {
+  if (!Array.isArray(widths) || widths.length !== cols) return null;
+  const normalized = widths.map((width) => {
+    const value = Number(width);
+    return Number.isFinite(value) && value >= MIN_COLUMN_WIDTH ? value : null;
+  });
+  return normalized.every((width) => width !== null) ? normalized : null;
+}
+
+function normalizeSeparators(separators) {
+  const source = separators && typeof separators === 'object' ? separators : {};
+  return {
+    part: typeof source.part === 'string' ? source.part : DEFAULT_SEPARATORS.part,
+    column: typeof source.column === 'string' ? source.column : DEFAULT_SEPARATORS.column,
+    row: typeof source.row === 'string' ? source.row : DEFAULT_SEPARATORS.row
+  };
 }
 
 /**
@@ -50,7 +75,10 @@ function normalizeTab(t) {
     const rows = DEFAULT_ROWS;
     const cells = emptyCells(cols, rows);
     cells[0] = t.content;
-    return { id: t.id, title: t.title, cols, rows, cells };
+    const columnWidths = normalizeColumnWidths(t.columnWidths, cols);
+    const normalized = { id: t.id, title: t.title, cols, rows, cells };
+    if (columnWidths) normalized.columnWidths = columnWidths;
+    return normalized;
   }
 
   let cols = Number.isInteger(t.cols) && t.cols > 0 ? t.cols : DEFAULT_COLS;
@@ -81,7 +109,10 @@ function normalizeTab(t) {
     cells = cells.slice(0, needed);
   }
 
-  return { id: t.id, title: t.title, cols, rows, cells };
+  const columnWidths = normalizeColumnWidths(t.columnWidths, cols);
+  const normalized = { id: t.id, title: t.title, cols, rows, cells };
+  if (columnWidths) normalized.columnWidths = columnWidths;
+  return normalized;
 }
 
 function normalizeData(parsed) {
@@ -101,7 +132,8 @@ function normalizeData(parsed) {
   return {
     tabs,
     activeTabId,
-    combinedPrompt: typeof parsed.combinedPrompt === 'string' ? parsed.combinedPrompt : ''
+    combinedPrompt: typeof parsed.combinedPrompt === 'string' ? parsed.combinedPrompt : '',
+    separators: normalizeSeparators(parsed.separators)
   };
 }
 

@@ -14,6 +14,21 @@
       <p class="subtitle">Build prompts from parts — click to append</p>
     </header>
 
+    <section class="separator-section" aria-label="Append separators">
+      <label class="separator-control">
+        <span>Part separator</span>
+        <textarea id="part-separator" class="separator-input" rows="1" spellcheck="false" aria-label="Part separator" title="Used between separate append actions. Use \n for a newline."></textarea>
+      </label>
+      <label class="separator-control">
+        <span>Column separator</span>
+        <textarea id="column-separator" class="separator-input" rows="1" spellcheck="false" aria-label="Column separator" title="Used between non-empty cells in a row."></textarea>
+      </label>
+      <label class="separator-control">
+        <span>Row separator</span>
+        <textarea id="row-separator" class="separator-input" rows="1" spellcheck="false" aria-label="Row separator" title="Used between non-empty rows. Use \n for a newline."></textarea>
+      </label>
+    </section>
+
     <section class="tabs-section">
       <div class="tab-bar" id="tab-bar" role="tablist"></div>
       <button type="button" class="btn btn-icon" id="btn-add-tab" title="Add tab">+</button>
