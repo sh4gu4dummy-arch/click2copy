@@ -22,7 +22,7 @@ A simple Electron desktop app for composing prompts from reusable parts.
 
 ```bash
 cd click2copy
-npm install
+npm run setup
 ```
 
 ## Run
