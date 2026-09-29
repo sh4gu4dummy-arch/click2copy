@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Click2Copy</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app">
+    <header class="header">
+      <h1>Click2Copy</h1>
+      <p class="subtitle">Build prompts from parts — click to append</p>
+    </header>
+
+    <section class="tabs-section">
+      <div class="tab-bar" id="tab-bar" role="tablist"></div>
+      <button type="button" class="btn btn-icon" id="btn-add-tab" title="Add tab">+</button>
+    </section>
+
+    <section class="part-section">
+      <div class="section-label-row">
+        <label class="section-label" for="part-content" id="part-label">Part content</label>
+        <div class="part-actions">
+          <button type="button" class="btn btn-secondary" id="btn-rename-tab" title="Rename active tab">Rename</button>
+          <button type="button" class="btn btn-danger" id="btn-delete-tab" title="Delete active tab">Delete</button>
+        </div>
+      </div>
+      <textarea id="part-content" class="textarea" placeholder="Enter this part’s text…" spellcheck="false"></textarea>
+      <div class="actions-row">
+        <button type="button" class="btn btn-primary" id="btn-append">Append to prompt</button>
+      </div>
+    </section>
+
+    <section class="combined-section">
+      <div class="section-label-row">
+        <label class="section-label" for="combined-prompt">Combined prompt</label>
+        <div class="combined-actions">
+          <button type="button" class="btn btn-secondary" id="btn-export" title="Export all tabs and prompt to a JSON file">Export</button>
+          <button type="button" class="btn btn-secondary" id="btn-import" title="Import tabs and prompt from a JSON backup">Import</button>
+          <button type="button" class="btn btn-secondary" id="btn-clear">Clear</button>
+          <button type="button" class="btn btn-primary" id="btn-copy">Copy</button>
+        </div>
+      </div>
+      <textarea id="combined-prompt" class="textarea textarea-combined" placeholder="Combined prompt appears here…" spellcheck="false"></textarea>
+      <p class="status" id="status" aria-live="polite"></p>
+    </section>
+  </div>
+
+  <script src="renderer.js"></script>
+</body>
+</html>

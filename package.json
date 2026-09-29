@@ -1,0 +1,20 @@
+{
+  "name": "click2copy",
+  "version": "0.001",
+  "description": "Click2Copy \u2014 a simple prompt builder desktop app",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "electron": "electron ."
+  },
+  "keywords": [
+    "electron",
+    "prompt",
+    "clipboard"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^33.2.0"
+  }
+}
