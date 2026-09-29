@@ -1,6 +1,9 @@
 (function () {
   'use strict';
 
+  const DEFAULT_COLS = 3;
+  const DEFAULT_ROWS = 8;
+
   const state = {
     tabs: [],
     activeTabId: null,
@@ -10,13 +13,15 @@
 
   const el = {
     tabBar: document.getElementById('tab-bar'),
-    partContent: document.getElementById('part-content'),
+    cellGrid: document.getElementById('cell-grid'),
     partLabel: document.getElementById('part-label'),
     combined: document.getElementById('combined-prompt'),
     status: document.getElementById('status'),
     btnAdd: document.getElementById('btn-add-tab'),
     btnRename: document.getElementById('btn-rename-tab'),
     btnDelete: document.getElementById('btn-delete-tab'),
+    btnAddRow: document.getElementById('btn-add-row'),
+    btnAddCol: document.getElementById('btn-add-col'),
     btnAppend: document.getElementById('btn-append'),
     btnCopy: document.getElementById('btn-copy'),
     btnClear: document.getElementById('btn-clear'),
@@ -28,8 +33,61 @@
     return 'tab-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 7);
   }
 
+  function emptyCells(cols, rows) {
+    return Array(cols * rows).fill('');
+  }
+
+  function makeTab(id, title) {
+    return {
+      id: id,
+      title: title,
+      cols: DEFAULT_COLS,
+      rows: DEFAULT_ROWS,
+      cells: emptyCells(DEFAULT_COLS, DEFAULT_ROWS)
+    };
+  }
+
+  /**
+   * Migrate/normalize a tab from storage or import.
+   * Legacy { content: string } → first cell of 3×8 grid.
+   */
+  function normalizeTab(t) {
+    if (!t || typeof t !== 'object') return null;
+    if (typeof t.id !== 'string' || !t.id) return null;
+    if (typeof t.title !== 'string') return null;
+
+    if (typeof t.content === 'string' && !Array.isArray(t.cells)) {
+      const cells = emptyCells(DEFAULT_COLS, DEFAULT_ROWS);
+      cells[0] = t.content;
+      return { id: t.id, title: t.title, cols: DEFAULT_COLS, rows: DEFAULT_ROWS, cells: cells };
+    }
+
+    let cols = Number.isInteger(t.cols) && t.cols > 0 ? t.cols : DEFAULT_COLS;
+    let rows = Number.isInteger(t.rows) && t.rows > 0 ? t.rows : DEFAULT_ROWS;
+    let cells;
+
+    if (Array.isArray(t.cells)) {
+      cells = t.cells.map(function (c) {
+        return typeof c === 'string' ? c : '';
+      });
+    } else {
+      return null;
+    }
+
+    const needed = cols * rows;
+    if (cells.length < needed) {
+      cells = cells.concat(Array(needed - cells.length).fill(''));
+    } else if (cells.length > needed) {
+      cells = cells.slice(0, needed);
+    }
+
+    return { id: t.id, title: t.title, cols: cols, rows: rows, cells: cells };
+  }
+
   function activeTab() {
-    return state.tabs.find((t) => t.id === state.activeTabId) || null;
+    return state.tabs.find(function (t) {
+      return t.id === state.activeTabId;
+    }) || null;
   }
 
   function snapshot() {
@@ -60,30 +118,79 @@
     el.status.className = 'status' + (kind ? ' ' + kind : '');
     if (msg) {
       clearTimeout(setStatus._t);
-      setStatus._t = setTimeout(() => {
+      setStatus._t = setTimeout(function () {
         el.status.textContent = '';
         el.status.className = 'status';
       }, 2200);
     }
   }
 
+  /** Join non-empty cells of one row with " | ". */
+  function rowText(tab, rowIndex) {
+    const parts = [];
+    for (let c = 0; c < tab.cols; c++) {
+      const v = (tab.cells[rowIndex * tab.cols + c] || '').trim();
+      if (v) parts.push(v);
+    }
+    return parts.join(' | ');
+  }
+
+  /** All non-empty cells, row-major, joined by newlines. */
+  function partText(tab) {
+    const lines = [];
+    for (let r = 0; r < tab.rows; r++) {
+      const line = rowText(tab, r);
+      if (line) lines.push(line);
+    }
+    return lines.join('\n');
+  }
+
+  function tabHasContent(tab) {
+    return tab.cells.some(function (c) {
+      return (c || '').trim().length > 0;
+    });
+  }
+
+  function appendText(text, label) {
+    if (!text) {
+      setStatus('Nothing to append', 'err');
+      return;
+    }
+    if (state.combinedPrompt && !state.combinedPrompt.endsWith('\n')) {
+      state.combinedPrompt += '\n';
+    }
+    state.combinedPrompt += text;
+    el.combined.value = state.combinedPrompt;
+    scheduleSave();
+    setStatus('Appended' + (label ? ' "' + label + '"' : ''), 'ok');
+  }
+
   function applyData(data) {
-    state.tabs = data.tabs;
-    state.activeTabId = data.activeTabId || data.tabs[0].id;
-    if (!state.tabs.some((t) => t.id === state.activeTabId)) {
+    const tabs = [];
+    for (let i = 0; i < data.tabs.length; i++) {
+      const n = normalizeTab(data.tabs[i]);
+      if (n) tabs.push(n);
+    }
+    if (tabs.length === 0) {
+      tabs.push(makeTab('tab-1', 'Part 1'));
+    }
+    state.tabs = tabs;
+    state.activeTabId = data.activeTabId || tabs[0].id;
+    if (!state.tabs.some(function (t) {
+      return t.id === state.activeTabId;
+    })) {
       state.activeTabId = state.tabs[0].id;
     }
     state.combinedPrompt = typeof data.combinedPrompt === 'string' ? data.combinedPrompt : '';
 
-    const tab = activeTab();
-    el.partContent.value = tab ? tab.content : '';
     el.combined.value = state.combinedPrompt;
     renderTabs();
+    renderGrid();
   }
 
   function renderTabs() {
     el.tabBar.innerHTML = '';
-    state.tabs.forEach((tab) => {
+    state.tabs.forEach(function (tab) {
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.className = 'tab' + (tab.id === state.activeTabId ? ' active' : '');
@@ -93,18 +200,17 @@
       btn.setAttribute('aria-selected', tab.id === state.activeTabId ? 'true' : 'false');
       btn.dataset.id = tab.id;
 
-      btn.addEventListener('click', () => selectTab(tab.id));
-      btn.addEventListener('dblclick', (e) => {
+      btn.addEventListener('click', function () {
+        selectTab(tab.id);
+      });
+      btn.addEventListener('dblclick', function (e) {
         e.preventDefault();
         e.stopPropagation();
         startInlineRename(btn, tab);
       });
-      btn.addEventListener('contextmenu', (e) => {
+      btn.addEventListener('contextmenu', function (e) {
         e.preventDefault();
-        const action = window.prompt(
-          'Tab actions — type: rename | delete',
-          'rename'
-        );
+        const action = window.prompt('Tab actions — type: rename | delete', 'rename');
         if (!action) return;
         const a = action.trim().toLowerCase();
         if (a === 'rename') startInlineRename(btn, tab);
@@ -115,17 +221,70 @@
     });
 
     const tab = activeTab();
-    el.partLabel.textContent = tab ? tab.title : 'Part content';
+    el.partLabel.textContent = tab
+      ? tab.title + ' (' + tab.cols + '×' + tab.rows + ')'
+      : 'Part content';
     el.btnDelete.disabled = state.tabs.length <= 1;
+  }
+
+  function renderGrid() {
+    const tab = activeTab();
+    el.cellGrid.innerHTML = '';
+    if (!tab) return;
+
+    // CSS grid: first column = row append button, then N cell columns
+    el.cellGrid.style.gridTemplateColumns =
+      '40px repeat(' + tab.cols + ', minmax(120px, 1fr))';
+
+    for (let r = 0; r < tab.rows; r++) {
+      const rowBtn = document.createElement('button');
+      rowBtn.type = 'button';
+      rowBtn.className = 'row-append';
+      rowBtn.title = 'Append row ' + (r + 1) + ' to prompt';
+      rowBtn.setAttribute('aria-label', 'Append row ' + (r + 1));
+      rowBtn.dataset.row = String(r);
+      rowBtn.innerHTML = '<span class="row-append-mark" aria-hidden="true"></span>';
+      rowBtn.addEventListener('click', function () {
+        appendRow(r);
+      });
+      el.cellGrid.appendChild(rowBtn);
+
+      for (let c = 0; c < tab.cols; c++) {
+        const idx = r * tab.cols + c;
+        const ta = document.createElement('textarea');
+        ta.className = 'cell';
+        ta.rows = 2;
+        ta.spellcheck = false;
+        ta.placeholder = 'R' + (r + 1) + 'C' + (c + 1);
+        ta.value = tab.cells[idx] || '';
+        ta.dataset.row = String(r);
+        ta.dataset.col = String(c);
+        ta.dataset.idx = String(idx);
+        ta.setAttribute('aria-label', 'Row ' + (r + 1) + ' column ' + (c + 1));
+        ta.addEventListener('input', onCellInput);
+        el.cellGrid.appendChild(ta);
+      }
+    }
+  }
+
+  function onCellInput(e) {
+    const tab = activeTab();
+    if (!tab) return;
+    const idx = parseInt(e.target.dataset.idx, 10);
+    if (Number.isNaN(idx) || idx < 0 || idx >= tab.cells.length) return;
+    tab.cells[idx] = e.target.value;
+    scheduleSave();
   }
 
   function selectTab(id) {
     if (id === state.activeTabId) return;
-    const tab = state.tabs.find((t) => t.id === id);
+    const tab = state.tabs.find(function (t) {
+      return t.id === id;
+    });
     if (!tab) return;
     state.activeTabId = id;
-    el.partContent.value = tab.content;
     renderTabs();
+    renderGrid();
     scheduleSave();
   }
 
@@ -155,7 +314,7 @@
       renderTabs();
     }
 
-    input.addEventListener('keydown', (e) => {
+    input.addEventListener('keydown', function (e) {
       if (e.key === 'Enter') {
         e.preventDefault();
         finish(true);
@@ -164,16 +323,18 @@
         finish(false);
       }
     });
-    input.addEventListener('blur', () => finish(true));
+    input.addEventListener('blur', function () {
+      finish(true);
+    });
   }
 
   function addTab() {
     const n = state.tabs.length + 1;
-    const tab = { id: uid(), title: 'Part ' + n, content: '' };
+    const tab = makeTab(uid(), 'Part ' + n);
     state.tabs.push(tab);
     state.activeTabId = tab.id;
-    el.partContent.value = '';
     renderTabs();
+    renderGrid();
     scheduleSave();
     setStatus('Tab added');
   }
@@ -200,43 +361,76 @@
       setStatus('Keep at least one tab', 'err');
       return;
     }
-    const tab = state.tabs.find((t) => t.id === id);
+    const tab = state.tabs.find(function (t) {
+      return t.id === id;
+    });
     if (!tab) return;
 
-    if (tab.content.trim()) {
+    if (tabHasContent(tab)) {
       const ok = window.confirm(
         'Delete "' + tab.title + '"? Its content is not empty and will be lost.'
       );
       if (!ok) return;
     }
 
-    const idx = state.tabs.findIndex((t) => t.id === id);
+    const idx = state.tabs.findIndex(function (t) {
+      return t.id === id;
+    });
     state.tabs.splice(idx, 1);
     if (state.activeTabId === id) {
       const next = state.tabs[Math.min(idx, state.tabs.length - 1)];
       state.activeTabId = next.id;
-      el.partContent.value = next.content;
     }
     renderTabs();
+    renderGrid();
     scheduleSave();
     setStatus('Tab deleted');
   }
 
-  function appendToPrompt() {
+  function addRow() {
     const tab = activeTab();
     if (!tab) return;
-    const text = el.partContent.value;
-    if (!text) {
-      setStatus('Nothing to append', 'err');
-      return;
+    for (let c = 0; c < tab.cols; c++) {
+      tab.cells.push('');
     }
-    if (state.combinedPrompt && !state.combinedPrompt.endsWith('\n') && !text.startsWith('\n')) {
-      state.combinedPrompt += '\n';
-    }
-    state.combinedPrompt += text;
-    el.combined.value = state.combinedPrompt;
+    tab.rows += 1;
+    renderTabs();
+    renderGrid();
     scheduleSave();
-    setStatus('Appended "' + tab.title + '"', 'ok');
+    setStatus('Row added (' + tab.cols + '×' + tab.rows + ')');
+  }
+
+  function addColumn() {
+    const tab = activeTab();
+    if (!tab) return;
+    const newCells = [];
+    for (let r = 0; r < tab.rows; r++) {
+      for (let c = 0; c < tab.cols; c++) {
+        newCells.push(tab.cells[r * tab.cols + c] || '');
+      }
+      newCells.push('');
+    }
+    tab.cols += 1;
+    tab.cells = newCells;
+    renderTabs();
+    renderGrid();
+    scheduleSave();
+    setStatus('Column added (' + tab.cols + '×' + tab.rows + ')');
+  }
+
+  function appendRow(rowIndex) {
+    const tab = activeTab();
+    if (!tab) return;
+    if (rowIndex < 0 || rowIndex >= tab.rows) return;
+    const text = rowText(tab, rowIndex);
+    appendText(text, tab.title + ' row ' + (rowIndex + 1));
+  }
+
+  function appendAll() {
+    const tab = activeTab();
+    if (!tab) return;
+    const text = partText(tab);
+    appendText(text, tab.title);
   }
 
   async function copyCombined() {
@@ -249,7 +443,6 @@
       await navigator.clipboard.writeText(text);
       setStatus('Copied to clipboard', 'ok');
     } catch (err) {
-      // Fallback for older/locked clipboard
       el.combined.focus();
       el.combined.select();
       try {
@@ -328,23 +521,18 @@
 
   el.btnAdd.addEventListener('click', addTab);
   el.btnRename.addEventListener('click', renameActiveTab);
-  el.btnDelete.addEventListener('click', () => {
+  el.btnDelete.addEventListener('click', function () {
     if (state.activeTabId) deleteTab(state.activeTabId);
   });
-  el.btnAppend.addEventListener('click', appendToPrompt);
+  el.btnAddRow.addEventListener('click', addRow);
+  el.btnAddCol.addEventListener('click', addColumn);
+  el.btnAppend.addEventListener('click', appendAll);
   el.btnCopy.addEventListener('click', copyCombined);
   el.btnClear.addEventListener('click', clearCombined);
   el.btnExport.addEventListener('click', exportBackup);
   el.btnImport.addEventListener('click', importBackup);
 
-  el.partContent.addEventListener('input', () => {
-    const tab = activeTab();
-    if (!tab) return;
-    tab.content = el.partContent.value;
-    scheduleSave();
-  });
-
-  el.combined.addEventListener('input', () => {
+  el.combined.addEventListener('input', function () {
     state.combinedPrompt = el.combined.value;
     scheduleSave();
   });
@@ -361,9 +549,9 @@
     if (!data || !Array.isArray(data.tabs) || data.tabs.length === 0) {
       data = {
         tabs: [
-          { id: 'tab-1', title: 'Part 1', content: '' },
-          { id: 'tab-2', title: 'Part 2', content: '' },
-          { id: 'tab-3', title: 'Part 3', content: '' }
+          makeTab('tab-1', 'Part 1'),
+          makeTab('tab-2', 'Part 2'),
+          makeTab('tab-3', 'Part 3')
         ],
         activeTabId: 'tab-1',
         combinedPrompt: ''

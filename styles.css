@@ -11,6 +11,7 @@
   --danger-hover: #dc2626;
   --radius: 8px;
   --font: "Segoe UI", system-ui, -apple-system, sans-serif;
+  --cell-min-h: 64px;
 }
 
 * {
@@ -122,7 +123,7 @@ body {
 }
 
 .part-section {
-  flex: 1;
+  flex: 1.4;
 }
 
 .combined-section {
@@ -149,6 +150,53 @@ body {
 .combined-actions {
   display: flex;
   gap: 6px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.cell-grid-wrap {
+  flex: 1;
+  min-height: 140px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  padding: 8px;
+}
+
+.cell-grid {
+  display: grid;
+  gap: 8px;
+  width: 100%;
+  min-height: 100%;
+  align-content: start;
+}
+
+.cell {
+  resize: vertical;
+  min-height: var(--cell-min-h);
+  height: var(--cell-min-h);
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font-family: "Cascadia Code", "Consolas", "SF Mono", ui-monospace, monospace;
+  font-size: 12.5px;
+  line-height: 1.45;
+  outline: none;
+  transition: border-color 0.12s;
+  width: 100%;
+}
+
+.cell:focus {
+  border-color: var(--accent);
+  background: #121820;
+}
+
+.cell::placeholder {
+  color: var(--muted);
+  opacity: 0.55;
 }
 
 .textarea {
@@ -172,7 +220,7 @@ body {
 }
 
 .textarea-combined {
-  min-height: 120px;
+  min-height: 100px;
 }
 
 .actions-row {
@@ -263,4 +311,48 @@ body {
 
 .status.err {
   color: var(--danger);
+}
+
+/* Row append click-box (left of each grid row) */
+.row-append {
+  appearance: none;
+  width: 32px;
+  height: var(--cell-min-h);
+  min-height: var(--cell-min-h);
+  align-self: stretch;
+  margin: 0;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-2);
+  color: var(--muted);
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
+}
+
+.row-append:hover {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.row-append:active {
+  background: var(--accent-hover);
+}
+
+.row-append-mark {
+  display: block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid currentColor;
+  border-radius: 3px;
+  background: transparent;
+  box-sizing: border-box;
+}
+
+.row-append:hover .row-append-mark {
+  background: rgba(255, 255, 255, 0.35);
 }

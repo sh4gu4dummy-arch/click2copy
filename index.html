@@ -21,15 +21,19 @@
 
     <section class="part-section">
       <div class="section-label-row">
-        <label class="section-label" for="part-content" id="part-label">Part content</label>
+        <label class="section-label" id="part-label">Part content</label>
         <div class="part-actions">
+          <button type="button" class="btn btn-secondary" id="btn-add-row" title="Add a row of cells">+ Row</button>
+          <button type="button" class="btn btn-secondary" id="btn-add-col" title="Add a column of cells">+ Column</button>
           <button type="button" class="btn btn-secondary" id="btn-rename-tab" title="Rename active tab">Rename</button>
           <button type="button" class="btn btn-danger" id="btn-delete-tab" title="Delete active tab">Delete</button>
         </div>
       </div>
-      <textarea id="part-content" class="textarea" placeholder="Enter this part’s text…" spellcheck="false"></textarea>
+      <div class="cell-grid-wrap">
+        <div class="cell-grid" id="cell-grid" role="grid" aria-labelledby="part-label"></div>
+      </div>
       <div class="actions-row">
-        <button type="button" class="btn btn-primary" id="btn-append">Append to prompt</button>
+        <button type="button" class="btn btn-primary" id="btn-append">Append all non-empty</button>
       </div>
     </section>
 

@@ -5,11 +5,13 @@ A simple Electron desktop app for composing prompts from reusable parts.
 ## Features
 
 - **Editable tabs** — add, rename (double-click or Rename button), and delete tabs
-- **Part editor** — each tab has a large textarea for that part’s content
-- **Append to prompt** — clicks append the active part into the combined prompt (does not replace)
+- **Cell grid** — each tab is a grid of independently editable cells (default 3 columns × 8 rows)
+- **+ Row / + Column** — grow the grid; new cells start empty
+- **Row append** — click the checkbox-like control to the left of any row to append that row’s non-empty cells (joined with ` | `) as a new line in the combined prompt; every click appends again
+- **Append all non-empty** — appends every non-empty row of the active part (row-major)
 - **Combined prompt** — editable pane with **Copy** to clipboard and **Clear**
-- **Persistence** — tabs, contents, and combined prompt are saved to a local JSON file under Electron `userData` and restored on restart
-- **Export / Import** — backup and restore all tabs + combined prompt as JSON (survives app updates; userData is outside the repo)
+- **Persistence** — tabs, cell grids, and combined prompt are saved to a local JSON file under Electron `userData` and restored on restart
+- **Export / Import** — backup and restore all tabs + combined prompt as JSON (survives app updates; userData is outside the repo). Legacy backups with a single `content` string per tab are migrated into cell `[0]` of a 3×8 grid
 
 ## Requirements
 
@@ -39,15 +41,32 @@ This launches Electron with the Click2Copy window.
 | `preload.js` | Secure bridge for load/save IPC |
 | `index.html` | UI structure |
 | `styles.css` | Dark, practical styling |
-| `renderer.js` | Tabs, append, copy, and autosave logic |
+| `renderer.js` | Tabs, cell grid, append, copy, and autosave logic |
+
+## Data shape
+
+Each tab is stored as:
+
+```json
+{
+  "id": "tab-1",
+  "title": "Part 1",
+  "cols": 3,
+  "rows": 8,
+  "cells": ["…", "…"]
+}
+```
+
+`cells` is a flat row-major array of length `cols * rows`.
 
 ## Usage tips
 
-1. Edit text in the active tab’s textarea.
-2. Click **Append to prompt** to add that text to the combined prompt.
-3. Switch tabs to compose other parts the same way.
-4. Click **Copy** when ready to paste elsewhere.
-5. Double-click a tab title to rename it; use **Delete** (with confirm if non-empty) to remove a tab.
+1. Edit cells in the active tab’s grid.
+2. Click the box left of a row to append that row to the combined prompt (repeatable).
+3. Or click **Append all non-empty** for the whole part.
+4. Use **+ Row** / **+ Column** to expand the grid.
+5. Click **Copy** when ready to paste elsewhere.
+6. Double-click a tab title to rename it; use **Delete** (with confirm if non-empty) to remove a tab.
 
 Data is autosaved shortly after edits.
 

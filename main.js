@@ -3,12 +3,28 @@ const path = require('path');
 const fs = require('fs');
 
 const STORE_FILE = 'click2copy-data.json';
+const DEFAULT_COLS = 3;
+const DEFAULT_ROWS = 8;
+
+function emptyCells(cols, rows) {
+  return Array(cols * rows).fill('');
+}
+
+function makeDefaultTab(id, title) {
+  return {
+    id,
+    title,
+    cols: DEFAULT_COLS,
+    rows: DEFAULT_ROWS,
+    cells: emptyCells(DEFAULT_COLS, DEFAULT_ROWS)
+  };
+}
 
 const DEFAULT_DATA = {
   tabs: [
-    { id: 'tab-1', title: 'Part 1', content: '' },
-    { id: 'tab-2', title: 'Part 2', content: '' },
-    { id: 'tab-3', title: 'Part 3', content: '' }
+    makeDefaultTab('tab-1', 'Part 1'),
+    makeDefaultTab('tab-2', 'Part 2'),
+    makeDefaultTab('tab-3', 'Part 3')
   ],
   activeTabId: 'tab-1',
   combinedPrompt: ''
@@ -18,17 +34,65 @@ function storePath() {
   return path.join(app.getPath('userData'), STORE_FILE);
 }
 
+/**
+ * Normalize a single tab to the grid schema.
+ * Migrates legacy { content: string } into cells[0] at 3×8.
+ * Returns null if the tab is invalid.
+ */
+function normalizeTab(t) {
+  if (!t || typeof t !== 'object') return null;
+  if (typeof t.id !== 'string' || !t.id) return null;
+  if (typeof t.title !== 'string') return null;
+
+  // Legacy: single content string → put in first cell of 3×8 grid
+  if (typeof t.content === 'string' && !Array.isArray(t.cells)) {
+    const cols = DEFAULT_COLS;
+    const rows = DEFAULT_ROWS;
+    const cells = emptyCells(cols, rows);
+    cells[0] = t.content;
+    return { id: t.id, title: t.title, cols, rows, cells };
+  }
+
+  let cols = Number.isInteger(t.cols) && t.cols > 0 ? t.cols : DEFAULT_COLS;
+  let rows = Number.isInteger(t.rows) && t.rows > 0 ? t.rows : DEFAULT_ROWS;
+
+  let cells;
+  if (Array.isArray(t.cells)) {
+    cells = t.cells.map((c) => (typeof c === 'string' ? c : ''));
+  } else if (Array.isArray(t.grid) && t.grid.every(Array.isArray)) {
+    // Alternate 2D shape: grid[row][col]
+    rows = t.grid.length || DEFAULT_ROWS;
+    cols = t.grid[0] ? t.grid[0].length : DEFAULT_COLS;
+    cells = [];
+    for (let r = 0; r < rows; r++) {
+      const row = t.grid[r] || [];
+      for (let c = 0; c < cols; c++) {
+        cells.push(typeof row[c] === 'string' ? row[c] : '');
+      }
+    }
+  } else {
+    return null;
+  }
+
+  const needed = cols * rows;
+  if (cells.length < needed) {
+    cells = cells.concat(emptyCells(needed - cells.length, 1));
+  } else if (cells.length > needed) {
+    cells = cells.slice(0, needed);
+  }
+
+  return { id: t.id, title: t.title, cols, rows, cells };
+}
+
 function normalizeData(parsed) {
   if (!parsed || !Array.isArray(parsed.tabs) || parsed.tabs.length === 0) {
     return null;
   }
   const tabs = [];
   for (const t of parsed.tabs) {
-    if (!t || typeof t !== 'object') return null;
-    if (typeof t.id !== 'string' || !t.id) return null;
-    if (typeof t.title !== 'string') return null;
-    if (typeof t.content !== 'string') return null;
-    tabs.push({ id: t.id, title: t.title, content: t.content });
+    const normalized = normalizeTab(t);
+    if (!normalized) return null;
+    tabs.push(normalized);
   }
   let activeTabId = typeof parsed.activeTabId === 'string' ? parsed.activeTabId : tabs[0].id;
   if (!tabs.some((t) => t.id === activeTabId)) {
@@ -170,7 +234,8 @@ ipcMain.handle('store:import', async () => {
     if (!normalized) {
       return {
         ok: false,
-        error: 'Invalid backup shape. Expected tabs (with id/title/content), activeTabId, and combinedPrompt.'
+        error:
+          'Invalid backup shape. Expected tabs (with id/title and cells grid or legacy content), activeTabId, and combinedPrompt.'
       };
     }
     return { ok: true, data: normalized, filePath };
