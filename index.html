@@ -55,16 +55,16 @@
           <button type="button" class="btn btn-danger" id="btn-delete-tab" title="Delete active tab">Delete</button>
         </div>
       </div>
+      <details class="master-library" id="master-library">
+        <summary>Master parts <span class="master-library-hint">— click a cell to add it to this part</span></summary>
+        <div class="master-library-items" id="master-library-items"></div>
+      </details>
       <div class="cell-grid-wrap">
         <div class="cell-grid" id="cell-grid" role="grid" aria-labelledby="part-label"></div>
       </div>
       <div class="actions-row">
         <button type="button" class="btn btn-primary" id="btn-append">Append all non-empty</button>
       </div>
-      <details class="master-library" id="master-library">
-        <summary>Master parts <span class="master-library-hint">— click a cell to add it to this part</span></summary>
-        <div class="master-library-items" id="master-library-items"></div>
-      </details>
     </section>
 
     <div class="section-resizer" id="combined-resizer" role="separator" aria-orientation="horizontal" aria-label="Resize combined prompt height" tabindex="0" title="Drag to resize combined prompt"></div>

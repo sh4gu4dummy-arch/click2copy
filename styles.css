@@ -684,13 +684,14 @@ body.resizing-columns * {
 
 .master-library {
   flex: 0 1 auto;
-  max-height: 25%;
+  max-height: 30%;
   min-height: 0;
   overflow: auto;
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--surface);
   flex-shrink: 1;
+  position: relative;
 }
 
 .master-library[hidden] {
@@ -698,11 +699,17 @@ body.resizing-columns * {
 }
 
 .master-library summary {
+  position: sticky;
+  top: 0;
+  z-index: 3;
   padding: 8px 10px;
   color: var(--text);
   font-size: 0.8rem;
   font-weight: 600;
   cursor: pointer;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  /* Always reachable while scrolling Master insert contents. */
 }
 
 .master-library-hint {
