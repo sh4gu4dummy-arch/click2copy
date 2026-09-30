@@ -49,6 +49,7 @@
     combined: document.getElementById('combined-prompt'),
     globalCombined: document.getElementById('global-combined'),
     status: document.getElementById('status'),
+    statusRow: document.querySelector('.status-row'),
     statusPanel: document.getElementById('status-panel'),
     statusSnapshot: document.getElementById('status-snapshot'),
     statusEvents: document.getElementById('status-events'),
@@ -509,6 +510,7 @@
     if (!el.statusPanel || !el.status) return;
     el.statusPanel.hidden = !statusPanelOpen;
     el.status.setAttribute('aria-expanded', statusPanelOpen ? 'true' : 'false');
+    if (el.statusRow) el.statusRow.classList.toggle('is-panel-open', statusPanelOpen);
     if (statusPanelOpen) renderStatusPanel();
   }
 
