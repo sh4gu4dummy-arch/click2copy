@@ -27,6 +27,7 @@
     saveTimer: null
   };
   let initialized = false;
+  let focusedCell = null;
   const pendingDocumentPaths = [];
 
   const el = {
@@ -332,6 +333,7 @@
   }
 
   function applyData(data) {
+    focusedCell = null;
     const tabs = [];
     for (let i = 0; i < data.tabs.length; i++) {
       const n = normalizeTab(data.tabs[i]);
@@ -780,7 +782,7 @@
         button.type = 'button';
         button.className = 'master-library-item';
         button.textContent = text;
-        button.title = 'Add to next empty cell in ' + current.title;
+        button.title = 'Add to the selected cell, or next empty cell, in ' + current.title;
         button.addEventListener('click', function () {
           insertMasterText(text);
         });
@@ -797,23 +799,38 @@
 
   function insertMasterText(text) {
     const tab = activeTab();
-    if (!tab || isMasterTab(tab)) return;
-    let index = tab.cells.findIndex(function (cell) {
-      return !cell || !cell.trim();
-    });
-    if (index === -1) {
-      tab.cells.push.apply(tab.cells, emptyCells(tab.cols, 1));
-      tab.rows++;
-      index = tab.cells.length - tab.cols;
+    if (!tab || isMasterTab(tab) || tab.cells.length === 0) return;
+
+    let index = -1;
+    let usedFirstCellFallback = false;
+    if (focusedCell && focusedCell.tabId === tab.id &&
+        Number.isInteger(focusedCell.index) &&
+        focusedCell.index >= 0 && focusedCell.index < tab.cells.length) {
+      index = focusedCell.index;
+    } else {
+      index = tab.cells.findIndex(function (cell) {
+        return !cell || !cell.trim();
+      });
+      if (index === -1) {
+        index = 0;
+        usedFirstCellFallback = true;
+      }
     }
+
     tab.cells[index] = text;
+    focusedCell = { tabId: tab.id, index: index };
     renderTabs();
     renderGrid();
     renderMasterLibrary();
     scheduleSave();
     const cell = el.cellGrid.querySelector('[data-idx="' + index + '"]');
     if (cell) cell.focus();
-    setStatus('Added Master text to ' + tab.title, 'ok');
+    setStatus(
+      usedFirstCellFallback
+        ? 'Added Master text to ' + tab.title + ' (replaced the first cell; no empty cells)'
+        : 'Added Master text to ' + tab.title,
+      'ok'
+    );
   }
 
   function reorderTab(draggedId, targetId, afterTarget) {
@@ -961,6 +978,8 @@
         ta.dataset.idx = String(idx);
         ta.setAttribute('aria-label', 'Row ' + (r + 1) + ' column ' + (c + 1));
         ta.addEventListener('input', onCellInput);
+        ta.addEventListener('focus', rememberFocusedCell);
+        ta.addEventListener('click', rememberFocusedCell);
         el.cellGrid.appendChild(ta);
       }
     }
@@ -1071,9 +1090,17 @@
     resizeCombinedSection(el.combinedSection.getBoundingClientRect().height + delta);
   }
 
+  function rememberFocusedCell(e) {
+    const tab = activeTab();
+    const idx = parseInt(e.currentTarget.dataset.idx, 10);
+    if (!tab || Number.isNaN(idx) || idx < 0 || idx >= tab.cells.length) return;
+    focusedCell = { tabId: tab.id, index: idx };
+  }
+
   function onCellInput(e) {
     const tab = activeTab();
     if (!tab) return;
+    rememberFocusedCell(e);
     const idx = parseInt(e.target.dataset.idx, 10);
     if (Number.isNaN(idx) || idx < 0 || idx >= tab.cells.length) return;
     tab.cells[idx] = e.target.value;
@@ -1088,6 +1115,7 @@
     });
     if (!tab) return;
     state.activeTabId = id;
+    focusedCell = null;
     renderTabs();
     renderGrid();
     renderMasterLibrary();
