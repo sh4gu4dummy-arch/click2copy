@@ -30,12 +30,9 @@
   let initialized = false;
   let focusedCell = null;
   const pendingDocumentPaths = [];
-  const EVENT_LOG_LIMIT = 80;
-  const SLOW_OP_MS = 3000;
+  const EVENT_LOG_LIMIT = 40;
   const eventLog = [];
   let statusPanelOpen = false;
-  let lastOriginCheck = null;
-  let diagPersistTimer = null;
 
   const el = {
     documentBar: document.getElementById('document-bar'),
@@ -54,7 +51,6 @@
     statusSnapshot: document.getElementById('status-snapshot'),
     statusEvents: document.getElementById('status-events'),
     statusPanelClose: document.getElementById('status-panel-close'),
-    statusOriginCheck: document.getElementById('status-origin-check'),
     btnAdd: document.getElementById('btn-add-tab'),
     btnRename: document.getElementById('btn-rename-tab'),
     btnDelete: document.getElementById('btn-delete-tab'),
@@ -352,22 +348,10 @@
 
   async function persist() {
     if (!window.click2copy) return false;
-    const started = Date.now();
     try {
       const sessionResult = await window.click2copy.saveSession(sessionSnapshot());
       if (!sessionResult || !sessionResult.ok) {
-        const message = (sessionResult && sessionResult.error) || 'Failed to save open documents';
-        const classification = classifyLocalFailure({ message: message, local: true });
-        setStatus(message + ' — ' + classification.label, 'err', {
-          details: {
-            operation: 'save_session',
-            durationMs: Date.now() - started,
-            errorClass: classification.class,
-            errorLabel: classification.label,
-            detail: message,
-            online: onlineHint()
-          }
-        });
+        setStatus((sessionResult && sessionResult.error) || 'Failed to save open documents', 'err');
         return false;
       }
 
@@ -375,66 +359,20 @@
       if (document && document.filePath) {
         const result = await window.click2copy.saveDocument(document.filePath, snapshot());
         if (!result || !result.ok) {
-          const message = (result && result.error) || 'Failed to save prompt file';
-          const classification = classifyLocalFailure({ message: message, local: true });
-          setStatus(message + ' — ' + classification.label, 'err', {
-            details: {
-              operation: 'save_document',
-              durationMs: Date.now() - started,
-              errorClass: classification.class,
-              errorLabel: classification.label,
-              detail: message,
-              online: onlineHint()
-            }
-          });
+          setStatus((result && result.error) || 'Failed to save prompt file', 'err');
           return false;
         }
       } else {
         const saved = await window.click2copy.saveData(snapshot());
         if (!saved) {
-          const classification = classifyLocalFailure({ message: 'Failed to save local prompt data', local: true });
-          setStatus('Failed to save local prompt data — ' + classification.label, 'err', {
-            details: {
-              operation: 'save_store',
-              durationMs: Date.now() - started,
-              errorClass: classification.class,
-              errorLabel: classification.label,
-              detail: 'store:save returned false',
-              online: onlineHint()
-            }
-          });
+          setStatus('Failed to save local prompt data', 'err');
           return false;
         }
-      }
-      const durationMs = Date.now() - started;
-      if (durationMs >= SLOW_OP_MS) {
-        pushEvent('Save finished slowly (' + durationMs + ' ms)', 'ok', {
-          operation: 'persist',
-          durationMs: durationMs,
-          errorClass: 'likely_slow_network',
-          errorLabel: 'Likely slow Wi‑Fi / network',
-          detail: 'local persist took longer than usual',
-          online: onlineHint()
-        });
       }
       return true;
     } catch (err) {
       console.error(err);
-      const classification = classifyLocalFailure({
-        message: err && err.message,
-        durationMs: Date.now() - started,
-        local: true
-      });
-      setStatus('Failed to save — ' + classification.label, 'err', {
-        details: {
-          operation: 'persist',
-          durationMs: Date.now() - started,
-          errorClass: classification.class,
-          errorLabel: classification.label,
-          detail: err && err.message ? err.message : String(err),
-          online: onlineHint()
-        }
-      });
+      setStatus('Failed to save', 'err');
       return false;
     }
   }
@@ -453,210 +391,6 @@
       .replace(/</g, '&lt;')
       .replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;');
-  }
-
-  function onlineHint() {
-    try {
-      if (typeof navigator !== 'undefined' && typeof navigator.onLine === 'boolean') {
-        return navigator.onLine;
-      }
-    } catch (err) { /* ignore */ }
-    return null;
-  }
-
-  function classifyLocalFailure(input) {
-    const durationMs = Number(input && input.durationMs) || 0;
-    const message = String((input && (input.message || input.error || input.detail)) || '');
-    const blob = message.toLowerCase();
-    if (/enotfound|eai_again|enetunreach|ehostunreach|no route|could not resolve|name or service not known/.test(blob)) {
-      return { class: 'likely_dns_or_unreachable', label: 'Likely DNS or unreachable host' };
-    }
-    if (/etimedout|timeout|timed out|econnreset|socket hang up|network.?timeout/.test(blob) ||
-        (durationMs >= SLOW_OP_MS && /network|fetch|http|connect/.test(blob))) {
-      return { class: 'likely_slow_network', label: 'Likely slow Wi‑Fi / network' };
-    }
-    if (/\b401\b|\b403\b|authentication|permission denied|access denied/.test(blob)) {
-      return { class: 'likely_remote_auth_or_permission', label: 'Likely login / permission issue' };
-    }
-    if (durationMs >= SLOW_OP_MS) {
-      return { class: 'likely_slow_network', label: 'Likely slow Wi‑Fi / network' };
-    }
-    return { class: 'likely_app_or_config_bug', label: 'Likely app or config bug' };
-  }
-
-  function scheduleDiagPersist() {
-    if (!window.click2copy || !window.click2copy.appendDiagLog) return;
-    clearTimeout(diagPersistTimer);
-    diagPersistTimer = setTimeout(function () {
-      const recent = eventLog.filter(function (entry) {
-        return entry && entry.operation && entry.persist !== false;
-      }).slice(-20);
-      recent.forEach(function (entry) {
-        if (entry._persisted) return;
-        entry._persisted = true;
-        window.click2copy.appendDiagLog({
-          at: entry.iso || new Date(entry.at).toISOString(),
-          operation: entry.operation,
-          success: entry.kind !== 'err',
-          durationMs: entry.durationMs,
-          host: entry.host || '',
-          remoteUrl: entry.remoteUrl || '',
-          exitCode: entry.exitCode,
-          httpStatus: entry.httpStatus,
-          errorClass: entry.errorClass || '',
-          errorLabel: entry.errorLabel || '',
-          message: entry.msg,
-          detail: entry.detail || '',
-          online: entry.online
-        }).catch(function (err) {
-          console.warn('diag persist failed', err);
-        });
-      });
-    }, 400);
-  }
-
-  /**
-   * Push a structured event into the under-the-hood log.
-   * details: { operation, durationMs, host, remoteUrl, exitCode, httpStatus,
-   *            errorClass, errorLabel, detail, online, persist }
-   */
-  function pushEvent(msg, kind, details) {
-    if (!msg) return;
-    const info = details && typeof details === 'object' ? details : {};
-    const at = Date.now();
-    const entry = {
-      at: at,
-      iso: new Date(at).toISOString(),
-      msg: String(msg),
-      kind: kind || '',
-      operation: info.operation ? String(info.operation) : '',
-      durationMs: Number.isFinite(Number(info.durationMs)) ? Math.round(Number(info.durationMs)) : null,
-      host: info.host ? String(info.host) : '',
-      remoteUrl: info.remoteUrl ? String(info.remoteUrl) : '',
-      exitCode: info.exitCode != null ? info.exitCode : null,
-      httpStatus: info.httpStatus != null ? info.httpStatus : null,
-      errorClass: info.errorClass ? String(info.errorClass) : '',
-      errorLabel: info.errorLabel ? String(info.errorLabel) : '',
-      detail: info.detail ? String(info.detail) : '',
-      online: typeof info.online === 'boolean' ? info.online : onlineHint(),
-      persist: info.persist !== false
-    };
-    eventLog.push(entry);
-    if (eventLog.length > EVENT_LOG_LIMIT) {
-      eventLog.splice(0, eventLog.length - EVENT_LOG_LIMIT);
-    }
-    if (entry.operation) scheduleDiagPersist();
-    if (statusPanelOpen) renderStatusPanel();
-  }
-
-  async function logOperation(options) {
-    const opts = options || {};
-    const started = Date.now();
-    const operation = opts.operation || 'operation';
-    let success = true;
-    let error = null;
-    let result = null;
-    try {
-      result = await opts.run();
-      if (opts.okIf && !opts.okIf(result)) {
-        success = false;
-        error = (result && (result.error || result.message)) || (operation + ' failed');
-      }
-    } catch (err) {
-      success = false;
-      error = err;
-      result = null;
-    }
-    const durationMs = Date.now() - started;
-    let classification = { class: '', label: '' };
-    if (!success) {
-      const message = error && error.message ? error.message : String(error || '');
-      if (window.click2copy && window.click2copy.classifyDiag) {
-        try {
-          classification = await window.click2copy.classifyDiag({
-            durationMs: durationMs,
-            message: message,
-            code: error && error.code,
-            local: opts.local !== false
-          }) || classification;
-        } catch (err) {
-          classification = classifyLocalFailure({ durationMs: durationMs, message: message });
-        }
-      } else {
-        classification = classifyLocalFailure({ durationMs: durationMs, message: message });
-      }
-    } else if (durationMs >= SLOW_OP_MS) {
-      classification = { class: 'likely_slow_network', label: 'Likely slow Wi‑Fi / network' };
-    }
-    const msg = success
-      ? (opts.successMsg || (operation + ' ok'))
-      : (opts.failMsg || (operation + ' failed')) + (classification.label ? ' — ' + classification.label : '');
-    pushEvent(msg, success ? 'ok' : 'err', {
-      operation: operation,
-      durationMs: durationMs,
-      host: opts.host || '',
-      remoteUrl: opts.remoteUrl || '',
-      exitCode: opts.exitCode != null ? opts.exitCode : (error && error.code) || null,
-      httpStatus: opts.httpStatus != null ? opts.httpStatus : null,
-      errorClass: classification.class,
-      errorLabel: classification.label,
-      detail: error ? String(error && error.message ? error.message : error) : (opts.detail || ''),
-      online: onlineHint()
-    });
-    if (!success && opts.setStatusOnFail !== false) {
-      setStatus(msg, 'err', { skipLog: true });
-    }
-    return { success: success, result: result, durationMs: durationMs, classification: classification, error: error };
-  }
-
-  async function runOriginCheck(options) {
-    const opts = options || {};
-    if (!window.click2copy || !window.click2copy.checkOrigin) {
-      setStatus('Origin check unavailable', 'err');
-      return null;
-    }
-    if (el.statusOriginCheck) el.statusOriginCheck.disabled = true;
-    if (!opts.silent) setStatus('Checking origin / network…');
-    try {
-      const result = await window.click2copy.checkOrigin();
-      lastOriginCheck = result;
-      const success = !!(result && result.success);
-      const classification = (result && result.classification) || {};
-      const summary = (result && result.summary) || (success ? 'Origin reachable' : 'Origin check failed');
-      pushEvent(summary, success ? 'ok' : 'err', {
-        operation: 'origin_check',
-        durationMs: result && result.durationMs,
-        host: result && result.host,
-        remoteUrl: result && result.remoteUrl,
-        httpStatus: result && result.entry && result.entry.httpStatus,
-        exitCode: result && result.entry && result.entry.exitCode,
-        errorClass: classification.class || '',
-        errorLabel: classification.label || '',
-        detail: result && result.steps
-          ? result.steps.map(function (s) {
-              return s.operation + '=' + (s.success ? 'ok' : 'fail') + '/' + s.durationMs + 'ms';
-            }).join(', ')
-          : (result && result.error) || '',
-        online: onlineHint(),
-        persist: false
-      });
-      setStatus(summary, success ? 'ok' : 'err', { skipLog: true });
-      if (statusPanelOpen) renderStatusPanel();
-      return result;
-    } catch (err) {
-      const classification = classifyLocalFailure({ message: err && err.message, local: true });
-      pushEvent('Origin check crashed — ' + classification.label, 'err', {
-        operation: 'origin_check',
-        errorClass: classification.class,
-        errorLabel: classification.label,
-        detail: err && err.message ? err.message : String(err),
-        online: onlineHint()
-      });
-      setStatus('Origin check failed', 'err', { skipLog: true });
-      return null;
-    } finally {
-      if (el.statusOriginCheck) el.statusOriginCheck.disabled = false;
-    }
   }
 
   function describeSelectedCell() {
@@ -696,34 +430,8 @@
       { label: 'Global combined', value: state.globalCombined ? 'yes' : 'no' },
       { label: 'Confirmed links', value: String(state.confirmedLinks.length) },
       { label: 'Open documents', value: String(state.documents.length) },
-      { label: 'Event log size', value: String(eventLog.length) },
-      { label: 'Browser online', value: onlineHint() == null ? 'unknown' : (onlineHint() ? 'yes' : 'no (offline)') },
-      {
-        label: 'Last origin check',
-        value: lastOriginCheck
-          ? ((lastOriginCheck.success ? 'ok' : 'fail') +
-            ' · ' + (lastOriginCheck.durationMs != null ? lastOriginCheck.durationMs + ' ms' : '?') +
-            (lastOriginCheck.host ? ' · ' + lastOriginCheck.host : '') +
-            (lastOriginCheck.classification && lastOriginCheck.classification.label
-              ? ' · ' + lastOriginCheck.classification.label
-              : ''))
-          : 'not run yet — use Check origin'
-      }
+      { label: 'Event log size', value: String(eventLog.length) }
     ];
-  }
-
-  function formatEventMeta(entry) {
-    const bits = [];
-    if (entry.operation) bits.push(entry.operation);
-    if (entry.durationMs != null) bits.push(entry.durationMs + ' ms');
-    if (entry.host) bits.push(entry.host);
-    if (entry.httpStatus != null) bits.push('HTTP ' + entry.httpStatus);
-    if (entry.exitCode != null && entry.exitCode !== 0 && entry.exitCode !== '0') {
-      bits.push('code ' + entry.exitCode);
-    }
-    if (entry.online === false) bits.push('browser offline');
-    if (entry.detail) bits.push(entry.detail);
-    return bits.join(' · ');
   }
 
   function renderStatusPanel() {
@@ -734,24 +442,15 @@
     }).join('');
 
     if (eventLog.length === 0) {
-      el.statusEvents.innerHTML = '<li class="event-empty">No events yet — actions and origin checks will appear here.</li>';
+      el.statusEvents.innerHTML = '<li class="event-empty">No events yet — actions will appear here.</li>';
       return;
     }
     const newestFirst = eventLog.slice().reverse();
     el.statusEvents.innerHTML = newestFirst.map(function (entry) {
       const kindClass = entry.kind ? ' class="' + escapeHtml(entry.kind) + '"' : '';
-      const meta = formatEventMeta(entry);
-      const classHtml = entry.errorLabel
-        ? '<span class="event-class ' + escapeHtml(entry.errorClass || '') + '">' +
-          escapeHtml(entry.errorLabel) + '</span>'
-        : '';
       return '<li' + kindClass + '>' +
         '<span class="event-time">' + escapeHtml(formatClock(entry.at)) + '</span>' +
-        '<span class="event-body">' +
-          '<span class="event-msg">' + escapeHtml(entry.msg) + '</span>' +
-          (meta ? '<span class="event-meta">' + escapeHtml(meta) + '</span>' : '') +
-          classHtml +
-        '</span>' +
+        '<span class="event-msg">' + escapeHtml(entry.msg) + '</span>' +
         '</li>';
     }).join('');
   }
@@ -764,12 +463,24 @@
     if (statusPanelOpen) renderStatusPanel();
   }
 
-  function setStatus(msg, kind, options) {
-    const opts = options || {};
+  function pushEvent(msg, kind) {
+    if (!msg) return;
+    eventLog.push({
+      at: Date.now(),
+      msg: String(msg),
+      kind: kind || ''
+    });
+    if (eventLog.length > EVENT_LOG_LIMIT) {
+      eventLog.splice(0, eventLog.length - EVENT_LOG_LIMIT);
+    }
+    if (statusPanelOpen) renderStatusPanel();
+  }
+
+  function setStatus(msg, kind) {
     el.status.textContent = msg || '';
     el.status.className = 'status' + (kind ? ' ' + kind : '');
     if (msg) {
-      if (!opts.skipLog) pushEvent(msg, kind, opts.details || null);
+      pushEvent(msg, kind);
       clearTimeout(setStatus._t);
       setStatus._t = setTimeout(function () {
         if (!statusPanelOpen) {
@@ -2894,15 +2605,7 @@
 
   async function exportBackup() {
     if (!window.click2copy || typeof window.click2copy.exportData !== 'function') {
-      setStatus('Export unavailable', 'err', {
-        details: {
-          operation: 'export',
-          errorClass: 'likely_app_or_config_bug',
-          errorLabel: 'Likely app or config bug',
-          detail: 'click2copy bridge missing',
-          online: onlineHint()
-        }
-      });
+      setStatus('Export unavailable', 'err');
       return;
     }
     try {
@@ -2912,50 +2615,19 @@
         return;
       }
       if (!result.ok) {
-        {
-          const message = result.error || 'Export failed';
-          const classification = classifyLocalFailure({ message: message, local: true });
-          setStatus(message + ' — ' + classification.label, 'err', {
-            details: {
-              operation: 'export',
-              errorClass: classification.class,
-              errorLabel: classification.label,
-              detail: message,
-              online: onlineHint()
-            }
-          });
-        }
+        setStatus(result.error || 'Export failed', 'err');
         return;
       }
       setStatus('Exported backup', 'ok');
     } catch (err) {
       console.error(err);
-      {
-        const classification = classifyLocalFailure({ message: 'Export failed', local: true });
-        setStatus('Export failed — ' + classification.label, 'err', {
-          details: {
-            operation: 'export',
-            errorClass: classification.class,
-            errorLabel: classification.label,
-            detail: 'export threw',
-            online: onlineHint()
-          }
-        });
-      }
+      setStatus('Export failed', 'err');
     }
   }
 
   async function importBackup() {
     if (!window.click2copy || typeof window.click2copy.importData !== 'function') {
-      setStatus('Import unavailable', 'err', {
-        details: {
-          operation: 'import',
-          errorClass: 'likely_app_or_config_bug',
-          errorLabel: 'Likely app or config bug',
-          detail: 'click2copy bridge missing',
-          online: onlineHint()
-        }
-      });
+      setStatus('Import unavailable', 'err');
       return;
     }
     try {
@@ -2965,19 +2637,7 @@
         return;
       }
       if (!result.ok || !result.data) {
-        {
-          const message = result.error || 'Import failed';
-          const classification = classifyLocalFailure({ message: message, local: true });
-          setStatus(message + ' — ' + classification.label, 'err', {
-            details: {
-              operation: 'import',
-              errorClass: classification.class,
-              errorLabel: classification.label,
-              detail: message,
-              online: onlineHint()
-            }
-          });
-        }
+        setStatus(result.error || 'Import failed', 'err');
         return;
       }
 
@@ -2995,18 +2655,7 @@
       setStatus('Imported backup (' + state.tabs.length + ' tabs)', 'ok');
     } catch (err) {
       console.error(err);
-      {
-        const classification = classifyLocalFailure({ message: 'Import failed', local: true });
-        setStatus('Import failed — ' + classification.label, 'err', {
-          details: {
-            operation: 'import',
-            errorClass: classification.class,
-            errorLabel: classification.label,
-            detail: 'import threw',
-            online: onlineHint()
-          }
-        });
-      }
+      setStatus('Import failed', 'err');
     }
   }
 
@@ -3121,49 +2770,6 @@
       console.warn('Could not load combined prompt height:', err);
     }
 
-    if (window.click2copy && window.click2copy.loadDiagLog) {
-      try {
-        const diag = await window.click2copy.loadDiagLog();
-        if (diag && Array.isArray(diag.entries)) {
-          diag.entries.slice(-EVENT_LOG_LIMIT).forEach(function (entry) {
-            if (!entry || !entry.message) return;
-            eventLog.push({
-              at: entry.at ? Date.parse(entry.at) || Date.now() : Date.now(),
-              iso: entry.at || new Date().toISOString(),
-              msg: String(entry.message),
-              kind: entry.success ? 'ok' : 'err',
-              operation: entry.operation || '',
-              durationMs: entry.durationMs,
-              host: entry.host || '',
-              remoteUrl: entry.remoteUrl || '',
-              exitCode: entry.exitCode,
-              httpStatus: entry.httpStatus,
-              errorClass: entry.errorClass || '',
-              errorLabel: entry.errorLabel || '',
-              detail: entry.detail || '',
-              online: entry.online,
-              persist: false,
-              _persisted: true
-            });
-          });
-          const originEntries = diag.entries.filter(function (e) { return e && e.operation === 'origin_check'; });
-          if (originEntries.length) {
-            const last = originEntries[originEntries.length - 1];
-            lastOriginCheck = {
-              success: !!last.success,
-              durationMs: last.durationMs,
-              host: last.host,
-              remoteUrl: last.remoteUrl,
-              summary: last.message,
-              classification: { class: last.errorClass || '', label: last.errorLabel || '' }
-            };
-          }
-        }
-      } catch (err) {
-        console.warn('Could not load diagnostic log:', err);
-      }
-    }
-
     if (window.click2copy && window.click2copy.getAppVersion) {
       try {
         el.appVersion.textContent = 'v' + await window.click2copy.getAppVersion();
@@ -3251,12 +2857,6 @@
     el.statusPanelClose.addEventListener('click', function (event) {
       event.stopPropagation();
       setStatusPanelOpen(false);
-    });
-  }
-  if (el.statusOriginCheck) {
-    el.statusOriginCheck.addEventListener('click', function (event) {
-      event.stopPropagation();
-      runOriginCheck();
     });
   }
   document.addEventListener('keydown', function (event) {
