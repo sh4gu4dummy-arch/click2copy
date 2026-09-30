@@ -7,6 +7,8 @@ A simple Electron desktop app for composing prompts from reusable parts.
 - **Editable tabs** — add, rename (double-click or Rename button), and delete tabs
 - **Cell grid** — each tab is a grid of independently editable cells (default 3 columns × 8 rows)
 - **+ Row / + Column** — grow the grid; new cells start empty
+- **Sheet paste** — paste TSV / HTML tables from Google Sheets or Excel into the focused cell; values spread across the grid and the grid grows if needed
+- **Cell copy/cut** — with no text selected in a cell, Ctrl/Cmd+C or X copies or cuts the whole cell
 - **Row append** — click the checkbox-like control to the left of any row to append that row’s non-empty cells (joined with ` | `) as a new line in the combined prompt; every click appends again
 - **Append all non-empty** — appends every non-empty row of the active part (row-major)
 - **Combined prompt** — editable pane with **Copy** to clipboard and **Clear**
@@ -65,8 +67,9 @@ Each tab is stored as:
 2. Click the box left of a row to append that row to the combined prompt (repeatable).
 3. Or click **Append all non-empty** for the whole part.
 4. Use **+ Row** / **+ Column** to expand the grid.
-5. Click **Copy** when ready to paste elsewhere.
-6. Double-click a tab title to rename it; use **Delete** (with confirm if non-empty) to remove a tab.
+5. Paste from Google Sheets or Excel into a focused cell — tab-separated or HTML table data fills the grid (expanding rows/columns as needed) instead of dumping into one cell. Copy/cut with no text selection copies the whole focused cell.
+6. Click **Copy** when ready to paste elsewhere.
+7. Double-click a tab title to rename it; use **Delete** (with confirm if non-empty) to remove a tab.
 
 Data is autosaved shortly after edits.
 

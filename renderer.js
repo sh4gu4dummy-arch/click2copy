@@ -1130,6 +1130,9 @@
         ta.addEventListener('input', onCellInput);
         ta.addEventListener('focus', rememberFocusedCell);
         ta.addEventListener('click', rememberFocusedCell);
+        ta.addEventListener('paste', onCellPaste);
+        ta.addEventListener('copy', onCellCopy);
+        ta.addEventListener('cut', onCellCut);
         el.cellGrid.appendChild(ta);
       }
     }
@@ -1382,6 +1385,208 @@
     renderMasterLibrary();
     scheduleSave();
     setStatus('Tab deleted');
+  }
+
+
+  /**
+   * Parse an HTML clipboard fragment into a row-major string matrix.
+   * Returns null when no usable <table> is present.
+   */
+  function parseHtmlTable(html) {
+    if (!html || typeof html !== 'string') return null;
+    let doc;
+    try {
+      doc = new DOMParser().parseFromString(html, 'text/html');
+    } catch (err) {
+      return null;
+    }
+    const table = doc.querySelector('table');
+    if (!table) return null;
+    const rows = [];
+    const trs = table.querySelectorAll('tr');
+    for (let i = 0; i < trs.length; i++) {
+      const cells = [];
+      const tds = trs[i].querySelectorAll('td, th');
+      for (let j = 0; j < tds.length; j++) {
+        const td = tds[j];
+        const raw = td.innerText != null ? td.innerText : (td.textContent || '');
+        cells.push(String(raw).replace(/\u00a0/g, ' ').replace(/\r\n/g, '\n').replace(/\r/g, '\n'));
+        const colspan = parseInt(td.getAttribute('colspan'), 10);
+        if (Number.isInteger(colspan) && colspan > 1) {
+          for (let extra = 1; extra < colspan; extra++) cells.push('');
+        }
+      }
+      if (cells.length) rows.push(cells);
+    }
+    if (!rows.length) return null;
+    let maxCols = 0;
+    for (let i = 0; i < rows.length; i++) {
+      if (rows[i].length > maxCols) maxCols = rows[i].length;
+    }
+    for (let i = 0; i < rows.length; i++) {
+      while (rows[i].length < maxCols) rows[i].push('');
+    }
+    return rows;
+  }
+
+  /**
+   * Parse tab-separated / newline-separated plain text (Excel / Sheets text/plain).
+   * A trailing newline from spreadsheet apps is stripped so it does not create a blank row.
+   */
+  function parseTsv(text) {
+    if (text == null) return null;
+    let body = String(text).replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    if (body.endsWith('\n')) body = body.slice(0, -1);
+    if (body === '') return [['']];
+    const lines = body.split('\n');
+    const rows = lines.map(function (line) {
+      return line.split('\t');
+    });
+    let maxCols = 0;
+    for (let i = 0; i < rows.length; i++) {
+      if (rows[i].length > maxCols) maxCols = rows[i].length;
+    }
+    for (let i = 0; i < rows.length; i++) {
+      while (rows[i].length < maxCols) rows[i].push('');
+    }
+    return rows;
+  }
+
+  function matrixCellCount(matrix) {
+    if (!matrix || !matrix.length) return 0;
+    let n = 0;
+    for (let i = 0; i < matrix.length; i++) n += matrix[i].length;
+    return n;
+  }
+
+  function isMultiCellMatrix(matrix) {
+    return !!(matrix && (matrix.length > 1 || (matrix[0] && matrix[0].length > 1)));
+  }
+
+  /**
+   * Prefer HTML table (preserves structure from Sheets/Excel); fall back to TSV text/plain.
+   */
+  function parseClipboardMatrix(clipboardData) {
+    if (!clipboardData) return null;
+    const html = clipboardData.getData('text/html');
+    const fromHtml = parseHtmlTable(html);
+    if (fromHtml && isMultiCellMatrix(fromHtml)) return fromHtml;
+    const plain = clipboardData.getData('text/plain');
+    const fromTsv = parseTsv(plain);
+    if (fromTsv && isMultiCellMatrix(fromTsv)) return fromTsv;
+    // Single-cell HTML table with richer text than plain
+    if (fromHtml && matrixCellCount(fromHtml) === 1) return fromHtml;
+    return null;
+  }
+
+  function ensureTabSize(tab, rows, cols) {
+    while (tab.cols < cols) {
+      const newCells = [];
+      for (let r = 0; r < tab.rows; r++) {
+        for (let c = 0; c < tab.cols; c++) {
+          newCells.push(tab.cells[r * tab.cols + c] || '');
+        }
+        newCells.push('');
+      }
+      if (Array.isArray(tab.columnWidths) && tab.columnWidths.length === tab.cols) {
+        const defaultWidth = tab.columnWidths[tab.columnWidths.length - 1] || DEFAULT_COLUMN_WIDTH;
+        tab.columnWidths = tab.columnWidths.concat([defaultWidth]);
+      }
+      tab.cols += 1;
+      tab.cells = newCells;
+    }
+    while (tab.rows < rows) {
+      for (let c = 0; c < tab.cols; c++) tab.cells.push('');
+      tab.rows += 1;
+    }
+  }
+
+  function pasteMatrixAt(tab, startRow, startCol, matrix) {
+    if (!tab || !matrix || !matrix.length) return null;
+    const pasteRows = matrix.length;
+    const pasteCols = matrix[0].length;
+    ensureTabSize(tab, startRow + pasteRows, startCol + pasteCols);
+    for (let r = 0; r < pasteRows; r++) {
+      for (let c = 0; c < pasteCols; c++) {
+        const idx = (startRow + r) * tab.cols + (startCol + c);
+        tab.cells[idx] = matrix[r][c] == null ? '' : String(matrix[r][c]);
+      }
+    }
+    return {
+      rows: pasteRows,
+      cols: pasteCols,
+      endRow: startRow + pasteRows - 1,
+      endCol: startCol + pasteCols - 1
+    };
+  }
+
+  function onCellPaste(e) {
+    const tab = activeTab();
+    if (!tab) return;
+    const startIdx = parseInt(e.currentTarget.dataset.idx, 10);
+    if (Number.isNaN(startIdx) || startIdx < 0 || startIdx >= tab.cells.length) return;
+
+    const matrix = parseClipboardMatrix(e.clipboardData);
+    if (!matrix || !isMultiCellMatrix(matrix)) {
+      // Single-cell / plain text: let the textarea handle a normal paste.
+      return;
+    }
+
+    e.preventDefault();
+    const startRow = Math.floor(startIdx / tab.cols);
+    const startCol = startIdx % tab.cols;
+    const result = pasteMatrixAt(tab, startRow, startCol, matrix);
+    if (!result) return;
+
+    focusedCell = { tabId: tab.id, index: startIdx };
+    renderTabs();
+    renderGrid();
+    renderMasterLibrary();
+    scheduleSave();
+    const cell = el.cellGrid.querySelector('[data-idx="' + startIdx + '"]');
+    if (cell) cell.focus();
+    setStatus(
+      'Pasted ' + result.rows + '×' + result.cols + ' cells at R' + (startRow + 1) +
+      'C' + (startCol + 1) + ' (' + tab.cols + '×' + tab.rows + ' grid)',
+      'ok'
+    );
+  }
+
+  function onCellCopy(e) {
+    const ta = e.currentTarget;
+    if (!ta || ta.tagName !== 'TEXTAREA') return;
+    // If the user highlighted a substring, keep the browser's default copy.
+    if (typeof ta.selectionStart === 'number' && typeof ta.selectionEnd === 'number' &&
+        ta.selectionStart !== ta.selectionEnd) {
+      return;
+    }
+    const value = ta.value == null ? '' : String(ta.value);
+    if (!e.clipboardData) return;
+    e.preventDefault();
+    e.clipboardData.setData('text/plain', value);
+    setStatus('Copied cell', 'ok');
+  }
+
+  function onCellCut(e) {
+    const tab = activeTab();
+    const ta = e.currentTarget;
+    if (!tab || !ta || ta.tagName !== 'TEXTAREA') return;
+    if (typeof ta.selectionStart === 'number' && typeof ta.selectionEnd === 'number' &&
+        ta.selectionStart !== ta.selectionEnd) {
+      return;
+    }
+    const value = ta.value == null ? '' : String(ta.value);
+    if (!e.clipboardData) return;
+    e.preventDefault();
+    e.clipboardData.setData('text/plain', value);
+    const idx = parseInt(ta.dataset.idx, 10);
+    if (!Number.isNaN(idx) && idx >= 0 && idx < tab.cells.length) {
+      tab.cells[idx] = '';
+      ta.value = '';
+      if (isMasterTab(tab)) renderMasterLibrary();
+      scheduleSave();
+    }
+    setStatus('Cut cell', 'ok');
   }
 
   function addRow() {
