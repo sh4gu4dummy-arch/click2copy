@@ -29,6 +29,8 @@
   };
   let initialized = false;
   let focusedCell = null;
+  /** UI-only row filter: 'all' | 'nonempty' | 'included' */
+  let gridRowFilter = 'all';
   const pendingDocumentPaths = [];
   const EVENT_LOG_LIMIT = 40;
   const eventLog = [];
@@ -56,6 +58,9 @@
     btnDelete: document.getElementById('btn-delete-tab'),
     btnAddRow: document.getElementById('btn-add-row'),
     btnAddCol: document.getElementById('btn-add-col'),
+    btnFilterAll: document.getElementById('btn-filter-all'),
+    btnFilterNonempty: document.getElementById('btn-filter-nonempty'),
+    btnFilterIncluded: document.getElementById('btn-filter-included'),
     btnAppend: document.getElementById('btn-append'),
     btnCopy: document.getElementById('btn-copy'),
     btnClear: document.getElementById('btn-clear'),
@@ -704,6 +709,21 @@
         ? 'Remove row ' + (row + 1) + ' from combined prompt'
         : 'Add row ' + (row + 1) + ' to combined prompt';
       btn.setAttribute('aria-label', btn.title);
+      // Keep In Combined filter in sync when checkbox state changes.
+      const hidden = !rowMatchesFilter(tab, row);
+      const controls = btn.closest('.row-controls');
+      if (controls) controls.classList.toggle('is-row-filtered', hidden);
+      const wraps = el.cellGrid.querySelectorAll('.cell-wrap[data-row="' + row + '"]');
+      // Fallback: mark by dataset on wrap if present; else scan cells.
+      if (wraps.length) {
+        for (let w = 0; w < wraps.length; w++) wraps[w].classList.toggle('is-row-filtered', hidden);
+      } else {
+        const cells = el.cellGrid.querySelectorAll('.cell[data-row="' + row + '"]');
+        for (let c = 0; c < cells.length; c++) {
+          const wrap = cells[c].closest ? cells[c].closest('.cell-wrap') : null;
+          if (wrap) wrap.classList.toggle('is-row-filtered', hidden);
+        }
+      }
     }
 
     const cellButtons = el.cellGrid.querySelectorAll('.cell-append');
@@ -1766,6 +1786,35 @@
     el.cellGrid.style.gridTemplateColumns = '40px ' + contentColumnTemplate(tab, 120);
   }
 
+
+  function rowMatchesFilter(tab, rowIndex) {
+    if (gridRowFilter === 'all') return true;
+    if (gridRowFilter === 'nonempty') return !rowIsEmpty(tab, rowIndex);
+    if (gridRowFilter === 'included') return isRowIncluded(tab, rowIndex);
+    return true;
+  }
+
+  function syncRowFilterButtons() {
+    const buttons = [el.btnFilterAll, el.btnFilterNonempty, el.btnFilterIncluded];
+    for (let i = 0; i < buttons.length; i++) {
+      const btn = buttons[i];
+      if (!btn) continue;
+      const on = btn.dataset.filter === gridRowFilter;
+      btn.classList.toggle('is-active', on);
+      btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+    }
+  }
+
+  function setGridRowFilter(mode) {
+    if (mode !== 'all' && mode !== 'nonempty' && mode !== 'included') return;
+    if (gridRowFilter === mode) return;
+    gridRowFilter = mode;
+    syncRowFilterButtons();
+    renderGrid();
+    const labels = { all: 'Showing all rows', nonempty: 'Showing non-empty rows', included: 'Showing rows in Combined' };
+    setStatus(labels[mode] || 'Row filter updated', 'ok');
+  }
+
   function renderGrid() {
     const tab = activeTab();
     el.cellGrid.innerHTML = '';
@@ -1853,6 +1902,8 @@
         const idx = r * tab.cols + c;
         const wrap = document.createElement('div');
         wrap.className = 'cell-wrap';
+        wrap.dataset.row = String(r);
+        wrap.dataset.col = String(c);
         if (isCellConfirmed(tab.id, idx)) wrap.classList.add('cell-confirmed');
 
         const cellBtn = document.createElement('button');
@@ -1891,8 +1942,16 @@
         wrap.appendChild(ta);
         el.cellGrid.appendChild(wrap);
       }
+
+      const rowHidden = !rowMatchesFilter(tab, r);
+      rowControls.classList.toggle('is-row-filtered', rowHidden);
+      const rowWraps = el.cellGrid.querySelectorAll('.cell-wrap[data-row="' + r + '"]');
+      for (let w = 0; w < rowWraps.length; w++) {
+        rowWraps[w].classList.toggle('is-row-filtered', rowHidden);
+      }
     }
 
+    syncRowFilterButtons();
     applyAppendCheckedState();
   }
 
@@ -2701,6 +2760,9 @@
   });
   el.btnAddRow.addEventListener('click', addRow);
   el.btnAddCol.addEventListener('click', addColumn);
+  if (el.btnFilterAll) el.btnFilterAll.addEventListener('click', function () { setGridRowFilter('all'); });
+  if (el.btnFilterNonempty) el.btnFilterNonempty.addEventListener('click', function () { setGridRowFilter('nonempty'); });
+  if (el.btnFilterIncluded) el.btnFilterIncluded.addEventListener('click', function () { setGridRowFilter('included'); });
   el.btnAppend.addEventListener('click', appendAll);
   el.btnCopy.addEventListener('click', copyCombined);
   el.btnClear.addEventListener('click', clearCombined);

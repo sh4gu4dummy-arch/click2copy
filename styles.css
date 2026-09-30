@@ -388,6 +388,39 @@ body.resizing-sections * {
   color: var(--muted);
 }
 
+
+.row-filter-buttons {
+  display: inline-flex;
+  gap: 0;
+  margin-right: 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.row-filter-btn {
+  border-radius: 0 !important;
+  border: 0 !important;
+  border-right: 1px solid var(--border) !important;
+  margin: 0;
+  padding-left: 10px;
+  padding-right: 10px;
+}
+
+.row-filter-btn:last-child {
+  border-right: 0 !important;
+}
+
+.row-filter-btn.is-active {
+  background: var(--accent);
+  color: #fff;
+}
+
+.row-controls.is-row-filtered,
+.cell-wrap.is-row-filtered {
+  display: none;
+}
+
 .part-actions,
 .combined-actions {
   display: flex;

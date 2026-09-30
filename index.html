@@ -44,6 +44,11 @@
       <div class="section-label-row">
         <label class="section-label" id="part-label">Part content</label>
         <div class="part-actions">
+          <div class="row-filter-buttons" role="group" aria-label="Row filters">
+            <button type="button" class="btn btn-secondary row-filter-btn is-active" id="btn-filter-all" data-filter="all" title="Show all rows">All</button>
+            <button type="button" class="btn btn-secondary row-filter-btn" id="btn-filter-nonempty" data-filter="nonempty" title="Hide empty rows">Non-empty</button>
+            <button type="button" class="btn btn-secondary row-filter-btn" id="btn-filter-included" data-filter="included" title="Show only rows included in Combined">In Combined</button>
+          </div>
           <button type="button" class="btn btn-secondary" id="btn-add-row" title="Add a row of cells">+ Row</button>
           <button type="button" class="btn btn-secondary" id="btn-add-col" title="Add a column of cells">+ Column</button>
           <button type="button" class="btn btn-secondary" id="btn-rename-tab" title="Rename active tab">Rename</button>
