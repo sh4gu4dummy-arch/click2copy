@@ -615,6 +615,18 @@
     });
   }
 
+  /** True when this Master cell (or matching text from any linked cell) is in Combined. */
+  function isMasterCellRepresentedInCombined(master, masterIdx) {
+    if (!master || masterIdx < 0 || masterIdx >= master.cells.length) return false;
+    if (isCellConfirmed(master.id, masterIdx)) return true;
+    const text = (master.cells[masterIdx] || '').trim();
+    if (!text) return false;
+    return state.confirmedLinks.some(function (link) {
+      const expected = sourceCellText(link.tabId, link.cellIndex);
+      return expected !== null && expected === text;
+    });
+  }
+
   function linksForCellsInScope(tabId, cellIndices, scope) {
     const target = scope || currentPromptScope();
     const wanted = {};
@@ -756,6 +768,22 @@
       if (wrap) wrap.classList.toggle('cell-confirmed', confirmed);
     }
     applyAppendCheckedState();
+    // Keep Master insert picker greens in sync with Combined confirmed links.
+    if (!isMasterTab(tab)) syncMasterLibraryConfirmedState();
+  }
+
+  function syncMasterLibraryConfirmedState() {
+    const master = state.tabs.find(isMasterTab);
+    if (!master || !el.masterLibraryItems) return;
+    const buttons = el.masterLibraryItems.querySelectorAll('.master-library-cell:not(.master-library-cell-empty)');
+    for (let i = 0; i < buttons.length; i++) {
+      const button = buttons[i];
+      const row = parseInt(button.dataset.row, 10);
+      const col = parseInt(button.dataset.col, 10);
+      if (Number.isNaN(row) || Number.isNaN(col)) continue;
+      const masterIdx = row * master.cols + col;
+      button.classList.toggle('cell-confirmed', isMasterCellRepresentedInCombined(master, masterIdx));
+    }
   }
 
   function readCombinedDomTextAndSpans() {
@@ -1680,7 +1708,7 @@
           button.type = 'button';
           button.className = 'master-library-cell';
           const masterIdx = row * master.cols + col;
-          if (isCellConfirmed(master.id, masterIdx)) button.classList.add('cell-confirmed');
+          if (isMasterCellRepresentedInCombined(master, masterIdx)) button.classList.add('cell-confirmed');
           button.textContent = text;
           button.title = 'Add to the selected cell, or next empty cell, in ' + current.title;
           button.setAttribute('role', 'gridcell');
