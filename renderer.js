@@ -166,7 +166,25 @@
   }
 
   function isMasterTab(tab) {
-    return !!tab && state.tabs[0] === tab;
+    return !!tab && (tab.id === 'master' || state.tabs[0] === tab);
+  }
+
+  function partTabs() {
+    return state.tabs.filter(function (tab) { return !isMasterTab(tab); });
+  }
+
+  function defaultActiveTabId(tabs) {
+    const part = tabs.find(function (tab) {
+      return tab.id !== 'master' && tab.title.trim().toLowerCase() !== 'master';
+    });
+    return (part || tabs[0] || {}).id || null;
+  }
+
+  function nextPartTitle() {
+    let n = partTabs().length + 1;
+    const used = new Set(state.tabs.map(function (tab) { return tab.title.trim().toLowerCase(); }));
+    while (used.has(('part ' + n).toLowerCase())) n++;
+    return 'Part ' + n;
   }
 
   function snapshot() {
@@ -333,11 +351,11 @@
       tabs.unshift(master);
     }
     state.tabs = tabs;
-    state.activeTabId = data.activeTabId || tabs[0].id;
+    state.activeTabId = data.activeTabId || defaultActiveTabId(tabs);
     if (!state.tabs.some(function (t) {
       return t.id === state.activeTabId;
     })) {
-      state.activeTabId = state.tabs[0].id;
+      state.activeTabId = defaultActiveTabId(tabs) || tabs[0].id;
     }
     state.combinedPrompt = typeof data.combinedPrompt === 'string' ? data.combinedPrompt : '';
     state.globalCombined = typeof data.globalCombined === 'boolean' ? data.globalCombined : true;
@@ -479,7 +497,7 @@
   async function createDocument() {
     await flushCurrentDocument();
     const data = makeDefaultData();
-    data.activeTabId = data.tabs[0].id;
+    data.activeTabId = defaultActiveTabId(data.tabs) || data.tabs[0].id;
     const document = {
       id: uid(),
       title: 'Untitled',
@@ -654,7 +672,7 @@
     state.documents.splice(index, 1);
     if (state.documents.length === 0) {
       const data = makeDefaultData();
-      data.activeTabId = data.tabs[0].id;
+      data.activeTabId = defaultActiveTabId(data.tabs) || data.tabs[0].id;
       const replacement = { id: uid(), title: 'Untitled', filePath: null, data: data };
       state.documents.push(replacement);
       state.activeDocumentId = replacement.id;
@@ -743,7 +761,7 @@
     el.partLabel.textContent = tab
       ? tab.title + ' (' + tab.cols + '×' + tab.rows + ')'
       : 'Part content';
-    el.btnDelete.disabled = state.tabs.length <= 1 || isMasterTab(tab);
+    el.btnDelete.disabled = isMasterTab(tab) || partTabs().length <= 1;
     el.btnRename.disabled = isMasterTab(tab);
     el.masterLibrary.hidden = isMasterTab(tab);
   }
@@ -997,45 +1015,6 @@
       scheduleSave();
     }
 
-    function resizeCombinedSection(height) {
-      const available = el.combinedSection.parentElement.clientHeight;
-      const minimum = 150;
-      const maximum = Math.max(minimum, available - 230);
-      const next = Math.max(minimum, Math.min(maximum, height));
-      el.combinedSection.style.flex = '0 1 ' + next + 'px';
-      try {
-        localStorage.setItem('click2copy-combined-height', String(next));
-      } catch (err) {
-        console.warn('Could not save combined prompt height:', err);
-      }
-    }
-
-    function beginSectionResize(event) {
-      event.preventDefault();
-      const startY = event.clientY;
-      const startHeight = el.combinedSection.getBoundingClientRect().height;
-      document.body.classList.add('resizing-sections');
-
-      function onMove(moveEvent) {
-        resizeCombinedSection(startHeight - (moveEvent.clientY - startY));
-      }
-
-      function finish() {
-        document.removeEventListener('pointermove', onMove);
-        document.removeEventListener('pointerup', finish);
-        document.removeEventListener('pointercancel', finish);
-        document.body.classList.remove('resizing-sections');
-      }
-
-      document.addEventListener('pointermove', onMove);
-      document.addEventListener('pointerup', finish);
-      document.addEventListener('pointercancel', finish);
-    }
-
-    function resizeCombinedSectionByKeyboard(delta) {
-      resizeCombinedSection(el.combinedSection.getBoundingClientRect().height + delta);
-    }
-
     function finish() {
       document.removeEventListener('pointermove', onMove);
       document.removeEventListener('pointerup', finish);
@@ -1051,6 +1030,45 @@
     if (handle.setPointerCapture) {
       try { handle.setPointerCapture(e.pointerId); } catch (err) { /* no-op */ }
     }
+  }
+
+  function resizeCombinedSection(height) {
+    const available = el.combinedSection.parentElement.clientHeight;
+    const minimum = 150;
+    const maximum = Math.max(minimum, available - 230);
+    const next = Math.max(minimum, Math.min(maximum, height));
+    el.combinedSection.style.flex = '0 1 ' + next + 'px';
+    try {
+      localStorage.setItem('click2copy-combined-height', String(next));
+    } catch (err) {
+      console.warn('Could not save combined prompt height:', err);
+    }
+  }
+
+  function beginSectionResize(event) {
+    event.preventDefault();
+    const startY = event.clientY;
+    const startHeight = el.combinedSection.getBoundingClientRect().height;
+    document.body.classList.add('resizing-sections');
+
+    function onMove(moveEvent) {
+      resizeCombinedSection(startHeight - (moveEvent.clientY - startY));
+    }
+
+    function finish() {
+      document.removeEventListener('pointermove', onMove);
+      document.removeEventListener('pointerup', finish);
+      document.removeEventListener('pointercancel', finish);
+      document.body.classList.remove('resizing-sections');
+    }
+
+    document.addEventListener('pointermove', onMove);
+    document.addEventListener('pointerup', finish);
+    document.addEventListener('pointercancel', finish);
+  }
+
+  function resizeCombinedSectionByKeyboard(delta) {
+    resizeCombinedSection(el.combinedSection.getBoundingClientRect().height + delta);
   }
 
   function onCellInput(e) {
@@ -1097,8 +1115,12 @@
       done = true;
       const next = input.value.trim();
       if (commit && next && next !== tab.title) {
-        tab.title = next;
-        scheduleSave();
+        if (next.toLowerCase() === 'master') {
+          setStatus('Only the Master library tab may be named Master', 'err');
+        } else {
+          tab.title = next;
+          scheduleSave();
+        }
       }
       renderTabs();
     }
@@ -1118,8 +1140,7 @@
   }
 
   function addTab() {
-    const n = state.tabs.length + 1;
-    const tab = makeTab(uid(), 'Part ' + n);
+    const tab = makeTab(uid(), nextPartTitle());
     state.tabs.push(tab);
     state.activeTabId = tab.id;
     renderTabs();
@@ -1141,6 +1162,10 @@
     if (next == null) return;
     const trimmed = next.trim();
     if (!trimmed) return;
+    if (trimmed.toLowerCase() === 'master') {
+      setStatus('Only the Master library tab may be named Master', 'err');
+      return;
+    }
     tab.title = trimmed;
     renderTabs();
     scheduleSave();
@@ -1148,11 +1173,15 @@
 
   function deleteTab(id) {
     const tab = state.tabs.find(function (item) { return item.id === id; });
-    if (state.tabs.length <= 1 || isMasterTab(tab)) {
+    if (!tab) return;
+    if (isMasterTab(tab)) {
       setStatus('The Master part cannot be deleted', 'err');
       return;
     }
-    if (!tab) return;
+    if (partTabs().length <= 1) {
+      setStatus('Keep at least one part tab alongside Master', 'err');
+      return;
+    }
 
     if (tabHasContent(tab)) {
       const ok = window.confirm(
@@ -1461,7 +1490,7 @@
         }
       }
       const fallback = data && Array.isArray(data.tabs) && data.tabs.length > 0 ? data : makeDefaultData();
-      if (!fallback.activeTabId) fallback.activeTabId = fallback.tabs[0].id;
+      if (!fallback.activeTabId) fallback.activeTabId = defaultActiveTabId(fallback.tabs) || fallback.tabs[0].id;
       session = {
         documents: [{ id: 'document-default', title: 'Untitled', filePath: null, data: fallback }],
         activeDocumentId: 'document-default'
@@ -1473,7 +1502,7 @@
     });
     if (state.documents.length === 0) {
       const data = makeDefaultData();
-      data.activeTabId = data.tabs[0].id;
+      data.activeTabId = defaultActiveTabId(data.tabs) || data.tabs[0].id;
       state.documents = [{ id: uid(), title: 'Untitled', filePath: null, data: data }];
     }
     state.activeDocumentId = state.documents.some(function (item) {
