@@ -2051,7 +2051,12 @@
         sleepCb.addEventListener('change', function () {
           toggleCellSleep(idx, sleepCb.checked);
         });
+        const sleepZzz = document.createElement('span');
+        sleepZzz.className = 'cell-sleep-zzz';
+        sleepZzz.setAttribute('aria-hidden', 'true');
+        sleepZzz.textContent = 'Zzz';
         sleepLabel.appendChild(sleepCb);
+        sleepLabel.appendChild(sleepZzz);
         gutter.appendChild(sleepLabel);
 
         const cellBtn = document.createElement('button');
