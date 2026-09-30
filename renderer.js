@@ -24,6 +24,7 @@
       column: DEFAULT_SEPARATORS.column,
       row: DEFAULT_SEPARATORS.row
     },
+    confirmedLinks: [],
     saveTimer: null
   };
   let initialized = false;
@@ -95,7 +96,8 @@
       combinedPrompt: '',
       globalCombined: true,
       partPrompts: {},
-      separators: Object.assign({}, DEFAULT_SEPARATORS)
+      separators: Object.assign({}, DEFAULT_SEPARATORS),
+      confirmedLinks: []
     };
   }
 
@@ -202,7 +204,18 @@
       combinedPrompt: state.combinedPrompt,
       globalCombined: state.globalCombined,
       partPrompts: Object.assign({}, state.partPrompts),
-      separators: state.separators
+      separators: state.separators,
+      confirmedLinks: state.confirmedLinks.map(function (link) {
+        return {
+          id: link.id,
+          tabId: link.tabId,
+          cellIndex: link.cellIndex,
+          text: link.text,
+          start: link.start,
+          end: link.end,
+          scope: link.scope
+        };
+      })
     };
   }
 
@@ -310,6 +323,7 @@
       { label: 'Column separator', value: JSON.stringify(state.separators.column) },
       { label: 'Row separator', value: JSON.stringify(state.separators.row) },
       { label: 'Global combined', value: state.globalCombined ? 'yes' : 'no' },
+      { label: 'Confirmed links', value: String(state.confirmedLinks.length) },
       { label: 'Open documents', value: String(state.documents.length) },
       { label: 'Event log size', value: String(eventLog.length) }
     ];
@@ -398,22 +412,274 @@
     }) || !!(state.partPrompts[tab.id] || '').trim();
   }
 
-  function appendText(text, label) {
-    if (!text) {
-      setStatus('Nothing to append', 'err');
-      return;
+  function linkUid() {
+    return 'link-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 7);
+  }
+
+  function currentPromptScope() {
+    if (state.globalCombined) return 'global';
+    const tab = activeTab();
+    return tab ? tab.id : 'global';
+  }
+
+  function getPromptText(scope) {
+    const target = scope || currentPromptScope();
+    if (target === 'global') return state.combinedPrompt || '';
+    return state.partPrompts[target] || '';
+  }
+
+  function setPromptText(scope, text) {
+    if (scope === 'global') state.combinedPrompt = text;
+    else state.partPrompts[scope] = text;
+  }
+
+  function normalizeConfirmedLinks(raw) {
+    if (!Array.isArray(raw)) return [];
+    const links = [];
+    for (let i = 0; i < raw.length; i++) {
+      const item = raw[i];
+      if (!item || typeof item !== 'object') continue;
+      if (typeof item.id !== 'string' || !item.id) continue;
+      if (typeof item.tabId !== 'string' || !item.tabId) continue;
+      if (!Number.isInteger(item.cellIndex) || item.cellIndex < 0) continue;
+      if (typeof item.text !== 'string') continue;
+      if (!Number.isInteger(item.start) || item.start < 0) continue;
+      if (!Number.isInteger(item.end) || item.end < item.start) continue;
+      const scope = typeof item.scope === 'string' && item.scope ? item.scope : 'global';
+      links.push({
+        id: item.id,
+        tabId: item.tabId,
+        cellIndex: item.cellIndex,
+        text: item.text,
+        start: item.start,
+        end: item.end,
+        scope: scope
+      });
     }
-    if (state.globalCombined) {
-      state.combinedPrompt = appendWithPartSeparator(state.combinedPrompt, text);
-      el.combined.value = state.combinedPrompt;
-    } else {
-      const tab = activeTab();
-      if (!tab) return;
-      state.partPrompts[tab.id] = appendWithPartSeparator(state.partPrompts[tab.id] || '', text);
-      el.combined.value = state.partPrompts[tab.id];
+    return links;
+  }
+
+  function linksForScope(scope) {
+    const target = scope || currentPromptScope();
+    return state.confirmedLinks
+      .filter(function (link) { return link.scope === target; })
+      .sort(function (a, b) { return a.start - b.start; });
+  }
+
+  function sourceCellText(tabId, cellIndex) {
+    const tab = state.tabs.find(function (t) { return t.id === tabId; });
+    if (!tab || cellIndex < 0 || cellIndex >= tab.cells.length) return null;
+    return (tab.cells[cellIndex] || '').trim();
+  }
+
+  function linkMatchesSource(link, segmentText) {
+    const expected = sourceCellText(link.tabId, link.cellIndex);
+    if (expected === null) return false;
+    return String(segmentText) === expected;
+  }
+
+  function isCellConfirmed(tabId, cellIndex) {
+    return state.confirmedLinks.some(function (link) {
+      return link.tabId === tabId && link.cellIndex === cellIndex;
+    });
+  }
+
+  function dropConfirmedLink(linkId) {
+    state.confirmedLinks = state.confirmedLinks.filter(function (link) {
+      return link.id !== linkId;
+    });
+  }
+
+  function dropLinksForScope(scope) {
+    state.confirmedLinks = state.confirmedLinks.filter(function (link) {
+      return link.scope !== scope;
+    });
+  }
+
+  function dropLinksForTab(tabId) {
+    state.confirmedLinks = state.confirmedLinks.filter(function (link) {
+      return link.tabId !== tabId && link.scope !== tabId;
+    });
+  }
+
+  function remapConfirmedCellIndex(tabId, fromIndex, toIndex) {
+    state.confirmedLinks.forEach(function (link) {
+      if (link.tabId === tabId && link.cellIndex === fromIndex) {
+        link.cellIndex = toIndex;
+      }
+    });
+  }
+
+  function remapConfirmedAfterColumnAdd(tabId, oldCols, newCols) {
+    state.confirmedLinks.forEach(function (link) {
+      if (link.tabId !== tabId) return;
+      const row = Math.floor(link.cellIndex / oldCols);
+      const col = link.cellIndex % oldCols;
+      link.cellIndex = row * newCols + col;
+    });
+  }
+
+  function swapConfirmedRowIndices(tabId, cols, rowA, rowB) {
+    state.confirmedLinks.forEach(function (link) {
+      if (link.tabId !== tabId) return;
+      const row = Math.floor(link.cellIndex / cols);
+      const col = link.cellIndex % cols;
+      if (row === rowA) link.cellIndex = rowB * cols + col;
+      else if (row === rowB) link.cellIndex = rowA * cols + col;
+    });
+  }
+
+  function shiftConfirmedRowsDown(tabId, cols, fromRow, emptyRow) {
+    // moveRow-down shifts occupied rows [fromRow, emptyRow) down by one.
+    state.confirmedLinks.forEach(function (link) {
+      if (link.tabId !== tabId) return;
+      const row = Math.floor(link.cellIndex / cols);
+      const col = link.cellIndex % cols;
+      if (row >= fromRow && row < emptyRow) {
+        link.cellIndex = (row + 1) * cols + col;
+      }
+    });
+  }
+
+  function applyConfirmedCellHighlights() {
+    const tab = activeTab();
+    if (!tab) return;
+    const cells = el.cellGrid.querySelectorAll('.cell');
+    for (let i = 0; i < cells.length; i++) {
+      const node = cells[i];
+      const idx = parseInt(node.dataset.idx, 10);
+      node.classList.toggle('cell-confirmed', !Number.isNaN(idx) && isCellConfirmed(tab.id, idx));
     }
-    scheduleSave();
-    setStatus('Appended' + (label ? ' "' + label + '"' : ''), 'ok');
+  }
+
+  function readCombinedDomTextAndSpans() {
+    const pieces = [];
+    let text = '';
+
+    function appendTextNode(value) {
+      if (!value) return;
+      text += value;
+    }
+
+    function walk(node) {
+      if (!node) return;
+      if (node.nodeType === Node.TEXT_NODE) {
+        appendTextNode(node.nodeValue || '');
+        return;
+      }
+      if (node.nodeType !== Node.ELEMENT_NODE) return;
+
+      if (node.classList && node.classList.contains('confirmed-segment')) {
+        const seg = node.textContent || '';
+        const start = text.length;
+        appendTextNode(seg);
+        pieces.push({
+          node: node,
+          id: node.dataset.linkId || '',
+          text: seg,
+          start: start,
+          end: text.length
+        });
+        return;
+      }
+
+      if (node.tagName === 'BR') {
+        appendTextNode('\n');
+        return;
+      }
+
+      const isBlock = /^(DIV|P|LI|H[1-6]|PRE)$/i.test(node.tagName);
+      if (isBlock && text && !text.endsWith('\n')) appendTextNode('\n');
+      const children = node.childNodes;
+      for (let i = 0; i < children.length; i++) walk(children[i]);
+      if (isBlock && text && !text.endsWith('\n')) appendTextNode('\n');
+    }
+
+    const kids = el.combined.childNodes;
+    for (let i = 0; i < kids.length; i++) walk(kids[i]);
+    // Contenteditable often leaves a trailing newline from a final empty block.
+    if (text.endsWith('\n') && !getPromptText().endsWith('\n') && pieces.length === 0 && text.length === 1) {
+      // keep as-is for empty-ish editors
+    }
+    return { text: text, spans: pieces };
+  }
+
+  function unwrapConfirmedNode(node) {
+    if (!node || !node.parentNode) return;
+    const textNode = document.createTextNode(node.textContent || '');
+    node.parentNode.replaceChild(textNode, node);
+  }
+
+  function syncConfirmedFromCombinedDom() {
+    const scope = currentPromptScope();
+    const snapshot = readCombinedDomTextAndSpans();
+    const keepIds = {};
+    const seen = {};
+
+    snapshot.spans.forEach(function (span) {
+      const link = state.confirmedLinks.find(function (item) {
+        return item.id === span.id && item.scope === scope;
+      });
+      const stillGood = link && !seen[span.id] && linkMatchesSource(link, span.text);
+      if (!stillGood) {
+        unwrapConfirmedNode(span.node);
+        return;
+      }
+      seen[span.id] = true;
+      keepIds[span.id] = true;
+    });
+
+    state.confirmedLinks = state.confirmedLinks.filter(function (link) {
+      if (link.scope !== scope) return true;
+      return !!keepIds[link.id];
+    });
+
+    const after = readCombinedDomTextAndSpans();
+    setPromptText(scope, after.text);
+    after.spans.forEach(function (span) {
+      const link = state.confirmedLinks.find(function (item) {
+        return item.id === span.id && item.scope === scope;
+      });
+      if (!link) {
+        unwrapConfirmedNode(span.node);
+        return;
+      }
+      link.start = span.start;
+      link.end = span.end;
+      link.text = span.text;
+    });
+    el.combined.classList.toggle('is-empty', !after.text);
+    applyConfirmedCellHighlights();
+  }
+
+  function revalidateLinksForCell(tabId, cellIndex, opts) {
+    const expected = sourceCellText(tabId, cellIndex);
+    let removed = false;
+    state.confirmedLinks = state.confirmedLinks.filter(function (link) {
+      if (link.tabId !== tabId || link.cellIndex !== cellIndex) return true;
+      if (expected !== null && link.text === expected) return true;
+      removed = true;
+      return false;
+    });
+    if (removed && !(opts && opts.silent)) {
+      renderCombinedPrompt();
+      applyConfirmedCellHighlights();
+    }
+    return removed;
+  }
+
+  function revalidateAllConfirmedLinks() {
+    let removed = false;
+    state.confirmedLinks = state.confirmedLinks.filter(function (link) {
+      if (linkMatchesSource(link, link.text)) return true;
+      removed = true;
+      return false;
+    });
+    if (removed) {
+      renderCombinedPrompt();
+      applyConfirmedCellHighlights();
+    }
+    return removed;
   }
 
   function appendWithPartSeparator(current, text) {
@@ -424,20 +690,160 @@
     return current + text;
   }
 
+  /**
+   * Append plain and confirmed pieces into the active combined prompt.
+   * pieces: [{ type:'plain'|'confirmed', text, tabId?, cellIndex? }]
+   */
+  function appendPieces(pieces, label) {
+    if (!pieces || !pieces.length) {
+      setStatus('Nothing to append', 'err');
+      return;
+    }
+    const scope = currentPromptScope();
+    if (scope !== 'global' && !activeTab()) return;
+
+    let current = getPromptText(scope);
+    const partSeparator = separatorValue(state.separators.part);
+    const toAdd = [];
+    if (current && partSeparator && !current.endsWith(partSeparator)) {
+      toAdd.push({ type: 'plain', text: partSeparator });
+    }
+    for (let i = 0; i < pieces.length; i++) toAdd.push(pieces[i]);
+
+    let offset = current.length;
+    let added = '';
+    for (let i = 0; i < toAdd.length; i++) {
+      const piece = toAdd[i];
+      const text = piece.text || '';
+      if (!text && piece.type !== 'plain') continue;
+      if (piece.type === 'confirmed') {
+        const id = linkUid();
+        state.confirmedLinks.push({
+          id: id,
+          tabId: piece.tabId,
+          cellIndex: piece.cellIndex,
+          text: text,
+          start: offset,
+          end: offset + text.length,
+          scope: scope
+        });
+      }
+      added += text;
+      offset += text.length;
+    }
+
+    if (!added) {
+      setStatus('Nothing to append', 'err');
+      return;
+    }
+
+    setPromptText(scope, current + added);
+    renderCombinedPrompt();
+    applyConfirmedCellHighlights();
+    scheduleSave();
+    setStatus('Appended' + (label ? ' "' + label + '"' : ''), 'ok');
+  }
+
+  function appendText(text, label) {
+    if (!text) {
+      setStatus('Nothing to append', 'err');
+      return;
+    }
+    appendPieces([{ type: 'plain', text: text }], label);
+  }
+
+  function rowConfirmedPieces(tab, rowIndex) {
+    const pieces = [];
+    const colSep = separatorValue(state.separators.column);
+    for (let c = 0; c < tab.cols; c++) {
+      const idx = rowIndex * tab.cols + c;
+      const value = (tab.cells[idx] || '').trim();
+      if (!value) continue;
+      if (pieces.length) pieces.push({ type: 'plain', text: colSep });
+      pieces.push({
+        type: 'confirmed',
+        text: value,
+        tabId: tab.id,
+        cellIndex: idx
+      });
+    }
+    return pieces;
+  }
+
+  function partConfirmedPieces(tab) {
+    const pieces = [];
+    const rowSep = separatorValue(state.separators.row);
+    for (let r = 0; r < tab.rows; r++) {
+      const rowPieces = rowConfirmedPieces(tab, r);
+      if (!rowPieces.length) continue;
+      if (pieces.length) pieces.push({ type: 'plain', text: rowSep });
+      for (let i = 0; i < rowPieces.length; i++) pieces.push(rowPieces[i]);
+    }
+    return pieces;
+  }
+
   function renderCombinedPrompt() {
     const tab = activeTab();
-    el.combined.value = state.globalCombined
-      ? state.combinedPrompt
-      : (tab ? state.partPrompts[tab.id] || '' : '');
+    const scope = currentPromptScope();
+    const text = getPromptText(scope);
+    const links = linksForScope(scope).filter(function (link) {
+      if (link.start < 0 || link.end > text.length || link.start > link.end) return false;
+      return text.slice(link.start, link.end) === link.text;
+    });
+
+    // Drop stale ranges that no longer match the prompt string.
+    const validIds = {};
+    links.forEach(function (link) { validIds[link.id] = true; });
+    state.confirmedLinks = state.confirmedLinks.filter(function (link) {
+      if (link.scope !== scope) return true;
+      return !!validIds[link.id];
+    });
+
+    el.combined.replaceChildren();
+    let pos = 0;
+    links.forEach(function (link) {
+      if (link.start > pos) {
+        el.combined.appendChild(document.createTextNode(text.slice(pos, link.start)));
+      }
+      const span = document.createElement('span');
+      span.className = 'confirmed-segment';
+      span.dataset.linkId = link.id;
+      span.textContent = link.text;
+      span.title = 'Confirmed from linked cell — edit to unlink';
+      el.combined.appendChild(span);
+      pos = link.end;
+    });
+    if (pos < text.length) {
+      el.combined.appendChild(document.createTextNode(text.slice(pos)));
+    }
+
+    el.combined.classList.toggle('is-empty', !text);
     el.globalCombined.checked = state.globalCombined;
+    applyConfirmedCellHighlights();
   }
 
   function mergePartPrompts() {
     state.tabs.forEach(function (tab) {
       const prompt = state.partPrompts[tab.id];
-      if (prompt) state.combinedPrompt = appendWithPartSeparator(state.combinedPrompt, prompt);
+      if (!prompt) return;
+      const base = state.combinedPrompt || '';
+      const partSeparator = separatorValue(state.separators.part);
+      let prefix = '';
+      if (base && partSeparator && !base.endsWith(partSeparator)) prefix = partSeparator;
+      const insertAt = base.length + prefix.length;
+      state.combinedPrompt = base + prefix + prompt;
+      state.confirmedLinks.forEach(function (link) {
+        if (link.scope !== tab.id) return;
+        link.scope = 'global';
+        link.start += insertAt;
+        link.end += insertAt;
+      });
     });
     state.partPrompts = {};
+  }
+
+  function getCombinedPlainText() {
+    return getPromptText(currentPromptScope());
   }
 
   function applyData(data) {
@@ -476,6 +882,7 @@
       }, {})
       : {};
     state.separators = normalizeSeparators(data.separators);
+    state.confirmedLinks = normalizeConfirmedLinks(data.confirmedLinks);
     if (state.globalCombined) mergePartPrompts();
     el.partSeparator.value = state.separators.part;
     el.columnSeparator.value = state.separators.column;
@@ -923,6 +1330,8 @@
           const button = document.createElement('button');
           button.type = 'button';
           button.className = 'master-library-cell';
+          const masterIdx = row * master.cols + col;
+          if (isCellConfirmed(master.id, masterIdx)) button.classList.add('cell-confirmed');
           button.textContent = text;
           button.title = 'Add to the selected cell, or next empty cell, in ' + current.title;
           button.setAttribute('role', 'gridcell');
@@ -969,9 +1378,11 @@
 
     tab.cells[index] = text;
     focusedCell = { tabId: tab.id, index: index };
+    revalidateLinksForCell(tab.id, index, { silent: true });
     renderTabs();
     renderGrid();
     renderMasterLibrary();
+    renderCombinedPrompt();
     scheduleSave();
     const cell = el.cellGrid.querySelector('[data-idx="' + index + '"]');
     if (cell) cell.focus();
@@ -1119,6 +1530,7 @@
         const idx = r * tab.cols + c;
         const ta = document.createElement('textarea');
         ta.className = 'cell';
+        if (isCellConfirmed(tab.id, idx)) ta.classList.add('cell-confirmed');
         ta.rows = 2;
         ta.spellcheck = false;
         ta.placeholder = 'R' + (r + 1) + 'C' + (c + 1);
@@ -1257,6 +1669,8 @@
     const idx = parseInt(e.target.dataset.idx, 10);
     if (Number.isNaN(idx) || idx < 0 || idx >= tab.cells.length) return;
     tab.cells[idx] = e.target.value;
+    revalidateLinksForCell(tab.id, idx);
+    e.target.classList.toggle('cell-confirmed', isCellConfirmed(tab.id, idx));
     if (isMasterTab(tab)) renderMasterLibrary();
     scheduleSave();
   }
@@ -1376,6 +1790,7 @@
     });
     state.tabs.splice(idx, 1);
     delete state.partPrompts[id];
+    dropLinksForTab(id);
     if (state.activeTabId === id) {
       const next = state.tabs[Math.min(idx, state.tabs.length - 1)];
       state.activeTabId = next.id;
@@ -1383,6 +1798,7 @@
     renderTabs();
     renderGrid();
     renderMasterLibrary();
+    renderCombinedPrompt();
     scheduleSave();
     setStatus('Tab deleted');
   }
@@ -1481,6 +1897,7 @@
 
   function ensureTabSize(tab, rows, cols) {
     while (tab.cols < cols) {
+      const oldCols = tab.cols;
       const newCells = [];
       for (let r = 0; r < tab.rows; r++) {
         for (let c = 0; c < tab.cols; c++) {
@@ -1494,6 +1911,7 @@
       }
       tab.cols += 1;
       tab.cells = newCells;
+      remapConfirmedAfterColumnAdd(tab.id, oldCols, tab.cols);
     }
     while (tab.rows < rows) {
       for (let c = 0; c < tab.cols; c++) tab.cells.push('');
@@ -1510,8 +1928,11 @@
       for (let c = 0; c < pasteCols; c++) {
         const idx = (startRow + r) * tab.cols + (startCol + c);
         tab.cells[idx] = matrix[r][c] == null ? '' : String(matrix[r][c]);
+        revalidateLinksForCell(tab.id, idx, { silent: true });
       }
     }
+    renderCombinedPrompt();
+    applyConfirmedCellHighlights();
     return {
       rows: pasteRows,
       cols: pasteCols,
@@ -1583,6 +2004,8 @@
     if (!Number.isNaN(idx) && idx >= 0 && idx < tab.cells.length) {
       tab.cells[idx] = '';
       ta.value = '';
+      revalidateLinksForCell(tab.id, idx);
+      ta.classList.toggle('cell-confirmed', isCellConfirmed(tab.id, idx));
       if (isMasterTab(tab)) renderMasterLibrary();
       scheduleSave();
     }
@@ -1624,6 +2047,7 @@
         tab.cells[destinationIndex] = tab.cells[sourceIndex];
         tab.cells[sourceIndex] = cell;
       }
+      swapConfirmedRowIndices(tab.id, tab.cols, rowIndex, destination);
     } else {
       let emptyRow = rowIndex + 1;
       while (emptyRow < tab.rows && !rowIsEmpty(tab, emptyRow)) emptyRow++;
@@ -1644,6 +2068,7 @@
         tab.cells[(rowIndex + 1) * tab.cols + col] = movingCells[col];
         tab.cells[rowIndex * tab.cols + col] = '';
       }
+      shiftConfirmedRowsDown(tab.id, tab.cols, rowIndex, emptyRow);
     }
 
     renderTabs();
@@ -1655,6 +2080,7 @@
   function addColumn() {
     const tab = activeTab();
     if (!tab) return;
+    const oldCols = tab.cols;
     const newCells = [];
     for (let r = 0; r < tab.rows; r++) {
       for (let c = 0; c < tab.cols; c++) {
@@ -1668,6 +2094,7 @@
     }
     tab.cols += 1;
     tab.cells = newCells;
+    remapConfirmedAfterColumnAdd(tab.id, oldCols, tab.cols);
     renderTabs();
     renderGrid();
     renderMasterLibrary();
@@ -1679,19 +2106,29 @@
     const tab = activeTab();
     if (!tab) return;
     if (rowIndex < 0 || rowIndex >= tab.rows) return;
-    const text = rowText(tab, rowIndex);
-    appendText(text, tab.title + ' row ' + (rowIndex + 1));
+    const pieces = rowConfirmedPieces(tab, rowIndex);
+    appendPieces(pieces, tab.title + ' row ' + (rowIndex + 1));
   }
 
   function appendAll() {
     const tab = activeTab();
     if (!tab) return;
-    const text = partText(tab);
-    appendText(text, tab.title);
+    const pieces = partConfirmedPieces(tab);
+    appendPieces(pieces, tab.title);
+  }
+
+  function selectCombinedContents() {
+    el.combined.focus();
+    const range = document.createRange();
+    range.selectNodeContents(el.combined);
+    const selection = window.getSelection();
+    if (!selection) return;
+    selection.removeAllRanges();
+    selection.addRange(range);
   }
 
   async function copyCombined() {
-    const text = el.combined.value;
+    const text = getCombinedPlainText();
     if (!text) {
       setStatus('Combined prompt is empty', 'err');
       return;
@@ -1700,8 +2137,7 @@
       await navigator.clipboard.writeText(text);
       setStatus('Copied to clipboard', 'ok');
     } catch (err) {
-      el.combined.focus();
-      el.combined.select();
+      selectCombinedContents();
       try {
         document.execCommand('copy');
         setStatus('Copied to clipboard', 'ok');
@@ -1712,15 +2148,15 @@
   }
 
   function clearCombined() {
-    const prompt = state.globalCombined
-      ? state.combinedPrompt
-      : (state.partPrompts[state.activeTabId] || '');
+    const scope = currentPromptScope();
+    const prompt = getPromptText(scope);
     if (prompt && !window.confirm('Clear the combined prompt?')) {
       return;
     }
-    if (state.globalCombined) state.combinedPrompt = '';
-    else state.partPrompts[state.activeTabId] = '';
+    setPromptText(scope, '');
+    dropLinksForScope(scope);
     renderCombinedPrompt();
+    applyConfirmedCellHighlights();
     scheduleSave();
     setStatus('Cleared');
   }
@@ -1824,10 +2260,50 @@
   }
 
   el.combined.addEventListener('input', function () {
-    const tab = activeTab();
-    if (state.globalCombined) state.combinedPrompt = el.combined.value;
-    else if (tab) state.partPrompts[tab.id] = el.combined.value;
+    syncConfirmedFromCombinedDom();
     scheduleSave();
+  });
+
+  el.combined.addEventListener('keydown', function (event) {
+    if (event.key !== 'Enter' || event.isComposing) return;
+    event.preventDefault();
+    if (document.queryCommandSupported && document.queryCommandSupported('insertText')) {
+      document.execCommand('insertText', false, '\n');
+    } else {
+      const selection = window.getSelection();
+      if (!selection || !selection.rangeCount) return;
+      const range = selection.getRangeAt(0);
+      range.deleteContents();
+      const node = document.createTextNode('\n');
+      range.insertNode(node);
+      range.setStartAfter(node);
+      range.collapse(true);
+      selection.removeAllRanges();
+      selection.addRange(range);
+      syncConfirmedFromCombinedDom();
+      scheduleSave();
+    }
+  });
+
+  el.combined.addEventListener('paste', function (event) {
+    event.preventDefault();
+    const pasted = (event.clipboardData || window.clipboardData).getData('text/plain');
+    if (document.queryCommandSupported && document.queryCommandSupported('insertText')) {
+      document.execCommand('insertText', false, pasted || '');
+    } else {
+      const selection = window.getSelection();
+      if (!selection || !selection.rangeCount) return;
+      const range = selection.getRangeAt(0);
+      range.deleteContents();
+      const node = document.createTextNode(pasted || '');
+      range.insertNode(node);
+      range.setStartAfter(node);
+      range.collapse(true);
+      selection.removeAllRanges();
+      selection.addRange(range);
+      syncConfirmedFromCombinedDom();
+      scheduleSave();
+    }
   });
 
   el.globalCombined.addEventListener('change', function () {

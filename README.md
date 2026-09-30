@@ -9,8 +9,9 @@ A simple Electron desktop app for composing prompts from reusable parts.
 - **+ Row / + Column** — grow the grid; new cells start empty
 - **Sheet paste** — paste TSV / HTML tables from Google Sheets or Excel into the focused cell; values spread across the grid and the grid grows if needed
 - **Cell copy/cut** — with no text selected in a cell, Ctrl/Cmd+C or X copies or cuts the whole cell
-- **Row append** — click the checkbox-like control to the left of any row to append that row’s non-empty cells (joined with ` | `) as a new line in the combined prompt; every click appends again
+- **Row append** — click the checkbox-like control to the left of any row to append that row’s non-empty cells (joined with the column separator) as a new line in the combined prompt; every click appends again
 - **Append all non-empty** — appends every non-empty row of the active part (row-major)
+- **Confirmed append highlighting** — appended cell text is marked green in both the source cell and the Combined prompt (editable “premade” segments). Editing a Combined segment so it no longer matches its linked cell clears green on both sides
 - **Combined prompt** — editable pane with **Copy** to clipboard and **Clear**
 - **Persistence** — tabs, cell grids, and combined prompt are saved to a local JSON file under Electron `userData` and restored on restart
 - **Export / Import** — backup and restore all tabs + combined prompt as JSON (survives app updates; userData is outside the repo). Legacy backups with a single `content` string per tab are migrated into cell `[0]` of a 3×8 grid
@@ -60,6 +61,8 @@ Each tab is stored as:
 ```
 
 `cells` is a flat row-major array of length `cols * rows`.
+
+Confirmed append links (ranges into the combined prompt tied to source tab/cell) are stored as `confirmedLinks` on the document.
 
 ## Usage tips
 

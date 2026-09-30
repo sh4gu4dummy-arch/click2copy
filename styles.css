@@ -9,6 +9,10 @@
   --accent-hover: #2563eb;
   --danger: #ef4444;
   --danger-hover: #dc2626;
+  --confirmed: #22c55e;
+  --confirmed-bg: rgba(34, 197, 94, 0.18);
+  --confirmed-bg-strong: rgba(34, 197, 94, 0.28);
+  --confirmed-border: rgba(34, 197, 94, 0.45);
   --radius: 8px;
   --font: "Segoe UI", system-ui, -apple-system, sans-serif;
   --cell-min-h: 64px;
@@ -494,6 +498,16 @@ body.resizing-columns * {
   opacity: 0.55;
 }
 
+.cell.cell-confirmed {
+  background: var(--confirmed-bg);
+  box-shadow: inset 0 0 0 1px var(--confirmed-border);
+}
+
+.cell.cell-confirmed:focus {
+  background: var(--confirmed-bg-strong);
+  border-color: var(--confirmed);
+}
+
 .textarea {
   flex: 1;
   min-height: 100px;
@@ -517,6 +531,35 @@ body.resizing-columns * {
 .textarea-combined {
   flex: 1 1 0;
   min-height: 48px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  overflow-y: auto;
+}
+
+.textarea-combined.is-empty:before {
+  content: attr(data-placeholder);
+  color: var(--muted);
+  opacity: 0.7;
+  pointer-events: none;
+}
+
+.confirmed-segment {
+  background: var(--confirmed-bg-strong);
+  border: 1px solid var(--confirmed-border);
+  border-radius: 4px;
+  box-shadow: inset 0 0 0 1px rgba(34, 197, 94, 0.12);
+  color: var(--text);
+  padding: 0 3px;
+  margin: 0 1px;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
+
+.master-library-cell.cell-confirmed {
+  background: var(--confirmed-bg);
+  border-color: var(--confirmed-border);
+  box-shadow: inset 0 0 0 1px var(--confirmed-border);
 }
 
 .actions-row {
