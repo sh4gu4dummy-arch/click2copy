@@ -29,6 +29,9 @@
   let initialized = false;
   let focusedCell = null;
   const pendingDocumentPaths = [];
+  const EVENT_LOG_LIMIT = 40;
+  const eventLog = [];
+  let statusPanelOpen = false;
 
   const el = {
     documentBar: document.getElementById('document-bar'),
@@ -43,6 +46,10 @@
     combined: document.getElementById('combined-prompt'),
     globalCombined: document.getElementById('global-combined'),
     status: document.getElementById('status'),
+    statusPanel: document.getElementById('status-panel'),
+    statusSnapshot: document.getElementById('status-snapshot'),
+    statusEvents: document.getElementById('status-events'),
+    statusPanelClose: document.getElementById('status-panel-close'),
     btnAdd: document.getElementById('btn-add-tab'),
     btnRename: document.getElementById('btn-rename-tab'),
     btnDelete: document.getElementById('btn-delete-tab'),
@@ -252,14 +259,115 @@
     }
   }
 
+  function formatClock(date) {
+    const d = date instanceof Date ? date : new Date(date);
+    const hh = String(d.getHours()).padStart(2, '0');
+    const mm = String(d.getMinutes()).padStart(2, '0');
+    const ss = String(d.getSeconds()).padStart(2, '0');
+    return hh + ':' + mm + ':' + ss;
+  }
+
+  function escapeHtml(value) {
+    return String(value == null ? '' : value)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  function describeSelectedCell() {
+    const tab = activeTab();
+    if (!tab) return 'none';
+    if (!focusedCell || focusedCell.tabId !== tab.id ||
+        !Number.isInteger(focusedCell.index) ||
+        focusedCell.index < 0 || focusedCell.index >= tab.cells.length) {
+      return 'none (tab ' + tab.title + ')';
+    }
+    const row = Math.floor(focusedCell.index / tab.cols) + 1;
+    const col = (focusedCell.index % tab.cols) + 1;
+    const preview = (tab.cells[focusedCell.index] || '').trim().replace(/\s+/g, ' ');
+    const short = preview.length > 40 ? preview.slice(0, 37) + '…' : preview;
+    return 'R' + row + 'C' + col + ' idx ' + focusedCell.index +
+      (short ? ' — "' + short + '"' : ' — empty');
+  }
+
+  function buildUnderHoodSnapshot() {
+    const document = activeDocument();
+    const tab = activeTab();
+    const docLabel = document
+      ? (document.title || 'Untitled') + (document.filePath ? ' (' + document.filePath + ')' : ' (unsaved)')
+      : 'none';
+    const tabLabel = tab
+      ? tab.title + ' [' + tab.id + ']' + (isMasterTab(tab) ? ' (Master)' : '')
+      : 'none';
+    const gridLabel = tab ? (tab.cols + '×' + tab.rows + ' (' + tab.cells.length + ' cells)') : 'n/a';
+    return [
+      { label: 'Active document', value: docLabel },
+      { label: 'Active tab', value: tabLabel },
+      { label: 'Selected cell', value: describeSelectedCell() },
+      { label: 'Grid size', value: gridLabel },
+      { label: 'Part separator', value: JSON.stringify(state.separators.part) },
+      { label: 'Column separator', value: JSON.stringify(state.separators.column) },
+      { label: 'Row separator', value: JSON.stringify(state.separators.row) },
+      { label: 'Global combined', value: state.globalCombined ? 'yes' : 'no' },
+      { label: 'Open documents', value: String(state.documents.length) },
+      { label: 'Event log size', value: String(eventLog.length) }
+    ];
+  }
+
+  function renderStatusPanel() {
+    if (!el.statusPanel || !el.statusSnapshot || !el.statusEvents) return;
+    const rows = buildUnderHoodSnapshot();
+    el.statusSnapshot.innerHTML = rows.map(function (row) {
+      return '<dt>' + escapeHtml(row.label) + '</dt><dd>' + escapeHtml(row.value) + '</dd>';
+    }).join('');
+
+    if (eventLog.length === 0) {
+      el.statusEvents.innerHTML = '<li class="event-empty">No events yet — actions will appear here.</li>';
+      return;
+    }
+    const newestFirst = eventLog.slice().reverse();
+    el.statusEvents.innerHTML = newestFirst.map(function (entry) {
+      const kindClass = entry.kind ? ' class="' + escapeHtml(entry.kind) + '"' : '';
+      return '<li' + kindClass + '>' +
+        '<span class="event-time">' + escapeHtml(formatClock(entry.at)) + '</span>' +
+        '<span class="event-msg">' + escapeHtml(entry.msg) + '</span>' +
+        '</li>';
+    }).join('');
+  }
+
+  function setStatusPanelOpen(open) {
+    statusPanelOpen = !!open;
+    if (!el.statusPanel || !el.status) return;
+    el.statusPanel.hidden = !statusPanelOpen;
+    el.status.setAttribute('aria-expanded', statusPanelOpen ? 'true' : 'false');
+    if (statusPanelOpen) renderStatusPanel();
+  }
+
+  function pushEvent(msg, kind) {
+    if (!msg) return;
+    eventLog.push({
+      at: Date.now(),
+      msg: String(msg),
+      kind: kind || ''
+    });
+    if (eventLog.length > EVENT_LOG_LIMIT) {
+      eventLog.splice(0, eventLog.length - EVENT_LOG_LIMIT);
+    }
+    if (statusPanelOpen) renderStatusPanel();
+  }
+
   function setStatus(msg, kind) {
     el.status.textContent = msg || '';
     el.status.className = 'status' + (kind ? ' ' + kind : '');
     if (msg) {
+      pushEvent(msg, kind);
       clearTimeout(setStatus._t);
       setStatus._t = setTimeout(function () {
-        el.status.textContent = '';
-        el.status.className = 'status';
+        if (!statusPanelOpen) {
+          el.status.textContent = '';
+          el.status.className = 'status';
+        }
       }, 2200);
     }
   }
@@ -1606,6 +1714,27 @@
       await openDocumentPath(filePath);
     }
   }
+
+  if (el.status) {
+    el.status.addEventListener('click', function () {
+      setStatusPanelOpen(!statusPanelOpen);
+    });
+  }
+  if (el.statusPanelClose) {
+    el.statusPanelClose.addEventListener('click', function (event) {
+      event.stopPropagation();
+      setStatusPanelOpen(false);
+    });
+  }
+  document.addEventListener('keydown', function (event) {
+    if (event.key === 'Escape' && statusPanelOpen) setStatusPanelOpen(false);
+  });
+  document.addEventListener('pointerdown', function (event) {
+    if (!statusPanelOpen || !el.statusPanel) return;
+    const target = event.target;
+    if (el.statusPanel.contains(target) || el.status.contains(target)) return;
+    setStatusPanelOpen(false);
+  });
 
   init();
 })();

@@ -80,7 +80,18 @@
         </div>
       </div>
       <textarea id="combined-prompt" class="textarea textarea-combined" placeholder="Combined prompt appears here…" spellcheck="false"></textarea>
-      <p class="status" id="status" aria-live="polite"></p>
+      <div class="status-row">
+        <button type="button" class="status" id="status" aria-live="polite" aria-expanded="false" aria-controls="status-panel" title="Click for event log and under-the-hood details"></button>
+        <div class="status-panel" id="status-panel" hidden>
+          <div class="status-panel-header">
+            <strong>Under the hood</strong>
+            <button type="button" class="btn btn-secondary status-panel-close" id="status-panel-close" title="Close details">Close</button>
+          </div>
+          <div class="status-snapshot" id="status-snapshot"></div>
+          <div class="status-events-label">Recent events</div>
+          <ol class="status-events" id="status-events" reversed></ol>
+        </div>
+      </div>
     </section>
   </div>
 
