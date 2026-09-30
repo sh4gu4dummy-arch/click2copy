@@ -80,13 +80,35 @@
     return Array(cols * rows).fill('');
   }
 
+  function emptySleptCells(cols, rows) {
+    return Array(cols * rows).fill(false);
+  }
+
+  /** Boolean array parallel to cells; missing/short arrays pad with false. */
+  function normalizeSleptCells(slept, length) {
+    const needed = length > 0 ? length : 0;
+    let out;
+    if (Array.isArray(slept)) {
+      out = slept.map(function (v) { return !!v; });
+    } else {
+      out = Array(needed).fill(false);
+    }
+    if (out.length < needed) {
+      out = out.concat(Array(needed - out.length).fill(false));
+    } else if (out.length > needed) {
+      out = out.slice(0, needed);
+    }
+    return out;
+  }
+
   function makeTab(id, title) {
     return {
       id: id,
       title: title,
       cols: DEFAULT_COLS,
       rows: DEFAULT_ROWS,
-      cells: emptyCells(DEFAULT_COLS, DEFAULT_ROWS)
+      cells: emptyCells(DEFAULT_COLS, DEFAULT_ROWS),
+      sleptCells: emptySleptCells(DEFAULT_COLS, DEFAULT_ROWS)
     };
   }
 
@@ -158,7 +180,14 @@
     if (typeof t.content === 'string' && !Array.isArray(t.cells)) {
       const cells = emptyCells(DEFAULT_COLS, DEFAULT_ROWS);
       cells[0] = t.content;
-      return { id: t.id, title: t.title, cols: DEFAULT_COLS, rows: DEFAULT_ROWS, cells: cells };
+      return {
+        id: t.id,
+        title: t.title,
+        cols: DEFAULT_COLS,
+        rows: DEFAULT_ROWS,
+        cells: cells,
+        sleptCells: emptySleptCells(DEFAULT_COLS, DEFAULT_ROWS)
+      };
     }
 
     let cols = Number.isInteger(t.cols) && t.cols > 0 ? t.cols : DEFAULT_COLS;
@@ -181,7 +210,8 @@
     }
 
     const columnWidths = normalizeColumnWidths(t.columnWidths, cols);
-    const normalized = { id: t.id, title: t.title, cols: cols, rows: rows, cells: cells };
+    const sleptCells = normalizeSleptCells(t.sleptCells, needed);
+    const normalized = { id: t.id, title: t.title, cols: cols, rows: rows, cells: cells, sleptCells: sleptCells };
     if (columnWidths) normalized.columnWidths = columnWidths;
     return normalized;
   }
@@ -702,6 +732,73 @@
         link.cellIndex = (row + 1) * cols + col;
       }
     });
+  }
+
+  function ensureSleptCells(tab) {
+    if (!tab) return;
+    tab.sleptCells = normalizeSleptCells(tab.sleptCells, tab.cols * tab.rows);
+  }
+
+  function isCellSlept(tab, cellIndex) {
+    if (!tab || cellIndex < 0) return false;
+    ensureSleptCells(tab);
+    return !!tab.sleptCells[cellIndex];
+  }
+
+  function setCellSlept(tab, cellIndex, slept) {
+    if (!tab || cellIndex < 0 || cellIndex >= tab.cells.length) return;
+    ensureSleptCells(tab);
+    tab.sleptCells[cellIndex] = !!slept;
+  }
+
+  function remapSleptAfterColumnAdd(tab, oldCols, newCols) {
+    const oldSlept = Array.isArray(tab.sleptCells) ? tab.sleptCells : [];
+    const next = emptySleptCells(newCols, tab.rows);
+    for (let r = 0; r < tab.rows; r++) {
+      for (let c = 0; c < oldCols; c++) {
+        const oldIdx = r * oldCols + c;
+        next[r * newCols + c] = !!(oldIdx < oldSlept.length && oldSlept[oldIdx]);
+      }
+    }
+    tab.sleptCells = next;
+  }
+
+  function swapSleptRowIndices(tab, rowA, rowB) {
+    ensureSleptCells(tab);
+    for (let col = 0; col < tab.cols; col++) {
+      const a = rowA * tab.cols + col;
+      const b = rowB * tab.cols + col;
+      const tmp = tab.sleptCells[a];
+      tab.sleptCells[a] = tab.sleptCells[b];
+      tab.sleptCells[b] = tmp;
+    }
+  }
+
+  function shiftSleptRowsDown(tab, fromRow, emptyRow) {
+    ensureSleptCells(tab);
+    for (let row = emptyRow; row > fromRow + 1; row--) {
+      for (let col = 0; col < tab.cols; col++) {
+        tab.sleptCells[row * tab.cols + col] = tab.sleptCells[(row - 1) * tab.cols + col];
+      }
+    }
+    const moving = tab.sleptCells.slice(fromRow * tab.cols, (fromRow + 1) * tab.cols);
+    for (let col = 0; col < tab.cols; col++) {
+      tab.sleptCells[(fromRow + 1) * tab.cols + col] = moving[col];
+      tab.sleptCells[fromRow * tab.cols + col] = false;
+    }
+  }
+
+  function toggleCellSleep(cellIndex, slept) {
+    const tab = activeTab();
+    if (!tab || cellIndex < 0 || cellIndex >= tab.cells.length) return;
+    pushHistory();
+    setCellSlept(tab, cellIndex, slept);
+    const wrap = el.cellGrid.querySelector('.cell-wrap[data-row="' + Math.floor(cellIndex / tab.cols) + '"][data-col="' + (cellIndex % tab.cols) + '"]');
+    if (wrap) wrap.classList.toggle('is-slept', !!slept);
+    scheduleSave();
+    const row = Math.floor(cellIndex / tab.cols) + 1;
+    const col = (cellIndex % tab.cols) + 1;
+    setStatus(slept ? ('Slept R' + row + 'C' + col) : ('Woke R' + row + 'C' + col));
   }
 
   function applyAppendCheckedState() {
@@ -1933,6 +2030,27 @@
         wrap.dataset.row = String(r);
         wrap.dataset.col = String(c);
         if (isCellConfirmed(tab.id, idx)) wrap.classList.add('cell-confirmed');
+        if (isCellSlept(tab, idx)) wrap.classList.add('is-slept');
+
+        const gutter = document.createElement('div');
+        gutter.className = 'cell-gutter';
+
+        const sleepLabel = document.createElement('label');
+        sleepLabel.className = 'cell-sleep';
+        sleepLabel.title = 'Sleep cell — exclude from Append all active';
+        const sleepCb = document.createElement('input');
+        sleepCb.type = 'checkbox';
+        sleepCb.className = 'cell-sleep-input';
+        sleepCb.checked = isCellSlept(tab, idx);
+        sleepCb.setAttribute('aria-label', 'Sleep row ' + (r + 1) + ' column ' + (c + 1));
+        sleepCb.addEventListener('click', function (ev) {
+          ev.stopPropagation();
+        });
+        sleepCb.addEventListener('change', function () {
+          toggleCellSleep(idx, sleepCb.checked);
+        });
+        sleepLabel.appendChild(sleepCb);
+        gutter.appendChild(sleepLabel);
 
         const cellBtn = document.createElement('button');
         cellBtn.type = 'button';
@@ -1947,7 +2065,8 @@
           ev.stopPropagation();
           toggleCellConfirmed(idx);
         });
-        wrap.appendChild(cellBtn);
+        gutter.appendChild(cellBtn);
+        wrap.appendChild(gutter);
 
         const ta = document.createElement('textarea');
         ta.className = 'cell';
@@ -2371,6 +2490,7 @@
   }
 
   function ensureTabSize(tab, rows, cols) {
+    ensureSleptCells(tab);
     while (tab.cols < cols) {
       const oldCols = tab.cols;
       const newCells = [];
@@ -2386,10 +2506,14 @@
       }
       tab.cols += 1;
       tab.cells = newCells;
+      remapSleptAfterColumnAdd(tab, oldCols, tab.cols);
       remapConfirmedAfterColumnAdd(tab.id, oldCols, tab.cols);
     }
     while (tab.rows < rows) {
-      for (let c = 0; c < tab.cols; c++) tab.cells.push('');
+      for (let c = 0; c < tab.cols; c++) {
+        tab.cells.push('');
+        tab.sleptCells.push(false);
+      }
       tab.rows += 1;
     }
   }
@@ -2497,8 +2621,10 @@
     const tab = activeTab();
     if (!tab) return;
     pushHistory();
+    ensureSleptCells(tab);
     for (let c = 0; c < tab.cols; c++) {
       tab.cells.push('');
+      tab.sleptCells.push(false);
     }
     tab.rows += 1;
     renderTabs();
@@ -2522,6 +2648,7 @@
     if (rowIndex < 0 || rowIndex >= tab.rows || destination < 0) return;
 
     pushHistory();
+    ensureSleptCells(tab);
     if (direction < 0) {
       for (let col = 0; col < tab.cols; col++) {
         const sourceIndex = rowIndex * tab.cols + col;
@@ -2530,6 +2657,7 @@
         tab.cells[destinationIndex] = tab.cells[sourceIndex];
         tab.cells[sourceIndex] = cell;
       }
+      swapSleptRowIndices(tab, rowIndex, destination);
       swapConfirmedRowIndices(tab.id, tab.cols, rowIndex, destination);
     } else {
       let emptyRow = rowIndex + 1;
@@ -2537,6 +2665,7 @@
 
       if (emptyRow === tab.rows) {
         tab.cells.push.apply(tab.cells, emptyCells(tab.cols, 1));
+        tab.sleptCells.push.apply(tab.sleptCells, emptySleptCells(tab.cols, 1));
         tab.rows++;
         emptyRow = tab.rows - 1;
       }
@@ -2551,6 +2680,7 @@
         tab.cells[(rowIndex + 1) * tab.cols + col] = movingCells[col];
         tab.cells[rowIndex * tab.cols + col] = '';
       }
+      shiftSleptRowsDown(tab, rowIndex, emptyRow);
       shiftConfirmedRowsDown(tab.id, tab.cols, rowIndex, emptyRow);
     }
 
@@ -2564,6 +2694,7 @@
     const tab = activeTab();
     if (!tab) return;
     pushHistory();
+    ensureSleptCells(tab);
     const oldCols = tab.cols;
     const newCells = [];
     for (let r = 0; r < tab.rows; r++) {
@@ -2578,6 +2709,7 @@
     }
     tab.cols += 1;
     tab.cells = newCells;
+    remapSleptAfterColumnAdd(tab, oldCols, tab.cols);
     remapConfirmedAfterColumnAdd(tab.id, oldCols, tab.cols);
     renderTabs();
     renderGrid();
@@ -2600,6 +2732,7 @@
       const idx = rowIndex * tab.cols + c;
       const value = (tab.cells[idx] || '').trim();
       if (!value) continue;
+      if (isCellSlept(tab, idx)) continue;
       if (isCellConfirmedInScope(tab.id, idx, scope)) continue;
       if (pieces.length) pieces.push({ type: 'plain', text: colSep });
       pieces.push({

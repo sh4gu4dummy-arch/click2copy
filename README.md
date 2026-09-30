@@ -13,7 +13,8 @@ A simple Electron desktop app for composing prompts from reusable parts.
 - **Master insert greens** — Master library cells turn green when that Master text is currently represented in Combined (direct Master link or matching confirmed part cell); green clears when unlinked
 - **Row filters** — All / Non-empty / In Combined buttons hide rows that do not match (data stays intact; empty and Combined inclusion filters)
 - **Row / cell Combined toggles** — checkbox-like controls on each row and each cell add that content to the Combined prompt and stay checked while included; uncheck removes the linked confirmed segment(s) and clears green. Row toggle covers the whole row; cell toggle is per-cell. Both stay in sync with confirmed links
-- **Append all non-empty** — includes every not-yet-included non-empty cell of the active part (row-major)
+- **Sleep cell** — checkbox above each cell’s Combined toggle marks that cell slept; slept cells stay visible but are skipped by Append all active (state persists with the document)
+- **Append all active** — includes every not-yet-included non-empty cell of the active part that is not slept (row-major)
 - **Undo / Redo** — Ctrl/Cmd+Z undoes document edits (cells, Combined prompt, confirmed links, paste, append, Master insert, clear, etc.); Ctrl/Cmd+Shift+Z or Ctrl+Y redoes. Typing in a cell or Combined is coalesced into one undo step
 - **Confirmed append highlighting** — appended cell text is marked green in both the source cell and the Combined prompt (editable “premade” segments). Editing a Combined segment so it no longer matches its linked cell clears green on both sides
 - **Combined prompt** — editable pane with **Copy** to clipboard and **Clear**
@@ -60,11 +61,12 @@ Each tab is stored as:
   "title": "Part 1",
   "cols": 3,
   "rows": 8,
-  "cells": ["…", "…"]
+  "cells": ["…", "…"],
+  "sleptCells": [false, false]
 }
 ```
 
-`cells` is a flat row-major array of length `cols * rows`.
+`cells` is a flat row-major array of length `cols * rows`. `sleptCells` is a parallel boolean array (same length); slept cells are excluded from Append all active.
 
 Confirmed append links (ranges into the combined prompt tied to source tab/cell) are stored as `confirmedLinks` on the document.
 
@@ -72,8 +74,8 @@ Confirmed append links (ranges into the combined prompt tied to source tab/cell)
 
 1. Edit cells in the active tab’s grid.
 2. Use **All** / **Non-empty** / **In Combined** to filter which rows are visible.
-3. Check the box left of a row (or the small box on a cell) to include it in the Combined prompt; uncheck to remove it.
-4. Or click **Append all non-empty** to include every missing non-empty cell.
+3. Check the box left of a row (or the small Combined box on a cell) to include it in the Combined prompt; uncheck to remove it. Use the sleep checkbox above a cell’s Combined toggle to exclude that cell from Append all active.
+4. Or click **Append all active** to include every missing non-empty, non-slept cell.
 5. Use **+ Row** / **+ Column** to expand the grid.
 6. Paste from Google Sheets or Excel into a focused cell — tab-separated or HTML table data fills the grid (expanding rows/columns as needed) instead of dumping into one cell. Copy/cut with no text selection copies the whole focused cell.
 7. Click **Copy** when ready to paste elsewhere.

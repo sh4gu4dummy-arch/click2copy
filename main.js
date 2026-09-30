@@ -20,13 +20,34 @@ function emptyCells(cols, rows) {
   return Array(cols * rows).fill('');
 }
 
+function emptySleptCells(cols, rows) {
+  return Array(cols * rows).fill(false);
+}
+
+function normalizeSleptCells(slept, length) {
+  const needed = length > 0 ? length : 0;
+  let out;
+  if (Array.isArray(slept)) {
+    out = slept.map((v) => !!v);
+  } else {
+    out = Array(needed).fill(false);
+  }
+  if (out.length < needed) {
+    out = out.concat(Array(needed - out.length).fill(false));
+  } else if (out.length > needed) {
+    out = out.slice(0, needed);
+  }
+  return out;
+}
+
 function makeDefaultTab(id, title) {
   return {
     id,
     title,
     cols: DEFAULT_COLS,
     rows: DEFAULT_ROWS,
-    cells: emptyCells(DEFAULT_COLS, DEFAULT_ROWS)
+    cells: emptyCells(DEFAULT_COLS, DEFAULT_ROWS),
+    sleptCells: emptySleptCells(DEFAULT_COLS, DEFAULT_ROWS)
   };
 }
 
@@ -85,7 +106,14 @@ function normalizeTab(t) {
     const cells = emptyCells(cols, rows);
     cells[0] = t.content;
     const columnWidths = normalizeColumnWidths(t.columnWidths, cols);
-    const normalized = { id: t.id, title: t.title, cols, rows, cells };
+    const normalized = {
+      id: t.id,
+      title: t.title,
+      cols,
+      rows,
+      cells,
+      sleptCells: emptySleptCells(cols, rows)
+    };
     if (columnWidths) normalized.columnWidths = columnWidths;
     return normalized;
   }
@@ -119,7 +147,8 @@ function normalizeTab(t) {
   }
 
   const columnWidths = normalizeColumnWidths(t.columnWidths, cols);
-  const normalized = { id: t.id, title: t.title, cols, rows, cells };
+  const sleptCells = normalizeSleptCells(t.sleptCells, needed);
+  const normalized = { id: t.id, title: t.title, cols, rows, cells, sleptCells };
   if (columnWidths) normalized.columnWidths = columnWidths;
   return normalized;
 }
