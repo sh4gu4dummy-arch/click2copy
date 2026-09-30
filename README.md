@@ -8,6 +8,7 @@ A simple Electron desktop app for composing prompts from reusable parts.
 - **Cell grid** — each tab is a grid of independently editable cells (default 3 columns × 8 rows)
 - **+ Row / + Column** — grow the grid; new cells start empty
 - **Sheet paste** — paste TSV / HTML tables from Google Sheets or Excel into the focused cell; values spread across the grid and the grid grows if needed
+- **Click2Copy** — clicking or focusing a cell with content auto-copies that cell’s text to the clipboard (editing, focus, and text selection still work; Combined / sleep toggles unchanged). Typing does not re-copy on every keystroke
 - **Cell copy/cut** — with no text selected in a cell, Ctrl/Cmd+C or X copies or cuts the whole cell
 - **Sticky Master insert** — Master parts picker sits above the grid; its collapse header stays sticky while scrolling the Master insert list
 - **Master insert greens** — Master library cells turn green when that Master text is currently represented in Combined (direct Master link or matching confirmed part cell); green clears when unlinked
@@ -78,7 +79,7 @@ Confirmed append links (ranges into the combined prompt tied to source tab/cell)
 3. Check the box left of a row (or the small Combined box on a cell) to include it in the Combined prompt; uncheck to remove it. Use the sleep checkbox above a cell’s Combined toggle to exclude that cell from Append all active.
 4. Or click **Append all active** to include every missing non-empty, non-slept cell.
 5. Use **+ Row** / **+ Column** to expand the grid.
-6. Paste from Google Sheets or Excel into a focused cell — tab-separated or HTML table data fills the grid (expanding rows/columns as needed) instead of dumping into one cell. Copy/cut with no text selection copies the whole focused cell.
+6. Click a cell to copy its text to the clipboard (or Tab/Enter onto it). Paste from Google Sheets or Excel into a focused cell — tab-separated or HTML table data fills the grid (expanding rows/columns as needed) instead of dumping into one cell. Copy/cut with no text selection copies the whole focused cell.
 7. Click **Copy** when ready to paste elsewhere.
 8. Double-click a tab title to rename it; use **Delete** (with confirm if non-empty) to remove a tab.
 

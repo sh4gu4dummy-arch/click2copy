@@ -2083,8 +2083,8 @@
         ta.setAttribute('aria-label', 'Row ' + (r + 1) + ' column ' + (c + 1));
         ta.addEventListener('input', onCellInput);
         ta.addEventListener('keydown', onCellKeydown);
-        ta.addEventListener('focus', rememberFocusedCell);
-        ta.addEventListener('click', rememberFocusedCell);
+        ta.addEventListener('focus', onCellFocusSelect);
+        ta.addEventListener('click', onCellClickSelect);
         ta.addEventListener('paste', onCellPaste);
         ta.addEventListener('copy', onCellCopy);
         ta.addEventListener('cut', onCellCut);
@@ -2216,6 +2216,68 @@
     const idx = parseInt(e.currentTarget.dataset.idx, 10);
     if (!tab || Number.isNaN(idx) || idx < 0 || idx >= tab.cells.length) return;
     focusedCell = { tabId: tab.id, index: idx };
+  }
+
+  // Click2Copy: selecting/focusing a cell with content writes it to the clipboard.
+  // Prefer click/focus (not input/keystrokes while typing). Guard against click+focus double-fire.
+  let lastAutoCopyKey = '';
+  let lastAutoCopyAt = 0;
+
+  function writeTextToClipboard(text) {
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+      return navigator.clipboard.writeText(text);
+    }
+    return Promise.reject(new Error('Clipboard API unavailable'));
+  }
+
+  function autoCopyCellToClipboard(ta) {
+    if (!ta || ta.tagName !== 'TEXTAREA') return;
+    const value = ta.value == null ? '' : String(ta.value);
+    if (!value) return;
+    const tab = activeTab();
+    const idx = parseInt(ta.dataset.idx, 10);
+    const key = (tab ? tab.id : '') + ':' + (Number.isNaN(idx) ? '' : idx) + ':' + value;
+    const now = Date.now();
+    if (key === lastAutoCopyKey && now - lastAutoCopyAt < 300) return;
+    lastAutoCopyKey = key;
+    lastAutoCopyAt = now;
+    writeTextToClipboard(value).then(function () {
+      setStatus('Copied cell', 'ok');
+    }).catch(function () {
+      const prev = document.activeElement;
+      try {
+        const helper = document.createElement('textarea');
+        helper.value = value;
+        helper.setAttribute('readonly', '');
+        helper.style.position = 'fixed';
+        helper.style.left = '-9999px';
+        document.body.appendChild(helper);
+        helper.select();
+        const ok = document.execCommand('copy');
+        document.body.removeChild(helper);
+        if (prev && typeof prev.focus === 'function') {
+          try { prev.focus(); } catch (err) { /* no-op */ }
+        }
+        if (ok) setStatus('Copied cell', 'ok');
+        else setStatus('Copy failed', 'err');
+      } catch (err) {
+        if (prev && typeof prev.focus === 'function') {
+          try { prev.focus(); } catch (e2) { /* no-op */ }
+        }
+        setStatus('Copy failed', 'err');
+      }
+    });
+  }
+
+  function onCellFocusSelect(e) {
+    rememberFocusedCell(e);
+    autoCopyCellToClipboard(e.currentTarget);
+  }
+
+  function onCellClickSelect(e) {
+    rememberFocusedCell(e);
+    // Prefer click when selecting a cell (also covers re-click of an already-focused cell).
+    autoCopyCellToClipboard(e.currentTarget);
   }
 
   function onCellInput(e) {
