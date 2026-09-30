@@ -11,6 +11,7 @@ A simple Electron desktop app for composing prompts from reusable parts.
 - **Cell copy/cut** — with no text selected in a cell, Ctrl/Cmd+C or X copies or cuts the whole cell
 - **Row append** — click the checkbox-like control to the left of any row to append that row’s non-empty cells (joined with the column separator) as a new line in the combined prompt; every click appends again
 - **Append all non-empty** — appends every non-empty row of the active part (row-major)
+- **Undo / Redo** — Ctrl/Cmd+Z undoes document edits (cells, Combined prompt, confirmed links, paste, append, Master insert, clear, etc.); Ctrl/Cmd+Shift+Z or Ctrl+Y redoes. Typing in a cell or Combined is coalesced into one undo step
 - **Confirmed append highlighting** — appended cell text is marked green in both the source cell and the Combined prompt (editable “premade” segments). Editing a Combined segment so it no longer matches its linked cell clears green on both sides
 - **Combined prompt** — editable pane with **Copy** to clipboard and **Clear**
 - **Persistence** — tabs, cell grids, and combined prompt are saved to a local JSON file under Electron `userData` and restored on restart

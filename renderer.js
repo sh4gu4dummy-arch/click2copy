@@ -219,6 +219,111 @@
     };
   }
 
+  const UNDO_LIMIT = 50;
+  const EDIT_COALESCE_MS = 450;
+  let undoStack = [];
+  let redoStack = [];
+  let historySuspended = false;
+  let historyCoalescing = false;
+  let historyCoalesceTimer = null;
+
+  function cloneDocumentData(data) {
+    return JSON.parse(JSON.stringify({
+      tabs: data.tabs || [],
+      activeTabId: data.activeTabId || null,
+      combinedPrompt: typeof data.combinedPrompt === 'string' ? data.combinedPrompt : '',
+      globalCombined: typeof data.globalCombined === 'boolean' ? data.globalCombined : true,
+      partPrompts: data.partPrompts && typeof data.partPrompts === 'object' ? data.partPrompts : {},
+      separators: data.separators || DEFAULT_SEPARATORS,
+      confirmedLinks: Array.isArray(data.confirmedLinks) ? data.confirmedLinks : []
+    }));
+  }
+
+  function cloneCurrentDocument() {
+    return cloneDocumentData(snapshot());
+  }
+
+  function clearHistory() {
+    undoStack = [];
+    redoStack = [];
+    historyCoalescing = false;
+    if (historyCoalesceTimer) {
+      clearTimeout(historyCoalesceTimer);
+      historyCoalesceTimer = null;
+    }
+  }
+
+  function endHistoryCoalesce() {
+    historyCoalescing = false;
+    if (historyCoalesceTimer) {
+      clearTimeout(historyCoalesceTimer);
+      historyCoalesceTimer = null;
+    }
+  }
+
+  function armHistoryCoalesce() {
+    historyCoalescing = true;
+    if (historyCoalesceTimer) clearTimeout(historyCoalesceTimer);
+    historyCoalesceTimer = setTimeout(endHistoryCoalesce, EDIT_COALESCE_MS);
+  }
+
+  /**
+   * Snapshot document state onto the undo stack before a mutation.
+   * options.coalesce: group bursty edits (cell typing, Combined typing) into one undo step.
+   */
+  function pushHistory(options) {
+    if (historySuspended) return;
+    const coalesce = !!(options && options.coalesce);
+    if (coalesce) {
+      if (historyCoalescing) {
+        armHistoryCoalesce();
+        return;
+      }
+      armHistoryCoalesce();
+    } else {
+      endHistoryCoalesce();
+    }
+    undoStack.push(cloneCurrentDocument());
+    if (undoStack.length > UNDO_LIMIT) undoStack.shift();
+    redoStack = [];
+  }
+
+  function restoreHistoryEntry(entry) {
+    historySuspended = true;
+    try {
+      applyData(entry);
+      const doc = activeDocument();
+      if (doc) doc.data = snapshot();
+      scheduleSave();
+    } finally {
+      historySuspended = false;
+    }
+  }
+
+  function undo() {
+    endHistoryCoalesce();
+    if (!undoStack.length) {
+      setStatus('Nothing to undo');
+      return;
+    }
+    redoStack.push(cloneCurrentDocument());
+    if (redoStack.length > UNDO_LIMIT) redoStack.shift();
+    restoreHistoryEntry(undoStack.pop());
+    setStatus('Undid', 'ok');
+  }
+
+  function redo() {
+    endHistoryCoalesce();
+    if (!redoStack.length) {
+      setStatus('Nothing to redo');
+      return;
+    }
+    undoStack.push(cloneCurrentDocument());
+    if (undoStack.length > UNDO_LIMIT) undoStack.shift();
+    restoreHistoryEntry(redoStack.pop());
+    setStatus('Redid', 'ok');
+  }
+
   function activeDocument() {
     return state.documents.find(function (document) {
       return document.id === state.activeDocumentId;
@@ -710,6 +815,21 @@
     }
     for (let i = 0; i < pieces.length; i++) toAdd.push(pieces[i]);
 
+    // Preview that we will actually add something before snapshotting undo.
+    let willAdd = '';
+    for (let i = 0; i < toAdd.length; i++) {
+      const piece = toAdd[i];
+      const text = piece.text || '';
+      if (!text && piece.type !== 'plain') continue;
+      willAdd += text;
+    }
+    if (!willAdd) {
+      setStatus('Nothing to append', 'err');
+      return;
+    }
+
+    pushHistory();
+
     let offset = current.length;
     let added = '';
     for (let i = 0; i < toAdd.length; i++) {
@@ -1006,6 +1126,7 @@
     if (!next) return;
     await flushCurrentDocument();
     state.activeDocumentId = id;
+    clearHistory();
     applyData(next.data);
     renderDocuments();
     scheduleSave();
@@ -1023,6 +1144,7 @@
     };
     state.documents.push(document);
     state.activeDocumentId = document.id;
+    clearHistory();
     applyData(document.data);
     renderDocuments();
     scheduleSave();
@@ -1058,6 +1180,7 @@
     };
     state.documents.push(document);
     state.activeDocumentId = document.id;
+    clearHistory();
     applyData(data);
     renderDocuments();
     scheduleSave();
@@ -1119,6 +1242,7 @@
         }
       });
       state.activeDocumentId = opened[opened.length - 1].id;
+      clearHistory();
       applyData(activeDocument().data);
       renderDocuments();
       scheduleSave();
@@ -1193,6 +1317,7 @@
       const replacement = { id: uid(), title: 'Untitled', filePath: null, data: data };
       state.documents.push(replacement);
       state.activeDocumentId = replacement.id;
+      clearHistory();
       applyData(replacement.data);
       renderDocuments();
       scheduleSave();
@@ -1201,6 +1326,7 @@
     if (state.activeDocumentId === id) {
       const next = state.documents[Math.min(index, state.documents.length - 1)];
       state.activeDocumentId = next.id;
+      clearHistory();
       applyData(next.data);
     }
     renderDocuments();
@@ -1376,6 +1502,7 @@
       }
     }
 
+    pushHistory();
     tab.cells[index] = text;
     focusedCell = { tabId: tab.id, index: index };
     revalidateLinksForCell(tab.id, index, { silent: true });
@@ -1400,6 +1527,7 @@
     const targetIndex = state.tabs.findIndex(function (tab) { return tab.id === targetId; });
     if (fromIndex <= 0 || targetIndex <= 0) return;
 
+    pushHistory();
     const moved = state.tabs.splice(fromIndex, 1)[0];
     let insertAt = state.tabs.findIndex(function (tab) { return tab.id === targetId; });
     if (afterTarget) insertAt++;
@@ -1555,6 +1683,7 @@
       ? tab.columnWidths.slice()
       : currentColumnWidths(tab);
     if (!widths) return;
+    pushHistory({ coalesce: true });
     const next = Math.max(MIN_COLUMN_WIDTH, widths[col] + delta);
     if (col < widths.length - 1) {
       const available = widths[col] + widths[col + 1] - MIN_COLUMN_WIDTH;
@@ -1576,6 +1705,7 @@
 
     const widths = currentColumnWidths(tab);
     if (!widths) return;
+    pushHistory();
     const startX = e.clientX;
     const startWidths = widths.slice();
     const hasNext = col < tab.cols - 1;
@@ -1668,6 +1798,7 @@
     rememberFocusedCell(e);
     const idx = parseInt(e.target.dataset.idx, 10);
     if (Number.isNaN(idx) || idx < 0 || idx >= tab.cells.length) return;
+    pushHistory({ coalesce: true });
     tab.cells[idx] = e.target.value;
     revalidateLinksForCell(tab.id, idx);
     e.target.classList.toggle('cell-confirmed', isCellConfirmed(tab.id, idx));
@@ -1713,6 +1844,7 @@
         if (next.toLowerCase() === 'master') {
           setStatus('Only the Master library tab may be named Master', 'err');
         } else {
+          pushHistory();
           tab.title = next;
           scheduleSave();
         }
@@ -1735,6 +1867,7 @@
   }
 
   function addTab() {
+    pushHistory();
     const tab = makeTab(uid(), nextPartTitle());
     state.tabs.push(tab);
     state.activeTabId = tab.id;
@@ -1761,6 +1894,7 @@
       setStatus('Only the Master library tab may be named Master', 'err');
       return;
     }
+    pushHistory();
     tab.title = trimmed;
     renderTabs();
     scheduleSave();
@@ -1788,6 +1922,7 @@
     const idx = state.tabs.findIndex(function (t) {
       return t.id === id;
     });
+    pushHistory();
     state.tabs.splice(idx, 1);
     delete state.partPrompts[id];
     dropLinksForTab(id);
@@ -1954,6 +2089,7 @@
     }
 
     e.preventDefault();
+    pushHistory();
     const startRow = Math.floor(startIdx / tab.cols);
     const startCol = startIdx % tab.cols;
     const result = pasteMatrixAt(tab, startRow, startCol, matrix);
@@ -2002,6 +2138,7 @@
     e.clipboardData.setData('text/plain', value);
     const idx = parseInt(ta.dataset.idx, 10);
     if (!Number.isNaN(idx) && idx >= 0 && idx < tab.cells.length) {
+      pushHistory();
       tab.cells[idx] = '';
       ta.value = '';
       revalidateLinksForCell(tab.id, idx);
@@ -2015,6 +2152,7 @@
   function addRow() {
     const tab = activeTab();
     if (!tab) return;
+    pushHistory();
     for (let c = 0; c < tab.cols; c++) {
       tab.cells.push('');
     }
@@ -2039,6 +2177,7 @@
     const destination = rowIndex + direction;
     if (rowIndex < 0 || rowIndex >= tab.rows || destination < 0) return;
 
+    pushHistory();
     if (direction < 0) {
       for (let col = 0; col < tab.cols; col++) {
         const sourceIndex = rowIndex * tab.cols + col;
@@ -2080,6 +2219,7 @@
   function addColumn() {
     const tab = activeTab();
     if (!tab) return;
+    pushHistory();
     const oldCols = tab.cols;
     const newCells = [];
     for (let r = 0; r < tab.rows; r++) {
@@ -2153,6 +2293,7 @@
     if (prompt && !window.confirm('Clear the combined prompt?')) {
       return;
     }
+    pushHistory();
     setPromptText(scope, '');
     dropLinksForScope(scope);
     renderCombinedPrompt();
@@ -2207,6 +2348,7 @@
         return;
       }
 
+      pushHistory();
       applyData(result.data);
       scheduleSave();
       setStatus('Imported backup (' + state.tabs.length + ' tabs)', 'ok');
@@ -2237,6 +2379,7 @@
 
   function onSeparatorInput(key, input) {
     input.addEventListener('input', function () {
+      pushHistory({ coalesce: true });
       state.separators[key] = input.value;
       scheduleSave();
     });
@@ -2260,6 +2403,7 @@
   }
 
   el.combined.addEventListener('input', function () {
+    pushHistory({ coalesce: true });
     syncConfirmedFromCombinedDom();
     scheduleSave();
   });
@@ -2280,6 +2424,7 @@
       range.collapse(true);
       selection.removeAllRanges();
       selection.addRange(range);
+      pushHistory({ coalesce: true });
       syncConfirmedFromCombinedDom();
       scheduleSave();
     }
@@ -2301,12 +2446,14 @@
       range.collapse(true);
       selection.removeAllRanges();
       selection.addRange(range);
+      pushHistory({ coalesce: true });
       syncConfirmedFromCombinedDom();
       scheduleSave();
     }
   });
 
   el.globalCombined.addEventListener('change', function () {
+    pushHistory();
     const next = el.globalCombined.checked;
     if (next && !state.globalCombined) mergePartPrompts();
     state.globalCombined = next;
@@ -2388,6 +2535,7 @@
     }
 
     const current = activeDocument();
+    clearHistory();
     applyData(current.data);
     renderDocuments();
     initialized = true;
@@ -2412,6 +2560,23 @@
   }
   document.addEventListener('keydown', function (event) {
     if (event.key === 'Escape' && statusPanelOpen) setStatusPanelOpen(false);
+
+    const mod = event.ctrlKey || event.metaKey;
+    if (!mod || event.altKey) return;
+    // Skip when renaming a tab inline (native text field undo is fine there).
+    const target = event.target;
+    if (target && target.classList && target.classList.contains('tab-rename-input')) return;
+
+    const key = event.key.length === 1 ? event.key.toLowerCase() : event.key;
+    if (key === 'z' && !event.shiftKey) {
+      event.preventDefault();
+      undo();
+      return;
+    }
+    if ((key === 'z' && event.shiftKey) || key === 'y') {
+      event.preventDefault();
+      redo();
+    }
   });
   document.addEventListener('pointerdown', function (event) {
     if (!statusPanelOpen || !el.statusPanel) return;
