@@ -7,6 +7,10 @@ const SESSION_FILE = 'click2copy-session.json';
 const DOCUMENT_EXTENSION = 'c2copy';
 const DOCUMENT_FORMAT = 'click2copy-document';
 const DOCUMENT_VERSION = 1;
+const AUTOSAVE_C2COPY = 'latest-autosave.c2copy';
+const AUTOSAVE_JSON = 'latest-autosave.json';
+const USERDATA_BACKUP_SUBDIR = 'backups';
+const DOCUMENTS_BACKUP_FOLDER = 'Click2Copy';
 const DEFAULT_COLS = 3;
 const DEFAULT_ROWS = 8;
 const MIN_COLUMN_WIDTH = 100;
@@ -69,6 +73,111 @@ function storePath() {
 
 function sessionPath() {
   return path.join(app.getPath('userData'), SESSION_FILE);
+}
+
+function userDataBackupDir() {
+  return path.join(app.getPath('userData'), USERDATA_BACKUP_SUBDIR);
+}
+
+function documentsBackupDir() {
+  return path.join(app.getPath('documents'), DOCUMENTS_BACKUP_FOLDER);
+}
+
+function ensureDir(dir) {
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+function listAutosaveDirs() {
+  const dirs = [];
+  try {
+    dirs.push(ensureDir(userDataBackupDir()));
+  } catch (err) {
+    console.error('Failed to prepare userData autosave folder:', err);
+  }
+  try {
+    dirs.push(ensureDir(documentsBackupDir()));
+  } catch (err) {
+    console.error('Failed to prepare Documents/Click2Copy autosave folder:', err);
+  }
+  return dirs;
+}
+
+function getAutosaveLocations() {
+  return {
+    userDataStore: storePath(),
+    userDataSession: sessionPath(),
+    userDataBackupDir: userDataBackupDir(),
+    documentsBackupDir: documentsBackupDir(),
+    latestC2copyName: AUTOSAVE_C2COPY,
+    latestJsonName: AUTOSAVE_JSON
+  };
+}
+
+function sanitizeFileBase(name) {
+  const cleaned = String(name || 'untitled')
+    .replace(/[<>:"/\\|?*\x00-\x1f]/g, '_')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/[. ]+$/g, '');
+  return cleaned || 'untitled';
+}
+
+function documentPayload(normalized) {
+  return {
+    format: DOCUMENT_FORMAT,
+    version: DOCUMENT_VERSION,
+    data: normalized
+  };
+}
+
+/**
+ * Write readable recoverable copies for untitled docs (no named Save As path).
+ * Named files are left alone here — caller autosaves those to their own path.
+ */
+function writeUntitledRecoverableBackups(documents, activeDocumentId) {
+  const dirs = listAutosaveDirs();
+  if (dirs.length === 0) {
+    return { ok: false, error: 'No writable autosave backup folder.', paths: [] };
+  }
+
+  const paths = [];
+  let activeUntitled = null;
+
+  for (const document of documents) {
+    if (!document || document.filePath) continue;
+    const normalized = normalizeData(document.data);
+    if (!normalized) continue;
+    const payloadText = JSON.stringify(documentPayload(normalized), null, 2);
+    const mirrorText = JSON.stringify(normalized, null, 2);
+    const idBase = sanitizeFileBase(document.id);
+    const perDocName = `autosave-${idBase}.${DOCUMENT_EXTENSION}`;
+    const perDocJson = `autosave-${idBase}.json`;
+
+    for (const dir of dirs) {
+      const c2Path = path.join(dir, perDocName);
+      const jsonPath = path.join(dir, perDocJson);
+      fs.writeFileSync(c2Path, payloadText, 'utf8');
+      fs.writeFileSync(jsonPath, mirrorText, 'utf8');
+      paths.push(c2Path, jsonPath);
+    }
+
+    if (document.id === activeDocumentId || !activeUntitled) {
+      activeUntitled = { payloadText, mirrorText };
+    }
+  }
+
+  if (activeUntitled) {
+    for (const dir of dirs) {
+      const latestC2 = path.join(dir, AUTOSAVE_C2COPY);
+      const latestJson = path.join(dir, AUTOSAVE_JSON);
+      fs.writeFileSync(latestC2, activeUntitled.payloadText, 'utf8');
+      fs.writeFileSync(latestJson, activeUntitled.mirrorText, 'utf8');
+      paths.push(latestC2, latestJson);
+    }
+  }
+
+  return { ok: true, paths, locations: getAutosaveLocations() };
 }
 
 function normalizeColumnWidths(widths, cols) {
@@ -177,6 +286,9 @@ function normalizeData(parsed) {
   if (!tabs.some((t) => t.id === activeTabId)) {
     activeTabId = tabs[0].id;
   }
+  const confirmedLinks = Array.isArray(parsed.confirmedLinks)
+    ? parsed.confirmedLinks.filter((link) => link && typeof link === 'object')
+    : [];
   return {
     tabs,
     activeTabId,
@@ -186,7 +298,8 @@ function normalizeData(parsed) {
       ? Object.fromEntries(Object.entries(parsed.partPrompts)
         .filter(([, prompt]) => typeof prompt === 'string'))
       : {},
-    separators: normalizeSeparators(parsed.separators)
+    separators: normalizeSeparators(parsed.separators),
+    confirmedLinks
   };
 }
 
@@ -276,11 +389,31 @@ function saveSession(session) {
     const file = sessionPath();
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, JSON.stringify({ documents, activeDocumentId }, null, 2), 'utf8');
-    return { ok: true };
   } catch (err) {
     console.error('Failed to save session:', err);
     return { ok: false, error: err.message || 'Failed to save open prompt documents.' };
   }
+
+  let backup = { ok: true, paths: [], locations: getAutosaveLocations() };
+  try {
+    backup = writeUntitledRecoverableBackups(documents, activeDocumentId);
+  } catch (err) {
+    console.error('Failed to write recoverable autosave backups:', err);
+    backup = {
+      ok: false,
+      error: err.message || 'Failed to write recoverable autosave backups.',
+      paths: [],
+      locations: getAutosaveLocations()
+    };
+  }
+
+  return {
+    ok: true,
+    backupOk: !!backup.ok,
+    backupError: backup.ok ? undefined : backup.error,
+    backupPaths: backup.paths || [],
+    locations: backup.locations || getAutosaveLocations()
+  };
 }
 
 function normalizeDocument(parsed) {
@@ -312,11 +445,8 @@ function writeDocument(filePath, data) {
     ? filePath
     : `${filePath}.${DOCUMENT_EXTENSION}`;
   try {
-    fs.writeFileSync(targetPath, JSON.stringify({
-      format: DOCUMENT_FORMAT,
-      version: DOCUMENT_VERSION,
-      data: normalized
-    }, null, 2), 'utf8');
+    fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+    fs.writeFileSync(targetPath, JSON.stringify(documentPayload(normalized), null, 2), 'utf8');
     return { ok: true, filePath: targetPath };
   } catch (err) {
     console.error('Failed to save prompt document:', err);
@@ -325,15 +455,30 @@ function writeDocument(filePath, data) {
 }
 
 function saveData(data) {
+  const normalized = normalizeData(data);
+  if (!normalized) return false;
   try {
     const file = storePath();
     fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.writeFileSync(file, JSON.stringify(data, null, 2), 'utf8');
-    return true;
+    fs.writeFileSync(file, JSON.stringify(normalized, null, 2), 'utf8');
   } catch (err) {
     console.error('Failed to save store:', err);
     return false;
   }
+
+  // Also keep a latest readable .c2copy (+ plain JSON mirror) for recovery outside the app.
+  try {
+    const dirs = listAutosaveDirs();
+    const payloadText = JSON.stringify(documentPayload(normalized), null, 2);
+    const mirrorText = JSON.stringify(normalized, null, 2);
+    for (const dir of dirs) {
+      fs.writeFileSync(path.join(dir, AUTOSAVE_C2COPY), payloadText, 'utf8');
+      fs.writeFileSync(path.join(dir, AUTOSAVE_JSON), mirrorText, 'utf8');
+    }
+  } catch (err) {
+    console.error('Failed to mirror latest autosave .c2copy:', err);
+  }
+  return true;
 }
 
 let mainWindow = null;
@@ -456,6 +601,7 @@ ipcMain.on('window:set-title', (event, title) => {
 });
 ipcMain.handle('documents:load-session', () => loadSession());
 ipcMain.handle('documents:save-session', (_event, session) => saveSession(session));
+ipcMain.handle('documents:autosave-locations', () => getAutosaveLocations());
 ipcMain.handle('documents:open', async (event) => {
   const result = await dialog.showOpenDialog(BrowserWindow.fromWebContents(event.sender), {
     title: 'Open Click2Copy prompt',

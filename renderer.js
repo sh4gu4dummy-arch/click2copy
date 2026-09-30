@@ -27,6 +27,7 @@
     confirmedLinks: [],
     saveTimer: null
   };
+  let autosaveLocations = null;
   let initialized = false;
   let focusedCell = null;
   /** UI-only row filter: 'all' | 'nonempty' | 'included' */
@@ -404,15 +405,21 @@
         setStatus((sessionResult && sessionResult.error) || 'Failed to save open documents', 'err');
         return false;
       }
+      if (sessionResult.locations) autosaveLocations = sessionResult.locations;
+      if (sessionResult.backupOk === false) {
+        pushEvent(sessionResult.backupError || 'Recoverable .c2copy autosave backup failed', 'err');
+      }
 
       const document = activeDocument();
       if (document && document.filePath) {
+        // Named Save As path: autosave only there (do not invent another named path).
         const result = await window.click2copy.saveDocument(document.filePath, snapshot());
         if (!result || !result.ok) {
           setStatus((result && result.error) || 'Failed to save prompt file', 'err');
           return false;
         }
       } else {
+        // Untitled: userData JSON store + mirrored latest .c2copy / .json in backup folders.
         const saved = await window.click2copy.saveData(snapshot());
         if (!saved) {
           setStatus('Failed to save local prompt data', 'err');
@@ -469,8 +476,21 @@
       ? tab.title + ' [' + tab.id + ']' + (isMasterTab(tab) ? ' (Master)' : '')
       : 'none';
     const gridLabel = tab ? (tab.cols + '×' + tab.rows + ' (' + tab.cells.length + ' cells)') : 'n/a';
+    const loc = autosaveLocations;
+    const docsBackup = loc && loc.documentsBackupDir
+      ? loc.documentsBackupDir + '/' + (loc.latestC2copyName || 'latest-autosave.c2copy')
+      : '(unavailable)';
+    const userBackup = loc && loc.userDataBackupDir
+      ? loc.userDataBackupDir + '/' + (loc.latestC2copyName || 'latest-autosave.c2copy')
+      : '(unavailable)';
+    const saveTarget = document && document.filePath
+      ? document.filePath
+      : (docsBackup !== '(unavailable)' ? docsBackup : userBackup);
     return [
       { label: 'Active document', value: docLabel },
+      { label: 'Autosave target', value: saveTarget },
+      { label: 'Recoverable backup (Documents)', value: docsBackup },
+      { label: 'Recoverable backup (userData)', value: userBackup },
       { label: 'Active tab', value: tabLabel },
       { label: 'Selected cell', value: describeSelectedCell() },
       { label: 'Grid size', value: gridLabel },
@@ -3106,6 +3126,14 @@
         el.appVersion.textContent = 'v' + await window.click2copy.getAppVersion();
       } catch (err) {
         console.error('Could not read app version:', err);
+      }
+    }
+
+    if (window.click2copy && typeof window.click2copy.getAutosaveLocations === 'function') {
+      try {
+        autosaveLocations = await window.click2copy.getAutosaveLocations();
+      } catch (err) {
+        console.error('Could not read autosave locations:', err);
       }
     }
 

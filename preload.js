@@ -8,6 +8,7 @@ contextBridge.exposeInMainWorld('click2copy', {
   importData: () => ipcRenderer.invoke('store:import'),
   loadSession: () => ipcRenderer.invoke('documents:load-session'),
   saveSession: (session) => ipcRenderer.invoke('documents:save-session', session),
+  getAutosaveLocations: () => ipcRenderer.invoke('documents:autosave-locations'),
   openDocuments: () => ipcRenderer.invoke('documents:open'),
   openDocument: (filePath) => ipcRenderer.invoke('documents:open-path', filePath),
   saveDocument: (filePath, data) => ipcRenderer.invoke('documents:save', filePath, data),

@@ -20,8 +20,8 @@ A simple Electron desktop app for composing prompts from reusable parts.
 - **Confirmed append highlighting** — appended cell text is marked green in both the source cell and the Combined prompt (editable “premade” segments). Editing a Combined segment so it no longer matches its linked cell clears green on both sides
 - **Combined prompt** — editable pane with **Copy** to clipboard and **Clear**
 - **Status / under-the-hood log** — click the status line for a full-width-friendly event panel; long log lines wrap so the window does not need stretching
-- **Persistence** — tabs, cell grids, and combined prompt are saved to a local JSON file under Electron `userData` and restored on restart
-- **Export / Import** — backup and restore all tabs + combined prompt as JSON (survives app updates; userData is outside the repo). Legacy backups with a single `content` string per tab are migrated into cell `[0]` of a 3×8 grid
+- **Persistence / autosave** — edits debounce (~250ms) and autosave open documents. Session state lives in Electron `userData` (`click2copy-session.json`). Untitled docs also mirror readable `latest-autosave.c2copy` + `latest-autosave.json` into `userData/backups/` **and** `Documents/Click2Copy/` so you can open or recover them if the app breaks. After **Save As**, autosave writes to that named `.c2copy` path (not a surprise alternate file).
+- **Export / Import** — backup and restore all tabs + combined prompt as JSON (survives app updates; userData is outside the repo). Legacy backups with a single `content` string per tab are migrated into cell `[0]` of a 3×8 grid. You can also File → Open the recoverable `latest-autosave.c2copy` from the backup folders.
 
 ## Requirements
 
@@ -83,7 +83,18 @@ Confirmed append links (ranges into the combined prompt tied to source tab/cell)
 7. Click **Copy** when ready to paste elsewhere.
 8. Double-click a tab title to rename it; use **Delete** (with confirm if non-empty) to remove a tab.
 
-Data is autosaved shortly after edits.
+Data is autosaved shortly after edits. Click the status line → under-the-hood panel to see the current autosave target and recoverable backup paths (`Documents/Click2Copy/latest-autosave.c2copy` and `userData/backups/latest-autosave.c2copy`).
+
+## Recoverable autosave locations
+
+| Location | Files |
+|----------|--------|
+| `Documents/Click2Copy/` | `latest-autosave.c2copy`, `latest-autosave.json`, plus per-untitled `autosave-<id>.c2copy` |
+| Electron `userData/backups/` | Same readable mirrors (app-local) |
+| Electron `userData/` | `click2copy-session.json` (all open docs), `click2copy-data.json` (legacy untitled store) |
+| Your Save As path | Autosaved `.c2copy` when the document has a named file |
+
+Open a `.c2copy` with File → Open Prompt Files, or read the plain JSON mirror in any text editor.
 
 ## Version
 
