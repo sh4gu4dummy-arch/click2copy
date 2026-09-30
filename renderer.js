@@ -2589,9 +2589,11 @@
 
   function clearCellRangeHighlight() {
     if (!el.cellGrid) return;
-    const nodes = el.cellGrid.querySelectorAll('.cell-wrap.cell-range-selected');
+    const nodes = el.cellGrid.querySelectorAll(
+      '.cell-wrap.cell-range-selected, .cell-wrap.selected, .cell.cell-range-selected, .cell.selected'
+    );
     for (let i = 0; i < nodes.length; i++) {
-      nodes[i].classList.remove('cell-range-selected');
+      nodes[i].classList.remove('cell-range-selected', 'selected');
     }
   }
 
@@ -2606,13 +2608,18 @@
 
   function applyCellRangeHighlight(r0, c0, r1, c1) {
     clearCellRangeHighlight();
+    if (!el.cellGrid) return;
     const b = normalizeRangeBounds(r0, c0, r1, c1);
     for (let r = b.rMin; r <= b.rMax; r++) {
       for (let c = b.cMin; c <= b.cMax; c++) {
         const wrap = el.cellGrid.querySelector(
           '.cell-wrap[data-row="' + r + '"][data-col="' + c + '"]'
         );
-        if (wrap) wrap.classList.add('cell-range-selected');
+        if (!wrap) continue;
+        // Mark every cell in the rectangle — not only the one under the pointer.
+        wrap.classList.add('cell-range-selected', 'selected');
+        const ta = wrap.querySelector('textarea.cell');
+        if (ta) ta.classList.add('cell-range-selected', 'selected');
       }
     }
   }
@@ -2643,7 +2650,42 @@
     document.removeEventListener('pointermove', onCellRangePointerMove);
     document.removeEventListener('pointerup', onCellRangePointerUp);
     document.removeEventListener('pointercancel', onCellRangePointerUp);
+    document.removeEventListener('dragstart', onCellRangeDragStartPrevent, true);
     document.body.classList.remove('selecting-cell-range');
+    if (cellRangeDrag && cellRangeDrag.captureEl && cellRangeDrag.pointerId != null) {
+      try {
+        if (cellRangeDrag.captureEl.releasePointerCapture) {
+          cellRangeDrag.captureEl.releasePointerCapture(cellRangeDrag.pointerId);
+        }
+      } catch (err) { /* no-op */ }
+    }
+  }
+
+  function onCellRangeDragStartPrevent(e) {
+    // Native textarea text-drag would steal the gesture and leave only one cell lit.
+    if (cellRangeDrag && cellRangeDrag.active) e.preventDefault();
+  }
+
+  function collapseCellTextSelection() {
+    try {
+      const sel = window.getSelection();
+      if (sel && sel.removeAllRanges) sel.removeAllRanges();
+    } catch (err) { /* no-op */ }
+    const active = document.activeElement;
+    if (active && active.tagName === 'TEXTAREA' && active.classList.contains('cell')) {
+      try {
+        const pos = typeof active.selectionEnd === 'number' ? active.selectionEnd : 0;
+        active.setSelectionRange(pos, pos);
+      } catch (err2) { /* no-op */ }
+    }
+  }
+
+  function beginMultiCellRangeDrag() {
+    if (!cellRangeDrag || cellRangeDrag.multi) return;
+    cellRangeDrag.multi = true;
+    suppressCellAutoCopy = true;
+    document.body.classList.add('selecting-cell-range');
+    collapseCellTextSelection();
   }
 
   function onCellRangePointerMove(e) {
@@ -2665,15 +2707,9 @@
       );
       return;
     }
-    if (!cellRangeDrag.multi) {
-      cellRangeDrag.multi = true;
-      suppressCellAutoCopy = true;
-      document.body.classList.add('selecting-cell-range');
-      try {
-        const sel = window.getSelection();
-        if (sel && sel.removeAllRanges) sel.removeAllRanges();
-      } catch (err) { /* no-op */ }
-    }
+    beginMultiCellRangeDrag();
+    if (e.cancelable) e.preventDefault();
+    // Full rectangle from anchor → pointer, every move — not only the hovered cell.
     applyCellRangeHighlight(
       cellRangeDrag.startRow, cellRangeDrag.startCol,
       cellRangeDrag.endRow, cellRangeDrag.endCol
@@ -2742,11 +2778,17 @@
       startRow: row,
       startCol: col,
       endRow: row,
-      endCol: col
+      endCol: col,
+      pointerId: e.pointerId,
+      captureEl: ta
     };
     document.addEventListener('pointermove', onCellRangePointerMove);
     document.addEventListener('pointerup', onCellRangePointerUp);
     document.addEventListener('pointercancel', onCellRangePointerUp);
+    document.addEventListener('dragstart', onCellRangeDragStartPrevent, true);
+    if (ta.setPointerCapture && e.pointerId != null) {
+      try { ta.setPointerCapture(e.pointerId); } catch (err) { /* no-op */ }
+    }
   }
 
   function onCellFocusSelect(e) {
