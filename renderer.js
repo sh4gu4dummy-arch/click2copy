@@ -607,6 +607,37 @@
   function setPromptText(scope, text) {
     if (scope === 'global') state.combinedPrompt = text;
     else state.partPrompts[scope] = text;
+    // Every Combined edit copies the active prompt to the clipboard (Copy button kept).
+    if (initialized && scope === currentPromptScope()) scheduleCombinedAutoCopy();
+  }
+
+  let combinedAutoCopyTimer = null;
+  let lastCombinedAutoCopyStatusAt = 0;
+
+  function scheduleCombinedAutoCopy() {
+    if (combinedAutoCopyTimer) clearTimeout(combinedAutoCopyTimer);
+    combinedAutoCopyTimer = setTimeout(function () {
+      combinedAutoCopyTimer = null;
+      autoCopyCombinedToClipboard();
+    }, 120);
+  }
+
+  function autoCopyCombinedToClipboard() {
+    const text = getCombinedPlainText();
+    const now = Date.now();
+    const showStatus = now - lastCombinedAutoCopyStatusAt > 700;
+    writeTextToClipboard(text == null ? '' : String(text)).then(function () {
+      if (showStatus) {
+        lastCombinedAutoCopyStatusAt = Date.now();
+        setStatus('Copied Combined', 'ok');
+      }
+    }).catch(function () {
+      // Fall back through the shared helper (may surface Copy failed).
+      if (showStatus) {
+        lastCombinedAutoCopyStatusAt = Date.now();
+        copyTextWithStatus(text, 'Copied Combined');
+      }
+    });
   }
 
   function toNonNegInt(value) {
