@@ -774,27 +774,66 @@
     const current = activeTab();
     if (!master || !current || isMasterTab(current)) return;
 
-    for (let row = 0; row < master.rows; row++) {
-      for (let col = 0; col < master.cols; col++) {
-        const text = master.cells[row * master.cols + col];
-        if (!text || !text.trim()) continue;
-        const button = document.createElement('button');
-        button.type = 'button';
-        button.className = 'master-library-item';
-        button.textContent = text;
-        button.title = 'Add to the selected cell, or next empty cell, in ' + current.title;
-        button.addEventListener('click', function () {
-          insertMasterText(text);
-        });
-        el.masterLibraryItems.appendChild(button);
+    let hasContent = false;
+    for (let i = 0; i < master.cells.length; i++) {
+      if (master.cells[i] && String(master.cells[i]).trim()) {
+        hasContent = true;
+        break;
       }
     }
-    if (el.masterLibraryItems.childElementCount === 0) {
+    if (!hasContent) {
       const empty = document.createElement('span');
       empty.className = 'master-library-empty';
       empty.textContent = 'Add reusable text in the Master part first.';
       el.masterLibraryItems.appendChild(empty);
+      return;
     }
+
+    const grid = document.createElement('div');
+    grid.className = 'master-library-grid';
+    grid.setAttribute('role', 'grid');
+    grid.style.gridTemplateColumns = 'repeat(' + master.cols + ', minmax(0, 1fr))';
+
+    for (let row = 0; row < master.rows; row++) {
+      let rowHasContent = false;
+      for (let col = 0; col < master.cols; col++) {
+        const cellText = master.cells[row * master.cols + col];
+        if (cellText && String(cellText).trim()) {
+          rowHasContent = true;
+          break;
+        }
+      }
+      if (!rowHasContent) continue;
+
+      for (let col = 0; col < master.cols; col++) {
+        const text = master.cells[row * master.cols + col] || '';
+        const trimmed = String(text).trim();
+        if (trimmed) {
+          const button = document.createElement('button');
+          button.type = 'button';
+          button.className = 'master-library-cell';
+          button.textContent = text;
+          button.title = 'Add to the selected cell, or next empty cell, in ' + current.title;
+          button.setAttribute('role', 'gridcell');
+          button.dataset.row = String(row);
+          button.dataset.col = String(col);
+          button.addEventListener('click', function () {
+            insertMasterText(text);
+          });
+          grid.appendChild(button);
+        } else {
+          const blank = document.createElement('div');
+          blank.className = 'master-library-cell master-library-cell-empty';
+          blank.setAttribute('role', 'gridcell');
+          blank.setAttribute('aria-hidden', 'true');
+          blank.dataset.row = String(row);
+          blank.dataset.col = String(col);
+          grid.appendChild(blank);
+        }
+      }
+    }
+
+    el.masterLibraryItems.appendChild(grid);
   }
 
   function insertMasterText(text) {
