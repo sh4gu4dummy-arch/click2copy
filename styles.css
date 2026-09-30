@@ -1238,3 +1238,13 @@ body.selecting-cell-range * {
   background: #fff;
   border-color: #fff;
 }
+
+body.painting-checkboxes {
+  user-select: none;
+  cursor: default;
+}
+body.painting-checkboxes .cell-append,
+body.painting-checkboxes .row-append,
+body.painting-checkboxes .cell-sleep {
+  cursor: default;
+}

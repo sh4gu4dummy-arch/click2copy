@@ -871,6 +871,172 @@
     setStatus(slept ? ('Slept R' + row + 'C' + col) : ('Woke R' + row + 'C' + col));
   }
 
+  /**
+   * Click+drag paint for Combined / sleep / row checkboxes.
+   * Kinds never mix: a drag started on Combined only paints Combined, etc.
+   * First control sets the target value; later controls of the same kind match it.
+   */
+  let checkboxDrag = null;
+
+  function endCheckboxDragListeners() {
+    document.removeEventListener('pointermove', onCheckboxDragMove);
+    document.removeEventListener('pointerup', endCheckboxDrag);
+    document.removeEventListener('pointercancel', endCheckboxDrag);
+    document.body.classList.remove('painting-checkboxes');
+  }
+
+  function ensureCellConfirmedState(cellIndex, wantOn, opts) {
+    const quiet = !!(opts && opts.quiet);
+    const tab = activeTab();
+    if (!tab || cellIndex < 0 || cellIndex >= tab.cells.length) return false;
+    const scope = currentPromptScope();
+    const isOn = isCellConfirmedInScope(tab.id, cellIndex, scope);
+    if (isOn === !!wantOn) return false;
+    if (wantOn) {
+      const value = (tab.cells[cellIndex] || '').trim();
+      if (!value) return false;
+      appendPieces([{
+        type: 'confirmed',
+        text: value,
+        tabId: tab.id,
+        cellIndex: cellIndex
+      }], quiet ? null : (tab.title + ' R' + (Math.floor(cellIndex / tab.cols) + 1) +
+        'C' + ((cellIndex % tab.cols) + 1)), { quiet: quiet });
+      return true;
+    }
+    const links = linksForCellsInScope(tab.id, [cellIndex], scope);
+    if (!links.length) return false;
+    removeLinksFromCombined(links);
+    if (!quiet) refreshAfterConfirmedChange();
+    return true;
+  }
+
+  function ensureRowIncludedState(rowIndex, wantOn, opts) {
+    const quiet = !!(opts && opts.quiet);
+    const tab = activeTab();
+    if (!tab || rowIndex < 0 || rowIndex >= tab.rows) return false;
+    const scope = currentPromptScope();
+    const isOn = isRowIncluded(tab, rowIndex);
+    if (isOn === !!wantOn) return false;
+    if (wantOn) {
+      const pieces = rowConfirmedPieces(tab, rowIndex);
+      if (!pieces.length) return false;
+      appendPieces(pieces, quiet ? null : (tab.title + ' row ' + (rowIndex + 1)), { quiet: quiet });
+      return true;
+    }
+    const links = linksForCellsInScope(tab.id, rowCellIndices(tab, rowIndex), scope);
+    if (!links.length) return false;
+    removeLinksFromCombined(links);
+    if (!quiet) refreshAfterConfirmedChange();
+    return true;
+  }
+
+  function ensureCellSleepState(cellIndex, wantSlept, opts) {
+    const quiet = !!(opts && opts.quiet);
+    const tab = activeTab();
+    if (!tab || cellIndex < 0 || cellIndex >= tab.cells.length) return false;
+    if (!!isCellSlept(tab, cellIndex) === !!wantSlept) return false;
+    setCellSlept(tab, cellIndex, wantSlept);
+    const wrap = el.cellGrid.querySelector(
+      '.cell-wrap[data-row="' + Math.floor(cellIndex / tab.cols) + '"][data-col="' + (cellIndex % tab.cols) + '"]'
+    );
+    if (wrap) wrap.classList.toggle('is-slept', !!wantSlept);
+    const input = wrap ? wrap.querySelector('.cell-sleep-input') : null;
+    if (input) input.checked = !!wantSlept;
+    if (!quiet) {
+      scheduleSave();
+      const row = Math.floor(cellIndex / tab.cols) + 1;
+      const col = (cellIndex % tab.cols) + 1;
+      setStatus(wantSlept ? ('Slept R' + row + 'C' + col) : ('Woke R' + row + 'C' + col));
+    }
+    return true;
+  }
+
+  function applyCheckboxDragKey(kind, key) {
+    if (!checkboxDrag || checkboxDrag.kind !== kind) return;
+    if (checkboxDrag.visited[key]) return;
+    checkboxDrag.visited[key] = true;
+    const want = checkboxDrag.value;
+    if (kind === 'combined') ensureCellConfirmedState(key, want, { quiet: true });
+    else if (kind === 'row') ensureRowIncludedState(key, want, { quiet: true });
+    else if (kind === 'sleep') ensureCellSleepState(key, want, { quiet: true });
+    if (kind === 'combined' || kind === 'row') applyAppendCheckedState();
+  }
+
+  function checkboxDragHit(clientX, clientY) {
+    const node = document.elementFromPoint(clientX, clientY);
+    if (!node || typeof node.closest !== 'function') return null;
+    if (checkboxDrag.kind === 'combined') {
+      const btn = node.closest('.cell-append');
+      if (!btn || !el.cellGrid.contains(btn)) return null;
+      const idx = parseInt(btn.dataset.idx, 10);
+      if (Number.isNaN(idx)) return null;
+      return { kind: 'combined', key: idx };
+    }
+    if (checkboxDrag.kind === 'row') {
+      const btn = node.closest('.row-append');
+      if (!btn || !el.cellGrid.contains(btn)) return null;
+      const row = parseInt(btn.dataset.row, 10);
+      if (Number.isNaN(row)) return null;
+      return { kind: 'row', key: row };
+    }
+    if (checkboxDrag.kind === 'sleep') {
+      const input = node.closest('.cell-sleep-input') ||
+        (node.closest('.cell-sleep') && node.closest('.cell-sleep').querySelector('.cell-sleep-input'));
+      if (!input || !el.cellGrid.contains(input)) return null;
+      const wrap = input.closest('.cell-wrap');
+      if (!wrap) return null;
+      const row = parseInt(wrap.dataset.row, 10);
+      const col = parseInt(wrap.dataset.col, 10);
+      const tab = activeTab();
+      if (!tab || Number.isNaN(row) || Number.isNaN(col)) return null;
+      return { kind: 'sleep', key: row * tab.cols + col };
+    }
+    return null;
+  }
+
+  function onCheckboxDragMove(e) {
+    if (!checkboxDrag) return;
+    const hit = checkboxDragHit(e.clientX, e.clientY);
+    if (!hit || hit.kind !== checkboxDrag.kind) return;
+    applyCheckboxDragKey(hit.kind, hit.key);
+  }
+
+  function endCheckboxDrag() {
+    if (!checkboxDrag) {
+      endCheckboxDragListeners();
+      return;
+    }
+    const kind = checkboxDrag.kind;
+    checkboxDrag = null;
+    historySuspended = false;
+    endCheckboxDragListeners();
+    if (kind === 'combined' || kind === 'row') refreshAfterConfirmedChange();
+    else scheduleSave();
+  }
+
+  function beginCheckboxDrag(kind, key, value, event) {
+    if (checkboxDrag) endCheckboxDrag();
+    if (cellRangeDrag) return;
+    checkboxDrag = {
+      kind: kind,
+      value: !!value,
+      visited: {},
+      pointerId: event && event.pointerId
+    };
+    checkboxDrag.visited[key] = true;
+    pushHistory();
+    historySuspended = true;
+    document.body.classList.add('painting-checkboxes');
+    document.addEventListener('pointermove', onCheckboxDragMove);
+    document.addEventListener('pointerup', endCheckboxDrag);
+    document.addEventListener('pointercancel', endCheckboxDrag);
+    if (kind === 'combined') ensureCellConfirmedState(key, value, { quiet: true });
+    else if (kind === 'row') ensureRowIncludedState(key, value, { quiet: true });
+    else if (kind === 'sleep') ensureCellSleepState(key, value, { quiet: true });
+    if (kind === 'combined' || kind === 'row') applyAppendCheckedState();
+  }
+
   function applyAppendCheckedState() {
     const tab = activeTab();
     if (!tab) return;
@@ -1215,9 +1381,10 @@
    * Append plain and confirmed pieces into the active combined prompt.
    * pieces: [{ type:'plain'|'confirmed', text, tabId?, cellIndex? }]
    */
-  function appendPieces(pieces, label) {
+  function appendPieces(pieces, label, opts) {
+    const quiet = !!(opts && opts.quiet);
     if (!pieces || !pieces.length) {
-      setStatus('Nothing to append', 'err');
+      if (!quiet) setStatus('Nothing to append', 'err');
       return;
     }
     const scope = currentPromptScope();
@@ -1240,7 +1407,7 @@
       willAdd += text;
     }
     if (!willAdd) {
-      setStatus('Nothing to append', 'err');
+      if (!quiet) setStatus('Nothing to append', 'err');
       return;
     }
 
@@ -1274,6 +1441,10 @@
     }
 
     setPromptText(scope, current + added);
+    if (quiet) {
+      scheduleSave();
+      return;
+    }
     renderCombinedPrompt();
     applyConfirmedCellHighlights();
     renderMasterLibrary();
@@ -2063,8 +2234,17 @@
       rowBtn.dataset.row = String(r);
       rowBtn.setAttribute('aria-pressed', 'false');
       rowBtn.innerHTML = '<span class="row-append-mark" aria-hidden="true"></span>';
-      rowBtn.addEventListener('click', function () {
-        toggleRow(r);
+      rowBtn.addEventListener('pointerdown', function (ev) {
+        if (ev.button != null && ev.button !== 0) return;
+        ev.preventDefault();
+        ev.stopPropagation();
+        const wantOn = !isRowIncluded(tab, r);
+        beginCheckboxDrag('row', r, wantOn, ev);
+      });
+      rowBtn.addEventListener('click', function (ev) {
+        // Handled on pointerdown for click+drag paint; suppress leftover click.
+        ev.preventDefault();
+        ev.stopPropagation();
       });
       rowControls.appendChild(rowBtn);
 
@@ -2120,7 +2300,20 @@
         sleepCb.addEventListener('click', function (ev) {
           ev.stopPropagation();
         });
-        sleepCb.addEventListener('change', function () {
+        sleepCb.addEventListener('pointerdown', function (ev) {
+          if (ev.button != null && ev.button !== 0) return;
+          ev.stopPropagation();
+          const wantSlept = !sleepCb.checked;
+          beginCheckboxDrag('sleep', idx, wantSlept, ev);
+          // Prevent the native click toggle; drag paint owns the value.
+          ev.preventDefault();
+        });
+        sleepCb.addEventListener('change', function (ev) {
+          // Ignored during/after pointerdown paint; keep as keyboard fallback.
+          if (checkboxDrag) {
+            ev.preventDefault();
+            return;
+          }
           toggleCellSleep(idx, sleepCb.checked);
         });
         const sleepZzz = document.createElement('span');
@@ -2139,10 +2332,16 @@
         cellBtn.dataset.col = String(c);
         cellBtn.setAttribute('aria-pressed', 'false');
         cellBtn.innerHTML = '<span class="cell-append-mark" aria-hidden="true"></span>';
+        cellBtn.addEventListener('pointerdown', function (ev) {
+          if (ev.button != null && ev.button !== 0) return;
+          ev.preventDefault();
+          ev.stopPropagation();
+          const wantOn = !isCellConfirmedInScope(tab.id, idx, currentPromptScope());
+          beginCheckboxDrag('combined', idx, wantOn, ev);
+        });
         cellBtn.addEventListener('click', function (ev) {
           ev.preventDefault();
           ev.stopPropagation();
-          toggleCellConfirmed(idx);
         });
         gutter.appendChild(cellBtn);
         wrap.appendChild(gutter);
