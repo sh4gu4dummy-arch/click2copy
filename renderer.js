@@ -2234,7 +2234,47 @@
       header.className = 'column-header';
       header.dataset.col = String(c);
       header.setAttribute('role', 'columnheader');
-      header.textContent = 'Column ' + (c + 1);
+
+      const label = document.createElement('span');
+      label.className = 'column-header-label';
+      label.textContent = 'Column ' + (c + 1);
+      header.appendChild(label);
+
+      if (c === 0) {
+        header.classList.add('column-header-sortable');
+        const sortControls = document.createElement('span');
+        sortControls.className = 'column-sort-controls';
+        sortControls.setAttribute('role', 'group');
+        sortControls.setAttribute('aria-label', 'Sort by column 1');
+
+        const sortAsc = document.createElement('button');
+        sortAsc.type = 'button';
+        sortAsc.className = 'column-sort-btn';
+        sortAsc.textContent = 'A–Z';
+        sortAsc.title = 'Sort rows by column 1 A–Z';
+        sortAsc.setAttribute('aria-label', sortAsc.title);
+        sortAsc.addEventListener('click', function (e) {
+          e.preventDefault();
+          e.stopPropagation();
+          sortRowsByColumn(0, 'asc');
+        });
+
+        const sortDesc = document.createElement('button');
+        sortDesc.type = 'button';
+        sortDesc.className = 'column-sort-btn';
+        sortDesc.textContent = 'Z–A';
+        sortDesc.title = 'Sort rows by column 1 Z–A';
+        sortDesc.setAttribute('aria-label', sortDesc.title);
+        sortDesc.addEventListener('click', function (e) {
+          e.preventDefault();
+          e.stopPropagation();
+          sortRowsByColumn(0, 'desc');
+        });
+
+        sortControls.appendChild(sortAsc);
+        sortControls.appendChild(sortDesc);
+        header.appendChild(sortControls);
+      }
 
       const handle = document.createElement('span');
       handle.className = 'column-resize-handle';
@@ -3225,6 +3265,66 @@
       if ((tab.cells[rowIndex * tab.cols + col] || '').trim()) return false;
     }
     return true;
+  }
+
+  function sortRowsByColumn(colIndex, direction) {
+    const tab = activeTab();
+    if (!tab) return;
+    if (colIndex < 0 || colIndex >= tab.cols) return;
+    if (direction !== 'asc' && direction !== 'desc') return;
+
+    pushHistory();
+    ensureSleptCells(tab);
+
+    const cols = tab.cols;
+    const rows = tab.rows;
+    const order = [];
+    for (let r = 0; r < rows; r++) order.push(r);
+
+    order.sort(function (a, b) {
+      const va = (tab.cells[a * cols + colIndex] || '').trim();
+      const vb = (tab.cells[b * cols + colIndex] || '').trim();
+      // Keep blank column-1 cells at the bottom for both directions.
+      if (!va && !vb) return a - b;
+      if (!va) return 1;
+      if (!vb) return -1;
+      const cmp = va.localeCompare(vb, undefined, { sensitivity: 'base', numeric: true });
+      if (cmp !== 0) return direction === 'desc' ? -cmp : cmp;
+      return a - b;
+    });
+
+    const newCells = [];
+    const newSlept = [];
+    for (let i = 0; i < order.length; i++) {
+      const src = order[i];
+      for (let c = 0; c < cols; c++) {
+        const idx = src * cols + c;
+        newCells.push(tab.cells[idx] || '');
+        newSlept.push(!!tab.sleptCells[idx]);
+      }
+    }
+
+    const oldToNew = new Array(rows);
+    for (let newR = 0; newR < order.length; newR++) {
+      oldToNew[order[newR]] = newR;
+    }
+
+    tab.cells = newCells;
+    tab.sleptCells = newSlept;
+
+    state.confirmedLinks.forEach(function (link) {
+      if (link.tabId !== tab.id) return;
+      const row = Math.floor(link.cellIndex / cols);
+      const col = link.cellIndex % cols;
+      if (row < 0 || row >= rows) return;
+      link.cellIndex = oldToNew[row] * cols + col;
+    });
+
+    renderTabs();
+    renderGrid();
+    renderMasterLibrary();
+    scheduleSave();
+    setStatus(direction === 'desc' ? 'Sorted by column 1 Z–A' : 'Sorted by column 1 A–Z');
   }
 
   function moveRow(rowIndex, direction) {
