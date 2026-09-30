@@ -2025,6 +2025,12 @@
     if (cell) cell.focus();
   }
 
+  function moveToNextCell(currentCell, index) {
+    // Explicitly finish the current edit before moving, like a spreadsheet.
+    if (currentCell && typeof currentCell.blur === 'function') currentCell.blur();
+    focusCell(index);
+  }
+
   function onCellKeydown(e) {
     if (e.key !== 'Enter' || e.shiftKey || e.isComposing) return;
 
@@ -2034,10 +2040,13 @@
 
     e.preventDefault();
     if (idx < tab.cells.length - 1) {
-      focusCell(idx + 1);
+      moveToNextCell(e.currentTarget, idx + 1);
       return;
     }
 
+    // Blur before re-rendering so the current edit is finished cleanly.
+    e.currentTarget.blur();
+    // Keep Enter row-major: append a row after the final cell, then focus it.
     addRow();
     focusCell(idx + 1);
   }
