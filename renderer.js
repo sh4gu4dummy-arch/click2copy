@@ -826,6 +826,16 @@
     });
   }
 
+  /** Swap Combined-link cell indices for two cells (content moves with the link). */
+  function swapConfirmedCellIndices(tabId, indexA, indexB) {
+    if (indexA === indexB) return;
+    state.confirmedLinks.forEach(function (link) {
+      if (link.tabId !== tabId) return;
+      if (link.cellIndex === indexA) link.cellIndex = indexB;
+      else if (link.cellIndex === indexB) link.cellIndex = indexA;
+    });
+  }
+
   function remapConfirmedAfterColumnAdd(tabId, oldCols, newCols) {
     state.confirmedLinks.forEach(function (link) {
       if (link.tabId !== tabId) return;
@@ -872,6 +882,15 @@
     if (!tab || cellIndex < 0 || cellIndex >= tab.cells.length) return;
     ensureSleptCells(tab);
     tab.sleptCells[cellIndex] = !!slept;
+  }
+
+  function swapSleptCellIndices(tab, indexA, indexB) {
+    if (!tab || indexA === indexB) return;
+    ensureSleptCells(tab);
+    if (indexA < 0 || indexB < 0 || indexA >= tab.sleptCells.length || indexB >= tab.sleptCells.length) return;
+    const tmp = tab.sleptCells[indexA];
+    tab.sleptCells[indexA] = tab.sleptCells[indexB];
+    tab.sleptCells[indexB] = tmp;
   }
 
   function remapSleptAfterColumnAdd(tab, oldCols, newCols) {
@@ -2841,11 +2860,14 @@
 
   // Click2Copy: selecting/focusing a cell with content writes it to the clipboard.
   // Prefer click/focus (not input/keystrokes while typing). Guard against click+focus double-fire.
-  // Click+drag across cells selects a rectangle; mouseup copies TSV (tabs/newlines like sheets).
+  // Short click = whole-cell select + copy. Hold+drag = relocate/swap one cell.
+  // Immediate click+drag across cells selects a rectangle; mouseup copies TSV (tabs/newlines like sheets).
   let lastAutoCopyKey = '';
   let lastAutoCopyAt = 0;
   let suppressCellAutoCopy = false;
   let cellRangeDrag = null;
+  const CELL_HOLD_MS = 220;
+  const CELL_DRAG_MOVE_PX = 8;
 
   function writeTextToClipboard(text) {
     if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
@@ -2900,6 +2922,16 @@
     copyTextWithStatus(value, 'Copied cell');
   }
 
+  /** Snap selection to the whole cell (spreadsheet feel, not a text caret). */
+  function selectWholeCellContents(ta) {
+    if (!ta || ta.tagName !== 'TEXTAREA') return;
+    try {
+      const len = (ta.value == null ? '' : String(ta.value)).length;
+      if (typeof ta.select === 'function') ta.select();
+      if (typeof ta.setSelectionRange === 'function') ta.setSelectionRange(0, len);
+    } catch (err) { /* no-op */ }
+  }
+
   function clearCellRangeHighlight() {
     if (!el.cellGrid) return;
     const nodes = el.cellGrid.querySelectorAll(
@@ -2907,6 +2939,17 @@
     );
     for (let i = 0; i < nodes.length; i++) {
       nodes[i].classList.remove('cell-range-selected', 'selected');
+    }
+  }
+
+  function clearCellRelocateHighlight() {
+    if (!el.cellGrid) return;
+    const nodes = el.cellGrid.querySelectorAll(
+      '.cell-wrap.cell-relocate-source, .cell-wrap.cell-relocate-target, ' +
+      '.cell.cell-relocate-source, .cell.cell-relocate-target'
+    );
+    for (let i = 0; i < nodes.length; i++) {
+      nodes[i].classList.remove('cell-relocate-source', 'cell-relocate-target');
     }
   }
 
@@ -2921,6 +2964,7 @@
 
   function applyCellRangeHighlight(r0, c0, r1, c1) {
     clearCellRangeHighlight();
+    clearCellRelocateHighlight();
     if (!el.cellGrid) return;
     const b = normalizeRangeBounds(r0, c0, r1, c1);
     for (let r = b.rMin; r <= b.rMax; r++) {
@@ -2935,6 +2979,29 @@
         if (ta) ta.classList.add('cell-range-selected', 'selected');
       }
     }
+  }
+
+  function applyCellRelocateHighlight(srcRow, srcCol, tgtRow, tgtCol) {
+    clearCellRangeHighlight();
+    clearCellRelocateHighlight();
+    if (!el.cellGrid) return;
+    const src = el.cellGrid.querySelector(
+      '.cell-wrap[data-row="' + srcRow + '"][data-col="' + srcCol + '"]'
+    );
+    if (src) {
+      src.classList.add('cell-relocate-source');
+      const ta = src.querySelector('textarea.cell');
+      if (ta) ta.classList.add('cell-relocate-source');
+    }
+    if (tgtRow == null || tgtCol == null) return;
+    if (tgtRow === srcRow && tgtCol === srcCol) return;
+    const tgt = el.cellGrid.querySelector(
+      '.cell-wrap[data-row="' + tgtRow + '"][data-col="' + tgtCol + '"]'
+    );
+    if (!tgt) return;
+    tgt.classList.add('cell-relocate-target');
+    const ta2 = tgt.querySelector('textarea.cell');
+    if (ta2) ta2.classList.add('cell-relocate-target');
   }
 
   function buildCellRangeTsv(tab, r0, c0, r1, c1) {
@@ -2959,12 +3026,36 @@
     return wrap;
   }
 
+  /**
+   * Swap two cells' text, sleep flags, and Combined-link indices.
+   * Empty target ⇒ move; both filled ⇒ swap. Combined segments stay valid.
+   */
+  function relocateOrSwapCells(tab, fromIdx, toIdx) {
+    if (!tab || fromIdx === toIdx) return false;
+    if (fromIdx < 0 || toIdx < 0 || fromIdx >= tab.cells.length || toIdx >= tab.cells.length) {
+      return false;
+    }
+    pushHistory();
+    ensureSleptCells(tab);
+    const tmp = tab.cells[fromIdx];
+    tab.cells[fromIdx] = tab.cells[toIdx];
+    tab.cells[toIdx] = tmp;
+    swapSleptCellIndices(tab, fromIdx, toIdx);
+    swapConfirmedCellIndices(tab.id, fromIdx, toIdx);
+    return true;
+  }
+
   function finishCellRangeListeners() {
     document.removeEventListener('pointermove', onCellRangePointerMove);
     document.removeEventListener('pointerup', onCellRangePointerUp);
     document.removeEventListener('pointercancel', onCellRangePointerUp);
     document.removeEventListener('dragstart', onCellRangeDragStartPrevent, true);
     document.body.classList.remove('selecting-cell-range');
+    document.body.classList.remove('relocating-cell');
+    if (cellRangeDrag && cellRangeDrag.holdTimer) {
+      clearTimeout(cellRangeDrag.holdTimer);
+      cellRangeDrag.holdTimer = null;
+    }
     if (cellRangeDrag && cellRangeDrag.captureEl && cellRangeDrag.pointerId != null) {
       try {
         if (cellRangeDrag.captureEl.releasePointerCapture) {
@@ -2976,7 +3067,7 @@
 
   function onCellRangeDragStartPrevent(e) {
     // Native textarea text-drag would steal the gesture and leave only one cell lit.
-    if (cellRangeDrag && cellRangeDrag.active) e.preventDefault();
+    if (cellRangeDrag && cellRangeDrag.active && cellRangeDrag.mode) e.preventDefault();
   }
 
   function collapseCellTextSelection() {
@@ -2994,39 +3085,78 @@
   }
 
   function beginMultiCellRangeDrag() {
-    if (!cellRangeDrag || cellRangeDrag.multi) return;
+    if (!cellRangeDrag || cellRangeDrag.mode === 'multi') return;
+    if (cellRangeDrag.mode === 'relocate') return;
+    cellRangeDrag.mode = 'multi';
     cellRangeDrag.multi = true;
     suppressCellAutoCopy = true;
+    document.body.classList.remove('relocating-cell');
     document.body.classList.add('selecting-cell-range');
+    clearCellRelocateHighlight();
     collapseCellTextSelection();
+  }
+
+  function beginCellRelocateDrag() {
+    if (!cellRangeDrag || cellRangeDrag.mode === 'relocate') return;
+    if (cellRangeDrag.mode === 'multi') return;
+    cellRangeDrag.mode = 'relocate';
+    cellRangeDrag.multi = false;
+    suppressCellAutoCopy = true;
+    document.body.classList.remove('selecting-cell-range');
+    document.body.classList.add('relocating-cell');
+    collapseCellTextSelection();
+    applyCellRelocateHighlight(
+      cellRangeDrag.startRow, cellRangeDrag.startCol,
+      cellRangeDrag.endRow, cellRangeDrag.endCol
+    );
   }
 
   function onCellRangePointerMove(e) {
     if (!cellRangeDrag || !cellRangeDrag.active) return;
+    const dx = e.clientX - cellRangeDrag.startX;
+    const dy = e.clientY - cellRangeDrag.startY;
+    const distSq = dx * dx + dy * dy;
+    const moved = distSq >= (CELL_DRAG_MOVE_PX * CELL_DRAG_MOVE_PX);
+
     const wrap = cellWrapFromPoint(e.clientX, e.clientY);
-    if (!wrap) return;
-    const row = parseInt(wrap.dataset.row, 10);
-    const col = parseInt(wrap.dataset.col, 10);
-    if (Number.isNaN(row) || Number.isNaN(col)) return;
-    if (row === cellRangeDrag.endRow && col === cellRangeDrag.endCol) return;
+    let row = cellRangeDrag.endRow;
+    let col = cellRangeDrag.endCol;
+    if (wrap) {
+      const r = parseInt(wrap.dataset.row, 10);
+      const c = parseInt(wrap.dataset.col, 10);
+      if (!Number.isNaN(r) && !Number.isNaN(c)) {
+        row = r;
+        col = c;
+      }
+    }
+
+    if (!cellRangeDrag.mode && moved) {
+      if (cellRangeDrag.held) beginCellRelocateDrag();
+      else beginMultiCellRangeDrag();
+    }
+
+    if (row === cellRangeDrag.endRow && col === cellRangeDrag.endCol) {
+      return;
+    }
     cellRangeDrag.endRow = row;
     cellRangeDrag.endCol = col;
-    const multi = row !== cellRangeDrag.startRow || col !== cellRangeDrag.startCol;
-    if (!multi) {
-      if (!cellRangeDrag.multi) return;
+
+    if (cellRangeDrag.mode === 'multi') {
+      if (e.cancelable) e.preventDefault();
       applyCellRangeHighlight(
         cellRangeDrag.startRow, cellRangeDrag.startCol,
         cellRangeDrag.endRow, cellRangeDrag.endCol
       );
       return;
     }
-    beginMultiCellRangeDrag();
-    if (e.cancelable) e.preventDefault();
-    // Full rectangle from anchor → pointer, every move — not only the hovered cell.
-    applyCellRangeHighlight(
-      cellRangeDrag.startRow, cellRangeDrag.startCol,
-      cellRangeDrag.endRow, cellRangeDrag.endCol
-    );
+
+    if (cellRangeDrag.mode === 'relocate') {
+      if (e.cancelable) e.preventDefault();
+      applyCellRelocateHighlight(
+        cellRangeDrag.startRow, cellRangeDrag.startCol,
+        cellRangeDrag.endRow, cellRangeDrag.endCol
+      );
+    }
   }
 
   function onCellRangePointerUp(e) {
@@ -3046,31 +3176,100 @@
       }
     }
 
-    const b = normalizeRangeBounds(drag.startRow, drag.startCol, drag.endRow, drag.endCol);
-    const rows = b.rMax - b.rMin + 1;
-    const cols = b.cMax - b.cMin + 1;
-    const isMulti = rows > 1 || cols > 1;
-
-    if (isMulti) {
-      suppressCellAutoCopy = true;
-      const tab = activeTab();
-      if (tab) {
-        const tsv = buildCellRangeTsv(tab, b.rMin, b.cMin, b.rMax, b.cMax);
-        const label = rows + '\u00d7' + cols + ' cells';
-        lastAutoCopyKey = (tab.id || '') + ':range:' + b.rMin + ',' + b.cMin + ':' + b.rMax + ',' + b.cMax;
-        lastAutoCopyAt = Date.now();
-        copyTextWithStatus(tsv, 'Copied ' + label);
+    if (drag.mode === 'multi') {
+      const b = normalizeRangeBounds(drag.startRow, drag.startCol, drag.endRow, drag.endCol);
+      const rows = b.rMax - b.rMin + 1;
+      const cols = b.cMax - b.cMin + 1;
+      const isMulti = rows > 1 || cols > 1;
+      if (isMulti) {
+        suppressCellAutoCopy = true;
+        const tab = activeTab();
+        if (tab) {
+          const tsv = buildCellRangeTsv(tab, b.rMin, b.cMin, b.rMax, b.cMax);
+          const label = rows + '\u00d7' + cols + ' cells';
+          lastAutoCopyKey = (tab.id || '') + ':range:' + b.rMin + ',' + b.cMin + ':' + b.rMax + ',' + b.cMax;
+          lastAutoCopyAt = Date.now();
+          copyTextWithStatus(tsv, 'Copied ' + label);
+        }
+        applyCellRangeHighlight(b.rMin, b.cMin, b.rMax, b.cMax);
+        window.setTimeout(function () {
+          clearCellRangeHighlight();
+          suppressCellAutoCopy = false;
+          cellRangeDrag = null;
+        }, 120);
+        return;
       }
-      applyCellRangeHighlight(b.rMin, b.cMin, b.rMax, b.cMax);
-      window.setTimeout(function () {
-        clearCellRangeHighlight();
-        suppressCellAutoCopy = false;
-        cellRangeDrag = null;
-      }, 120);
+      clearCellRangeHighlight();
+      suppressCellAutoCopy = false;
+      cellRangeDrag = null;
+      // Jittered drag that never left the cell — still snap whole-cell select + copy.
+      const tabStay = activeTab();
+      if (tabStay) {
+        const stayIdx = drag.startRow * tabStay.cols + drag.startCol;
+        const taStay = el.cellGrid.querySelector('textarea.cell[data-idx="' + stayIdx + '"]');
+        if (taStay) {
+          selectWholeCellContents(taStay);
+          autoCopyCellToClipboard(taStay);
+        }
+      }
       return;
     }
 
+    if (drag.mode === 'relocate') {
+      suppressCellAutoCopy = true;
+      clearCellRelocateHighlight();
+      const tab = activeTab();
+      const same =
+        drag.startRow === drag.endRow && drag.startCol === drag.endCol;
+      if (tab && !same) {
+        const fromIdx = drag.startRow * tab.cols + drag.startCol;
+        const toIdx = drag.endRow * tab.cols + drag.endCol;
+        const targetHadContent = !!(tab.cells[toIdx] || '').trim();
+        if (relocateOrSwapCells(tab, fromIdx, toIdx)) {
+          renderTabs();
+          renderGrid();
+          renderMasterLibrary();
+          renderCombinedPrompt();
+          scheduleSave();
+          const fromLabel = 'R' + (drag.startRow + 1) + 'C' + (drag.startCol + 1);
+          const toLabel = 'R' + (drag.endRow + 1) + 'C' + (drag.endCol + 1);
+          setStatus(
+            targetHadContent
+              ? ('Swapped ' + fromLabel + ' \u2194 ' + toLabel)
+              : ('Moved ' + fromLabel + ' \u2192 ' + toLabel),
+            'ok'
+          );
+          window.setTimeout(function () {
+            suppressCellAutoCopy = false;
+            cellRangeDrag = null;
+            focusCell(toIdx);
+            const ta = el.cellGrid.querySelector('textarea.cell[data-idx="' + toIdx + '"]');
+            if (ta) {
+              selectWholeCellContents(ta);
+              autoCopyCellToClipboard(ta);
+            }
+          }, 0);
+          return;
+        }
+      }
+      // Hold released on same cell (or failed relocate): snap whole-cell select + copy.
+      suppressCellAutoCopy = false;
+      cellRangeDrag = null;
+      const tab2 = activeTab();
+      if (tab2) {
+        const stayIdx = drag.startRow * tab2.cols + drag.startCol;
+        const taStay = el.cellGrid.querySelector('textarea.cell[data-idx="' + stayIdx + '"]');
+        if (taStay) {
+          selectWholeCellContents(taStay);
+          autoCopyCellToClipboard(taStay);
+        }
+      }
+      return;
+    }
+
+    // Short click / hold-without-drag: whole-cell select + copy via click/focus handlers.
     clearCellRangeHighlight();
+    clearCellRelocateHighlight();
     suppressCellAutoCopy = false;
     cellRangeDrag = null;
   }
@@ -3087,14 +3286,25 @@
     }
     cellRangeDrag = {
       active: true,
+      mode: null,
       multi: false,
+      held: false,
+      holdTimer: null,
       startRow: row,
       startCol: col,
       endRow: row,
       endCol: col,
+      startX: e.clientX,
+      startY: e.clientY,
       pointerId: e.pointerId,
       captureEl: ta
     };
+    cellRangeDrag.holdTimer = window.setTimeout(function () {
+      if (!cellRangeDrag || !cellRangeDrag.active || cellRangeDrag.mode) return;
+      cellRangeDrag.held = true;
+      // Affordance: held long enough that a drag will relocate instead of range-copy.
+      applyCellRelocateHighlight(cellRangeDrag.startRow, cellRangeDrag.startCol, null, null);
+    }, CELL_HOLD_MS);
     document.addEventListener('pointermove', onCellRangePointerMove);
     document.addEventListener('pointerup', onCellRangePointerUp);
     document.addEventListener('pointercancel', onCellRangePointerUp);
@@ -3106,12 +3316,22 @@
 
   function onCellFocusSelect(e) {
     rememberFocusedCell(e);
+    if (suppressCellAutoCopy) return;
+    if (cellRangeDrag && cellRangeDrag.active && cellRangeDrag.mode) return;
+    selectWholeCellContents(e.currentTarget);
     autoCopyCellToClipboard(e.currentTarget);
   }
 
   function onCellClickSelect(e) {
     rememberFocusedCell(e);
-    // Prefer click when selecting a cell (also covers re-click of an already-focused cell).
+    if (suppressCellAutoCopy) return;
+    if (cellRangeDrag && cellRangeDrag.mode) return;
+    // Double-click keeps caret placement for editing; single click snaps whole cell.
+    if (e.detail >= 2) {
+      autoCopyCellToClipboard(e.currentTarget);
+      return;
+    }
+    selectWholeCellContents(e.currentTarget);
     autoCopyCellToClipboard(e.currentTarget);
   }
 

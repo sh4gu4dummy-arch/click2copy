@@ -713,6 +713,23 @@ body.selecting-cell-range * {
   user-select: none !important;
 }
 
+body.relocating-cell,
+body.relocating-cell * {
+  cursor: grabbing !important;
+  user-select: none !important;
+}
+
+.cell-wrap.cell-relocate-source,
+.cell.cell-relocate-source {
+  background: rgba(245, 158, 11, 0.28) !important;
+  box-shadow: inset 0 0 0 2px rgba(245, 158, 11, 0.95);
+}
+
+.cell-wrap.cell-relocate-target,
+.cell.cell-relocate-target {
+  background: rgba(16, 185, 129, 0.28) !important;
+  box-shadow: inset 0 0 0 2px rgba(16, 185, 129, 0.95);
+}
 
 .cell-wrap.is-slept {
   opacity: 0.55;
