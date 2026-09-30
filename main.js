@@ -64,7 +64,10 @@ const DEFAULT_DATA = {
   ],
   activeTabId: 'tab-1',
   combinedPrompt: '',
-  separators: { ...DEFAULT_SEPARATORS }
+  globalCombined: true,
+  partPrompts: {},
+  separators: { ...DEFAULT_SEPARATORS },
+  confirmedLinks: []
 };
 
 function storePath() {
@@ -262,6 +265,45 @@ function normalizeTab(t) {
   return normalized;
 }
 
+function toNonNegInt(value) {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    const n = Math.trunc(value);
+    return n >= 0 ? n : null;
+  }
+  if (typeof value === 'string' && /^-?\d+$/.test(value.trim())) {
+    const n = parseInt(value.trim(), 10);
+    return Number.isFinite(n) && n >= 0 ? n : null;
+  }
+  return null;
+}
+
+/** Keep Combined↔cell green links across save/load/session/.c2copy. */
+function normalizeConfirmedLinks(raw) {
+  if (!Array.isArray(raw)) return [];
+  const links = [];
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue;
+    if (typeof item.id !== 'string' || !item.id) continue;
+    if (typeof item.tabId !== 'string' || !item.tabId) continue;
+    if (typeof item.text !== 'string') continue;
+    const cellIndex = toNonNegInt(item.cellIndex);
+    const start = toNonNegInt(item.start);
+    const end = toNonNegInt(item.end);
+    if (cellIndex === null || start === null || end === null || end < start) continue;
+    const scope = typeof item.scope === 'string' && item.scope ? item.scope : 'global';
+    links.push({
+      id: item.id,
+      tabId: item.tabId,
+      cellIndex,
+      text: item.text,
+      start,
+      end,
+      scope
+    });
+  }
+  return links;
+}
+
 function normalizeData(parsed) {
   if (!parsed || !Array.isArray(parsed.tabs) || parsed.tabs.length === 0) {
     return null;
@@ -286,9 +328,7 @@ function normalizeData(parsed) {
   if (!tabs.some((t) => t.id === activeTabId)) {
     activeTabId = tabs[0].id;
   }
-  const confirmedLinks = Array.isArray(parsed.confirmedLinks)
-    ? parsed.confirmedLinks.filter((link) => link && typeof link === 'object')
-    : [];
+  const confirmedLinks = normalizeConfirmedLinks(parsed.confirmedLinks);
   return {
     tabs,
     activeTabId,

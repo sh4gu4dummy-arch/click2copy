@@ -609,6 +609,18 @@
     else state.partPrompts[scope] = text;
   }
 
+  function toNonNegInt(value) {
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      const n = Math.trunc(value);
+      return n >= 0 ? n : null;
+    }
+    if (typeof value === 'string' && /^-?\d+$/.test(value.trim())) {
+      const n = parseInt(value.trim(), 10);
+      return Number.isFinite(n) && n >= 0 ? n : null;
+    }
+    return null;
+  }
+
   function normalizeConfirmedLinks(raw) {
     if (!Array.isArray(raw)) return [];
     const links = [];
@@ -617,22 +629,58 @@
       if (!item || typeof item !== 'object') continue;
       if (typeof item.id !== 'string' || !item.id) continue;
       if (typeof item.tabId !== 'string' || !item.tabId) continue;
-      if (!Number.isInteger(item.cellIndex) || item.cellIndex < 0) continue;
       if (typeof item.text !== 'string') continue;
-      if (!Number.isInteger(item.start) || item.start < 0) continue;
-      if (!Number.isInteger(item.end) || item.end < item.start) continue;
+      const cellIndex = toNonNegInt(item.cellIndex);
+      const start = toNonNegInt(item.start);
+      const end = toNonNegInt(item.end);
+      if (cellIndex === null || start === null || end === null || end < start) continue;
       const scope = typeof item.scope === 'string' && item.scope ? item.scope : 'global';
       links.push({
         id: item.id,
         tabId: item.tabId,
-        cellIndex: item.cellIndex,
+        cellIndex: cellIndex,
         text: item.text,
-        start: item.start,
-        end: item.end,
+        start: start,
+        end: end,
         scope: scope
       });
     }
     return links;
+  }
+
+  /** Repair start/end when Combined text still contains link.text (survives load drift). */
+  function repairConfirmedLinkOffset(link, text) {
+    if (!link || typeof text !== 'string') return false;
+    if (link.start >= 0 && link.end <= text.length && link.start <= link.end &&
+        text.slice(link.start, link.end) === link.text) {
+      return true;
+    }
+    if (!link.text) return false;
+    var from = Math.max(0, link.start - 80);
+    var idx = text.indexOf(link.text, from);
+    if (idx === -1) idx = text.indexOf(link.text);
+    if (idx === -1) return false;
+    link.start = idx;
+    link.end = idx + link.text.length;
+    return true;
+  }
+
+  function repairConfirmedLinksForScope(scope) {
+    var target = scope || currentPromptScope();
+    var text = getPromptText(target);
+    state.confirmedLinks = state.confirmedLinks.filter(function (link) {
+      if (link.scope !== target) return true;
+      if (!linkMatchesSource(link, link.text)) return false;
+      return repairConfirmedLinkOffset(link, text);
+    });
+  }
+
+  function repairAllConfirmedLinks() {
+    var scopes = {};
+    state.confirmedLinks.forEach(function (link) { scopes[link.scope] = true; });
+    Object.keys(scopes).forEach(function (scope) {
+      repairConfirmedLinksForScope(scope);
+    });
   }
 
   function linksForScope(scope) {
@@ -1274,13 +1322,15 @@
   function renderCombinedPrompt() {
     const tab = activeTab();
     const scope = currentPromptScope();
+    // Repair offsets before painting so greens survive restart / load drift.
+    repairConfirmedLinksForScope(scope);
     const text = getPromptText(scope);
     const links = linksForScope(scope).filter(function (link) {
       if (link.start < 0 || link.end > text.length || link.start > link.end) return false;
       return text.slice(link.start, link.end) === link.text;
     });
 
-    // Drop stale ranges that no longer match the prompt string.
+    // Drop only links that still fail after repair (edited away or source mismatch).
     const validIds = {};
     links.forEach(function (link) { validIds[link.id] = true; });
     state.confirmedLinks = state.confirmedLinks.filter(function (link) {
@@ -1373,6 +1423,8 @@
     state.separators = normalizeSeparators(data.separators);
     state.confirmedLinks = normalizeConfirmedLinks(data.confirmedLinks);
     if (state.globalCombined) mergePartPrompts();
+    // Re-anchor Combined ranges after merge so cell + Master-insert greens restore.
+    repairAllConfirmedLinks();
     el.partSeparator.value = state.separators.part;
     el.columnSeparator.value = state.separators.column;
     el.rowSeparator.value = state.separators.row;
@@ -3352,9 +3404,27 @@
     for (const promptDocument of state.documents) {
       if (!promptDocument.filePath) continue;
       try {
+        const sessionData = promptDocument.data;
         const result = await window.click2copy.openDocument(promptDocument.filePath);
         if (result && result.ok) {
-          promptDocument.data = result.data;
+          const fileData = result.data;
+          // Named-file reload must not wipe greens: legacy/.c2copy without confirmedLinks
+          // keeps session links when Combined text still matches.
+          const fileLinks = normalizeConfirmedLinks(fileData && fileData.confirmedLinks);
+          const sessionLinks = normalizeConfirmedLinks(sessionData && sessionData.confirmedLinks);
+          if (fileLinks.length === 0 && sessionLinks.length > 0) {
+            const fileCombined = typeof fileData.combinedPrompt === 'string' ? fileData.combinedPrompt : '';
+            const sessionCombined = typeof sessionData.combinedPrompt === 'string' ? sessionData.combinedPrompt : '';
+            if (fileCombined === sessionCombined) {
+              fileData.confirmedLinks = sessionLinks;
+              if (sessionData.partPrompts && typeof sessionData.partPrompts === 'object') {
+                fileData.partPrompts = sessionData.partPrompts;
+              }
+            }
+          } else if (fileLinks.length > 0) {
+            fileData.confirmedLinks = fileLinks;
+          }
+          promptDocument.data = fileData;
           promptDocument.title = documentName(promptDocument.filePath);
         } else {
           failedFile = true;
@@ -3370,6 +3440,8 @@
     const current = activeDocument();
     clearHistory();
     applyData(current.data);
+    // Capture repaired greens back onto the document before launch persist.
+    if (current) current.data = snapshot();
     renderDocuments();
     initialized = true;
     await persist();

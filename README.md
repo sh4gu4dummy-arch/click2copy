@@ -70,7 +70,7 @@ Each tab is stored as:
 
 `cells` is a flat row-major array of length `cols * rows`. `sleptCells` is a parallel boolean array (same length); slept cells are excluded from Append all active.
 
-Confirmed append links (ranges into the combined prompt tied to source tab/cell) are stored as `confirmedLinks` on the document.
+Confirmed append links (ranges into the combined prompt tied to source tab/cell) are stored as `confirmedLinks` on the document. They round-trip through session JSON, untitled autosave, named `.c2copy` files, and recoverable backups so cell greens and Master-insert greens restore on launch (offsets are repaired if Combined text still matches).
 
 ## Usage tips
 
