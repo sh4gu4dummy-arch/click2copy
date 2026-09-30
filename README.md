@@ -9,8 +9,8 @@ A simple Electron desktop app for composing prompts from reusable parts.
 - **+ Row / + Column** — grow the grid; new cells start empty
 - **Sheet paste** — paste TSV / HTML tables from Google Sheets or Excel into the focused cell; values spread across the grid and the grid grows if needed
 - **Cell copy/cut** — with no text selected in a cell, Ctrl/Cmd+C or X copies or cuts the whole cell
-- **Row append** — click the checkbox-like control to the left of any row to append that row’s non-empty cells (joined with the column separator) as a new line in the combined prompt; every click appends again
-- **Append all non-empty** — appends every non-empty row of the active part (row-major)
+- **Row / cell Combined toggles** — checkbox-like controls on each row and each cell add that content to the Combined prompt and stay checked while included; uncheck removes the linked confirmed segment(s) and clears green. Row toggle covers the whole row; cell toggle is per-cell. Both stay in sync with confirmed links
+- **Append all non-empty** — includes every not-yet-included non-empty cell of the active part (row-major)
 - **Undo / Redo** — Ctrl/Cmd+Z undoes document edits (cells, Combined prompt, confirmed links, paste, append, Master insert, clear, etc.); Ctrl/Cmd+Shift+Z or Ctrl+Y redoes. Typing in a cell or Combined is coalesced into one undo step
 - **Confirmed append highlighting** — appended cell text is marked green in both the source cell and the Combined prompt (editable “premade” segments). Editing a Combined segment so it no longer matches its linked cell clears green on both sides
 - **Combined prompt** — editable pane with **Copy** to clipboard and **Clear**
@@ -68,8 +68,8 @@ Confirmed append links (ranges into the combined prompt tied to source tab/cell)
 ## Usage tips
 
 1. Edit cells in the active tab’s grid.
-2. Click the box left of a row to append that row to the combined prompt (repeatable).
-3. Or click **Append all non-empty** for the whole part.
+2. Check the box left of a row (or the small box on a cell) to include it in the Combined prompt; uncheck to remove it.
+3. Or click **Append all non-empty** to include every missing non-empty cell.
 4. Use **+ Row** / **+ Column** to expand the grid.
 5. Paste from Google Sheets or Excel into a focused cell — tab-separated or HTML table data fills the grid (expanding rows/columns as needed) instead of dumping into one cell. Copy/cut with no text selection copies the whole focused cell.
 6. Click **Copy** when ready to paste elsewhere.

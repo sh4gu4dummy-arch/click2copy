@@ -589,6 +589,33 @@
     });
   }
 
+  function isCellConfirmedInScope(tabId, cellIndex, scope) {
+    const target = scope || currentPromptScope();
+    return state.confirmedLinks.some(function (link) {
+      return link.tabId === tabId && link.cellIndex === cellIndex && link.scope === target;
+    });
+  }
+
+  function linksForCellsInScope(tabId, cellIndices, scope) {
+    const target = scope || currentPromptScope();
+    const wanted = {};
+    for (let i = 0; i < cellIndices.length; i++) wanted[cellIndices[i]] = true;
+    return state.confirmedLinks.filter(function (link) {
+      return link.scope === target && link.tabId === tabId && wanted[link.cellIndex];
+    });
+  }
+
+  function isRowIncluded(tab, rowIndex) {
+    if (!tab || rowIndex < 0 || rowIndex >= tab.rows) return false;
+    const scope = currentPromptScope();
+    for (let c = 0; c < tab.cols; c++) {
+      const idx = rowIndex * tab.cols + c;
+      if (!(tab.cells[idx] || '').trim()) continue;
+      if (isCellConfirmedInScope(tab.id, idx, scope)) return true;
+    }
+    return false;
+  }
+
   function dropConfirmedLink(linkId) {
     state.confirmedLinks = state.confirmedLinks.filter(function (link) {
       return link.id !== linkId;
@@ -646,6 +673,42 @@
     });
   }
 
+  function applyAppendCheckedState() {
+    const tab = activeTab();
+    if (!tab) return;
+    const scope = currentPromptScope();
+
+    const rowButtons = el.cellGrid.querySelectorAll('.row-append');
+    for (let i = 0; i < rowButtons.length; i++) {
+      const btn = rowButtons[i];
+      const row = parseInt(btn.dataset.row, 10);
+      if (Number.isNaN(row)) continue;
+      const on = isRowIncluded(tab, row);
+      btn.classList.toggle('is-checked', on);
+      btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+      btn.title = on
+        ? 'Remove row ' + (row + 1) + ' from combined prompt'
+        : 'Add row ' + (row + 1) + ' to combined prompt';
+      btn.setAttribute('aria-label', btn.title);
+    }
+
+    const cellButtons = el.cellGrid.querySelectorAll('.cell-append');
+    for (let i = 0; i < cellButtons.length; i++) {
+      const btn = cellButtons[i];
+      const idx = parseInt(btn.dataset.idx, 10);
+      if (Number.isNaN(idx)) continue;
+      const on = isCellConfirmedInScope(tab.id, idx, scope);
+      btn.classList.toggle('is-checked', on);
+      btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+      const row = Math.floor(idx / tab.cols) + 1;
+      const col = (idx % tab.cols) + 1;
+      btn.title = on
+        ? 'Remove cell R' + row + 'C' + col + ' from combined prompt'
+        : 'Add cell R' + row + 'C' + col + ' to combined prompt';
+      btn.setAttribute('aria-label', btn.title);
+    }
+  }
+
   function applyConfirmedCellHighlights() {
     const tab = activeTab();
     if (!tab) return;
@@ -653,8 +716,12 @@
     for (let i = 0; i < cells.length; i++) {
       const node = cells[i];
       const idx = parseInt(node.dataset.idx, 10);
-      node.classList.toggle('cell-confirmed', !Number.isNaN(idx) && isCellConfirmed(tab.id, idx));
+      const confirmed = !Number.isNaN(idx) && isCellConfirmed(tab.id, idx);
+      node.classList.toggle('cell-confirmed', confirmed);
+      const wrap = node.closest ? node.closest('.cell-wrap') : null;
+      if (wrap) wrap.classList.toggle('cell-confirmed', confirmed);
     }
+    applyAppendCheckedState();
   }
 
   function readCombinedDomTextAndSpans() {
@@ -787,6 +854,126 @@
     return removed;
   }
 
+  /**
+   * Remove confirmed link ranges from the prompt text, dropping matching
+   * column/row separators between removed pieces and a leading part separator.
+   */
+  function removeLinksFromCombined(linksToRemove) {
+    if (!linksToRemove || !linksToRemove.length) return false;
+    const scope = linksToRemove[0].scope;
+    const removeIds = {};
+    for (let i = 0; i < linksToRemove.length; i++) {
+      if (linksToRemove[i].scope !== scope) continue;
+      removeIds[linksToRemove[i].id] = true;
+    }
+    if (!Object.keys(removeIds).length) return false;
+
+    let text = getPromptText(scope);
+    const all = linksForScope(scope);
+    const partSep = separatorValue(state.separators.part);
+    const colSep = separatorValue(state.separators.column);
+    const rowSep = separatorValue(state.separators.row);
+
+    const ranges = [];
+    for (let i = 0; i < all.length; i++) {
+      if (!removeIds[all[i].id]) continue;
+      ranges.push({ start: all[i].start, end: all[i].end });
+    }
+    if (!ranges.length) return false;
+
+    ranges.sort(function (a, b) { return a.start - b.start; });
+    const merged = [];
+    for (let i = 0; i < ranges.length; i++) {
+      const range = ranges[i];
+      if (!merged.length) {
+        merged.push({ start: range.start, end: range.end });
+        continue;
+      }
+      const last = merged[merged.length - 1];
+      const gap = text.slice(last.end, range.start);
+      if (gap === '' || gap === colSep || gap === rowSep) {
+        last.end = range.end;
+      } else {
+        merged.push({ start: range.start, end: range.end });
+      }
+    }
+
+    for (let i = 0; i < merged.length; i++) {
+      const range = merged[i];
+      if (!partSep || range.start < partSep.length) continue;
+      const before = text.slice(range.start - partSep.length, range.start);
+      if (before !== partSep) continue;
+      const covered = all.some(function (link) {
+        if (removeIds[link.id]) return false;
+        return link.start < range.start && link.end > range.start - partSep.length;
+      });
+      if (!covered) range.start -= partSep.length;
+    }
+
+    merged.sort(function (a, b) { return b.start - a.start; });
+    for (let i = 0; i < merged.length; i++) {
+      const range = merged[i];
+      const len = range.end - range.start;
+      if (len <= 0) continue;
+      text = text.slice(0, range.start) + text.slice(range.end);
+      state.confirmedLinks.forEach(function (link) {
+        if (link.scope !== scope || removeIds[link.id]) return;
+        if (link.start >= range.end) {
+          link.start -= len;
+          link.end -= len;
+        }
+      });
+    }
+
+    state.confirmedLinks = state.confirmedLinks.filter(function (link) {
+      return !removeIds[link.id];
+    });
+    setPromptText(scope, text);
+    return true;
+  }
+
+  function refreshAfterConfirmedChange() {
+    renderCombinedPrompt();
+    applyConfirmedCellHighlights();
+    renderMasterLibrary();
+    scheduleSave();
+  }
+
+  function toggleCellConfirmed(cellIndex) {
+    const tab = activeTab();
+    if (!tab || cellIndex < 0 || cellIndex >= tab.cells.length) return;
+    const scope = currentPromptScope();
+    if (scope !== 'global' && !tab) return;
+
+    if (isCellConfirmedInScope(tab.id, cellIndex, scope)) {
+      const links = linksForCellsInScope(tab.id, [cellIndex], scope);
+      if (!links.length) {
+        applyAppendCheckedState();
+        return;
+      }
+      pushHistory();
+      removeLinksFromCombined(links);
+      refreshAfterConfirmedChange();
+      const row = Math.floor(cellIndex / tab.cols) + 1;
+      const col = (cellIndex % tab.cols) + 1;
+      setStatus('Removed R' + row + 'C' + col + ' from combined', 'ok');
+      return;
+    }
+
+    const value = (tab.cells[cellIndex] || '').trim();
+    if (!value) {
+      setStatus('Nothing to append', 'err');
+      return;
+    }
+    appendPieces([{
+      type: 'confirmed',
+      text: value,
+      tabId: tab.id,
+      cellIndex: cellIndex
+    }], tab.title + ' R' + (Math.floor(cellIndex / tab.cols) + 1) +
+      'C' + ((cellIndex % tab.cols) + 1));
+  }
+
   function appendWithPartSeparator(current, text) {
     const partSeparator = separatorValue(state.separators.part);
     if (current && partSeparator && !current.endsWith(partSeparator)) {
@@ -860,6 +1047,7 @@
     setPromptText(scope, current + added);
     renderCombinedPrompt();
     applyConfirmedCellHighlights();
+    renderMasterLibrary();
     scheduleSave();
     setStatus('Appended' + (label ? ' "' + label + '"' : ''), 'ok');
   }
@@ -1511,7 +1699,7 @@
     renderMasterLibrary();
     renderCombinedPrompt();
     scheduleSave();
-    const cell = el.cellGrid.querySelector('[data-idx="' + index + '"]');
+    const cell = el.cellGrid.querySelector('textarea.cell[data-idx="' + index + '"]');
     if (cell) cell.focus();
     setStatus(
       usedFirstCellFallback
@@ -1616,12 +1804,11 @@
       const rowBtn = document.createElement('button');
       rowBtn.type = 'button';
       rowBtn.className = 'row-append';
-      rowBtn.title = 'Append row ' + (r + 1) + ' to prompt';
-      rowBtn.setAttribute('aria-label', 'Append row ' + (r + 1));
       rowBtn.dataset.row = String(r);
+      rowBtn.setAttribute('aria-pressed', 'false');
       rowBtn.innerHTML = '<span class="row-append-mark" aria-hidden="true"></span>';
       rowBtn.addEventListener('click', function () {
-        appendRow(r);
+        toggleRow(r);
       });
       rowControls.appendChild(rowBtn);
 
@@ -1656,6 +1843,25 @@
 
       for (let c = 0; c < tab.cols; c++) {
         const idx = r * tab.cols + c;
+        const wrap = document.createElement('div');
+        wrap.className = 'cell-wrap';
+        if (isCellConfirmed(tab.id, idx)) wrap.classList.add('cell-confirmed');
+
+        const cellBtn = document.createElement('button');
+        cellBtn.type = 'button';
+        cellBtn.className = 'cell-append';
+        cellBtn.dataset.idx = String(idx);
+        cellBtn.dataset.row = String(r);
+        cellBtn.dataset.col = String(c);
+        cellBtn.setAttribute('aria-pressed', 'false');
+        cellBtn.innerHTML = '<span class="cell-append-mark" aria-hidden="true"></span>';
+        cellBtn.addEventListener('click', function (ev) {
+          ev.preventDefault();
+          ev.stopPropagation();
+          toggleCellConfirmed(idx);
+        });
+        wrap.appendChild(cellBtn);
+
         const ta = document.createElement('textarea');
         ta.className = 'cell';
         if (isCellConfirmed(tab.id, idx)) ta.classList.add('cell-confirmed');
@@ -1674,9 +1880,12 @@
         ta.addEventListener('paste', onCellPaste);
         ta.addEventListener('copy', onCellCopy);
         ta.addEventListener('cut', onCellCut);
-        el.cellGrid.appendChild(ta);
+        wrap.appendChild(ta);
+        el.cellGrid.appendChild(wrap);
       }
     }
+
+    applyAppendCheckedState();
   }
 
   function resizeColumnByKeyboard(tab, col, delta) {
@@ -1802,13 +2011,17 @@
     pushHistory({ coalesce: true });
     tab.cells[idx] = e.target.value;
     revalidateLinksForCell(tab.id, idx);
-    e.target.classList.toggle('cell-confirmed', isCellConfirmed(tab.id, idx));
+    const confirmed = isCellConfirmed(tab.id, idx);
+    e.target.classList.toggle('cell-confirmed', confirmed);
+    const wrap = e.target.closest ? e.target.closest('.cell-wrap') : null;
+    if (wrap) wrap.classList.toggle('cell-confirmed', confirmed);
+    applyAppendCheckedState();
     if (isMasterTab(tab)) renderMasterLibrary();
     scheduleSave();
   }
 
   function focusCell(index) {
-    const cell = el.cellGrid.querySelector('[data-idx="' + index + '"]');
+    const cell = el.cellGrid.querySelector('textarea.cell[data-idx="' + index + '"]');
     if (cell) cell.focus();
   }
 
@@ -2123,7 +2336,7 @@
     renderGrid();
     renderMasterLibrary();
     scheduleSave();
-    const cell = el.cellGrid.querySelector('[data-idx="' + startIdx + '"]');
+    const cell = el.cellGrid.querySelector('textarea.cell[data-idx="' + startIdx + '"]');
     if (cell) cell.focus();
     setStatus(
       'Pasted ' + result.rows + '×' + result.cols + ' cells at R' + (startRow + 1) +
@@ -2165,7 +2378,11 @@
       tab.cells[idx] = '';
       ta.value = '';
       revalidateLinksForCell(tab.id, idx);
-      ta.classList.toggle('cell-confirmed', isCellConfirmed(tab.id, idx));
+      const confirmed = isCellConfirmed(tab.id, idx);
+      ta.classList.toggle('cell-confirmed', confirmed);
+      const wrap = ta.closest ? ta.closest('.cell-wrap') : null;
+      if (wrap) wrap.classList.toggle('cell-confirmed', confirmed);
+      applyAppendCheckedState();
       if (isMasterTab(tab)) renderMasterLibrary();
       scheduleSave();
     }
@@ -2265,18 +2482,70 @@
     setStatus('Column added (' + tab.cols + '×' + tab.rows + ')');
   }
 
-  function appendRow(rowIndex) {
+  function rowCellIndices(tab, rowIndex) {
+    const indices = [];
+    for (let c = 0; c < tab.cols; c++) indices.push(rowIndex * tab.cols + c);
+    return indices;
+  }
+
+  function rowConfirmedPiecesMissing(tab, rowIndex) {
+    const scope = currentPromptScope();
+    const pieces = [];
+    const colSep = separatorValue(state.separators.column);
+    for (let c = 0; c < tab.cols; c++) {
+      const idx = rowIndex * tab.cols + c;
+      const value = (tab.cells[idx] || '').trim();
+      if (!value) continue;
+      if (isCellConfirmedInScope(tab.id, idx, scope)) continue;
+      if (pieces.length) pieces.push({ type: 'plain', text: colSep });
+      pieces.push({
+        type: 'confirmed',
+        text: value,
+        tabId: tab.id,
+        cellIndex: idx
+      });
+    }
+    return pieces;
+  }
+
+  function toggleRow(rowIndex) {
     const tab = activeTab();
     if (!tab) return;
     if (rowIndex < 0 || rowIndex >= tab.rows) return;
+    const scope = currentPromptScope();
+
+    if (isRowIncluded(tab, rowIndex)) {
+      const links = linksForCellsInScope(tab.id, rowCellIndices(tab, rowIndex), scope);
+      if (!links.length) {
+        applyAppendCheckedState();
+        return;
+      }
+      pushHistory();
+      removeLinksFromCombined(links);
+      refreshAfterConfirmedChange();
+      setStatus('Removed "' + tab.title + ' row ' + (rowIndex + 1) + '"', 'ok');
+      return;
+    }
+
     const pieces = rowConfirmedPieces(tab, rowIndex);
     appendPieces(pieces, tab.title + ' row ' + (rowIndex + 1));
+  }
+
+  function appendRow(rowIndex) {
+    toggleRow(rowIndex);
   }
 
   function appendAll() {
     const tab = activeTab();
     if (!tab) return;
-    const pieces = partConfirmedPieces(tab);
+    const pieces = [];
+    const rowSep = separatorValue(state.separators.row);
+    for (let r = 0; r < tab.rows; r++) {
+      const rowPieces = rowConfirmedPiecesMissing(tab, r);
+      if (!rowPieces.length) continue;
+      if (pieces.length) pieces.push({ type: 'plain', text: rowSep });
+      for (let i = 0; i < rowPieces.length; i++) pieces.push(rowPieces[i]);
+    }
     appendPieces(pieces, tab.title);
   }
 
