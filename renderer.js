@@ -1668,6 +1668,7 @@
         ta.dataset.idx = String(idx);
         ta.setAttribute('aria-label', 'Row ' + (r + 1) + ' column ' + (c + 1));
         ta.addEventListener('input', onCellInput);
+        ta.addEventListener('keydown', onCellKeydown);
         ta.addEventListener('focus', rememberFocusedCell);
         ta.addEventListener('click', rememberFocusedCell);
         ta.addEventListener('paste', onCellPaste);
@@ -1804,6 +1805,28 @@
     e.target.classList.toggle('cell-confirmed', isCellConfirmed(tab.id, idx));
     if (isMasterTab(tab)) renderMasterLibrary();
     scheduleSave();
+  }
+
+  function focusCell(index) {
+    const cell = el.cellGrid.querySelector('[data-idx="' + index + '"]');
+    if (cell) cell.focus();
+  }
+
+  function onCellKeydown(e) {
+    if (e.key !== 'Enter' || e.shiftKey || e.isComposing) return;
+
+    const tab = activeTab();
+    const idx = parseInt(e.currentTarget.dataset.idx, 10);
+    if (!tab || Number.isNaN(idx) || idx < 0 || idx >= tab.cells.length) return;
+
+    e.preventDefault();
+    if (idx < tab.cells.length - 1) {
+      focusCell(idx + 1);
+      return;
+    }
+
+    addRow();
+    focusCell(idx + 1);
   }
 
   function selectTab(id) {
