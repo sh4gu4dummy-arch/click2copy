@@ -867,6 +867,9 @@
       el.tabBar.appendChild(btn);
     });
 
+    // Keep the add-part control in the tab strip, immediately after the last part tab.
+    el.tabBar.appendChild(el.btnAdd);
+
     const tab = activeTab();
     el.partLabel.textContent = tab
       ? tab.title + ' (' + tab.cols + '×' + tab.rows + ')'
