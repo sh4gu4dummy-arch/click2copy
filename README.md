@@ -19,7 +19,7 @@ A simple Electron desktop app for composing prompts from reusable parts.
 - **Sleep cell** — distinct Zzz checkbox above each cell’s Combined toggle marks that cell slept; slept cells stay visible but are skipped by Append all active (state persists with the document)
 - **Append all active** — includes every not-yet-included non-empty cell of the active part that is not slept (row-major)
 - **Undo / Redo** — Ctrl/Cmd+Z undoes document edits (cells, Combined prompt, confirmed links, paste, append, Master insert, clear, etc.); Ctrl/Cmd+Shift+Z or Ctrl+Y redoes. Typing in a cell or Combined is coalesced into one undo step
-- **Combined auto-copy** — any edit to the Combined prompt copies it to the clipboard automatically (the Copy button remains as a manual fallback)
+- **Combined auto-copy** — clicking or focusing the Combined prompt copies its current text to the clipboard (edit still works); any edit also auto-copies (the Copy button remains as a manual fallback)
 - **Confirmed append highlighting** — appended cell text is marked green in both the source cell and the Combined prompt (editable “premade” segments). Editing a Combined segment so it no longer matches its linked cell clears green on both sides
 - **Combined prompt** — editable pane with **Copy** to clipboard and **Clear**
 - **Status / under-the-hood log** — click the status line for a full-width-friendly event panel; long log lines wrap so the window does not need stretching

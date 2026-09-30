@@ -640,6 +640,25 @@
     });
   }
 
+  // Click/focus Combined copies current text (like cell click-copy). Edit + auto-copy-on-edit kept.
+  let lastCombinedActivateCopyKey = '';
+  let lastCombinedActivateCopyAt = 0;
+
+  function copyCombinedOnActivate() {
+    if (!initialized) return;
+    const text = getCombinedPlainText();
+    const value = text == null ? '' : String(text);
+    if (!value) return;
+    const key = currentPromptScope() + ':' + value;
+    const now = Date.now();
+    // Guard against click+focus double-fire (same pattern as cell auto-copy).
+    if (key === lastCombinedActivateCopyKey && now - lastCombinedActivateCopyAt < 300) return;
+    lastCombinedActivateCopyKey = key;
+    lastCombinedActivateCopyAt = now;
+    lastCombinedAutoCopyStatusAt = now;
+    copyTextWithStatus(value, 'Copied Combined');
+  }
+
   function toNonNegInt(value) {
     if (typeof value === 'number' && Number.isFinite(value)) {
       const n = Math.trunc(value);
@@ -3647,6 +3666,13 @@
       });
     });
   }
+
+  el.combined.addEventListener('focus', function () {
+    copyCombinedOnActivate();
+  });
+  el.combined.addEventListener('click', function () {
+    copyCombinedOnActivate();
+  });
 
   el.combined.addEventListener('input', function () {
     dismissUndoClear();
