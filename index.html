@@ -76,7 +76,10 @@
         <div class="combined-actions">
           <button type="button" class="btn btn-secondary" id="btn-export" title="Export all tabs and prompt to a JSON file">Export</button>
           <button type="button" class="btn btn-secondary" id="btn-import" title="Import tabs and prompt from a JSON backup">Import</button>
-          <button type="button" class="btn btn-secondary" id="btn-clear">Clear</button>
+          <div class="clear-undo-stack">
+            <button type="button" class="btn btn-secondary" id="btn-clear">Clear</button>
+            <button type="button" class="btn btn-secondary" id="btn-undo-clear" hidden>Undo last clear</button>
+          </div>
           <button type="button" class="btn btn-primary" id="btn-copy">Copy</button>
         </div>
       </div>

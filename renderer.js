@@ -59,6 +59,7 @@
     btnAppend: document.getElementById('btn-append'),
     btnCopy: document.getElementById('btn-copy'),
     btnClear: document.getElementById('btn-clear'),
+    btnUndoClear: document.getElementById('btn-undo-clear'),
     btnExport: document.getElementById('btn-export'),
     btnImport: document.getElementById('btn-import'),
     partSeparator: document.getElementById('part-separator'),
@@ -226,6 +227,7 @@
   let historySuspended = false;
   let historyCoalescing = false;
   let historyCoalesceTimer = null;
+  let lastClearSnapshot = null;
 
   function cloneDocumentData(data) {
     return JSON.parse(JSON.stringify({
@@ -251,6 +253,7 @@
       clearTimeout(historyCoalesceTimer);
       historyCoalesceTimer = null;
     }
+    dismissUndoClear();
   }
 
   function endHistoryCoalesce() {
@@ -2588,19 +2591,46 @@
     }
   }
 
+  function showUndoClearButton(visible) {
+    if (!el.btnUndoClear) return;
+    el.btnUndoClear.hidden = !visible;
+  }
+
+  function dismissUndoClear() {
+    lastClearSnapshot = null;
+    showUndoClearButton(false);
+  }
+
   function clearCombined() {
     const scope = currentPromptScope();
-    const prompt = getPromptText(scope);
-    if (prompt && !window.confirm('Clear the combined prompt?')) {
-      return;
-    }
+    // Snapshot before clear for the dedicated "Undo last clear" button (and undo stack).
+    lastClearSnapshot = cloneCurrentDocument();
     pushHistory();
     setPromptText(scope, '');
     dropLinksForScope(scope);
     renderCombinedPrompt();
     applyConfirmedCellHighlights();
     scheduleSave();
+    showUndoClearButton(true);
     setStatus('Cleared');
+  }
+
+  function undoLastClear() {
+    if (!lastClearSnapshot) {
+      setStatus('Nothing to undo');
+      showUndoClearButton(false);
+      return;
+    }
+    endHistoryCoalesce();
+    redoStack.push(cloneCurrentDocument());
+    if (redoStack.length > UNDO_LIMIT) redoStack.shift();
+    // Drop the matching clear entry from the undo stack when it is still on top.
+    if (undoStack.length) undoStack.pop();
+    const entry = lastClearSnapshot;
+    lastClearSnapshot = null;
+    showUndoClearButton(false);
+    restoreHistoryEntry(entry);
+    setStatus('Undid clear', 'ok');
   }
 
   async function exportBackup() {
@@ -2669,6 +2699,7 @@
   el.btnAppend.addEventListener('click', appendAll);
   el.btnCopy.addEventListener('click', copyCombined);
   el.btnClear.addEventListener('click', clearCombined);
+  el.btnUndoClear.addEventListener('click', undoLastClear);
   el.btnExport.addEventListener('click', exportBackup);
   el.btnImport.addEventListener('click', importBackup);
   el.combinedResizer.addEventListener('pointerdown', beginSectionResize);
@@ -2704,6 +2735,7 @@
   }
 
   el.combined.addEventListener('input', function () {
+    dismissUndoClear();
     pushHistory({ coalesce: true });
     syncConfirmedFromCombinedDom();
     scheduleSave();
@@ -2725,6 +2757,7 @@
       range.collapse(true);
       selection.removeAllRanges();
       selection.addRange(range);
+      dismissUndoClear();
       pushHistory({ coalesce: true });
       syncConfirmedFromCombinedDom();
       scheduleSave();
@@ -2747,6 +2780,7 @@
       range.collapse(true);
       selection.removeAllRanges();
       selection.addRange(range);
+      dismissUndoClear();
       pushHistory({ coalesce: true });
       syncConfirmedFromCombinedDom();
       scheduleSave();
