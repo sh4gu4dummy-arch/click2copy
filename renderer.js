@@ -2108,6 +2108,7 @@
         ta.setAttribute('aria-label', 'Row ' + (r + 1) + ' column ' + (c + 1));
         ta.addEventListener('input', onCellInput);
         ta.addEventListener('keydown', onCellKeydown);
+        ta.addEventListener('pointerdown', onCellPointerDownSelect);
         ta.addEventListener('focus', onCellFocusSelect);
         ta.addEventListener('click', onCellClickSelect);
         ta.addEventListener('paste', onCellPaste);
@@ -2245,8 +2246,11 @@
 
   // Click2Copy: selecting/focusing a cell with content writes it to the clipboard.
   // Prefer click/focus (not input/keystrokes while typing). Guard against click+focus double-fire.
+  // Click+drag across cells selects a rectangle; mouseup copies TSV (tabs/newlines like sheets).
   let lastAutoCopyKey = '';
   let lastAutoCopyAt = 0;
+  let suppressCellAutoCopy = false;
+  let cellRangeDrag = null;
 
   function writeTextToClipboard(text) {
     if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
@@ -2255,19 +2259,11 @@
     return Promise.reject(new Error('Clipboard API unavailable'));
   }
 
-  function autoCopyCellToClipboard(ta) {
-    if (!ta || ta.tagName !== 'TEXTAREA') return;
-    const value = ta.value == null ? '' : String(ta.value);
-    if (!value) return;
-    const tab = activeTab();
-    const idx = parseInt(ta.dataset.idx, 10);
-    const key = (tab ? tab.id : '') + ':' + (Number.isNaN(idx) ? '' : idx) + ':' + value;
-    const now = Date.now();
-    if (key === lastAutoCopyKey && now - lastAutoCopyAt < 300) return;
-    lastAutoCopyKey = key;
-    lastAutoCopyAt = now;
+  function copyTextWithStatus(text, okStatus) {
+    const value = text == null ? '' : String(text);
+    const statusOk = okStatus || 'Copied cell';
     writeTextToClipboard(value).then(function () {
-      setStatus('Copied cell', 'ok');
+      setStatus(statusOk, 'ok');
     }).catch(function () {
       const prev = document.activeElement;
       try {
@@ -2283,7 +2279,7 @@
         if (prev && typeof prev.focus === 'function') {
           try { prev.focus(); } catch (err) { /* no-op */ }
         }
-        if (ok) setStatus('Copied cell', 'ok');
+        if (ok) setStatus(statusOk, 'ok');
         else setStatus('Copy failed', 'err');
       } catch (err) {
         if (prev && typeof prev.focus === 'function') {
@@ -2292,6 +2288,183 @@
         setStatus('Copy failed', 'err');
       }
     });
+  }
+
+  function autoCopyCellToClipboard(ta) {
+    if (suppressCellAutoCopy) return;
+    if (!ta || ta.tagName !== 'TEXTAREA') return;
+    const value = ta.value == null ? '' : String(ta.value);
+    if (!value) return;
+    const tab = activeTab();
+    const idx = parseInt(ta.dataset.idx, 10);
+    const key = (tab ? tab.id : '') + ':' + (Number.isNaN(idx) ? '' : idx) + ':' + value;
+    const now = Date.now();
+    if (key === lastAutoCopyKey && now - lastAutoCopyAt < 300) return;
+    lastAutoCopyKey = key;
+    lastAutoCopyAt = now;
+    copyTextWithStatus(value, 'Copied cell');
+  }
+
+  function clearCellRangeHighlight() {
+    if (!el.cellGrid) return;
+    const nodes = el.cellGrid.querySelectorAll('.cell-wrap.cell-range-selected');
+    for (let i = 0; i < nodes.length; i++) {
+      nodes[i].classList.remove('cell-range-selected');
+    }
+  }
+
+  function normalizeRangeBounds(r0, c0, r1, c1) {
+    return {
+      rMin: Math.min(r0, r1),
+      rMax: Math.max(r0, r1),
+      cMin: Math.min(c0, c1),
+      cMax: Math.max(c0, c1)
+    };
+  }
+
+  function applyCellRangeHighlight(r0, c0, r1, c1) {
+    clearCellRangeHighlight();
+    const b = normalizeRangeBounds(r0, c0, r1, c1);
+    for (let r = b.rMin; r <= b.rMax; r++) {
+      for (let c = b.cMin; c <= b.cMax; c++) {
+        const wrap = el.cellGrid.querySelector(
+          '.cell-wrap[data-row="' + r + '"][data-col="' + c + '"]'
+        );
+        if (wrap) wrap.classList.add('cell-range-selected');
+      }
+    }
+  }
+
+  function buildCellRangeTsv(tab, r0, c0, r1, c1) {
+    const b = normalizeRangeBounds(r0, c0, r1, c1);
+    const lines = [];
+    for (let r = b.rMin; r <= b.rMax; r++) {
+      const cells = [];
+      for (let c = b.cMin; c <= b.cMax; c++) {
+        cells.push(tab.cells[r * tab.cols + c] || '');
+      }
+      lines.push(cells.join('\t'));
+    }
+    return lines.join('\n');
+  }
+
+  function cellWrapFromPoint(clientX, clientY) {
+    const hit = document.elementFromPoint(clientX, clientY);
+    if (!hit || typeof hit.closest !== 'function') return null;
+    const wrap = hit.closest('.cell-wrap');
+    if (!wrap || !el.cellGrid.contains(wrap)) return null;
+    if (wrap.classList.contains('is-row-filtered')) return null;
+    return wrap;
+  }
+
+  function finishCellRangeListeners() {
+    document.removeEventListener('pointermove', onCellRangePointerMove);
+    document.removeEventListener('pointerup', onCellRangePointerUp);
+    document.removeEventListener('pointercancel', onCellRangePointerUp);
+    document.body.classList.remove('selecting-cell-range');
+  }
+
+  function onCellRangePointerMove(e) {
+    if (!cellRangeDrag || !cellRangeDrag.active) return;
+    const wrap = cellWrapFromPoint(e.clientX, e.clientY);
+    if (!wrap) return;
+    const row = parseInt(wrap.dataset.row, 10);
+    const col = parseInt(wrap.dataset.col, 10);
+    if (Number.isNaN(row) || Number.isNaN(col)) return;
+    if (row === cellRangeDrag.endRow && col === cellRangeDrag.endCol) return;
+    cellRangeDrag.endRow = row;
+    cellRangeDrag.endCol = col;
+    const multi = row !== cellRangeDrag.startRow || col !== cellRangeDrag.startCol;
+    if (!multi) {
+      if (!cellRangeDrag.multi) return;
+      applyCellRangeHighlight(
+        cellRangeDrag.startRow, cellRangeDrag.startCol,
+        cellRangeDrag.endRow, cellRangeDrag.endCol
+      );
+      return;
+    }
+    if (!cellRangeDrag.multi) {
+      cellRangeDrag.multi = true;
+      suppressCellAutoCopy = true;
+      document.body.classList.add('selecting-cell-range');
+      try {
+        const sel = window.getSelection();
+        if (sel && sel.removeAllRanges) sel.removeAllRanges();
+      } catch (err) { /* no-op */ }
+    }
+    applyCellRangeHighlight(
+      cellRangeDrag.startRow, cellRangeDrag.startCol,
+      cellRangeDrag.endRow, cellRangeDrag.endCol
+    );
+  }
+
+  function onCellRangePointerUp(e) {
+    if (!cellRangeDrag || !cellRangeDrag.active) return;
+    const drag = cellRangeDrag;
+    drag.active = false;
+    finishCellRangeListeners();
+
+    // Refresh end cell from release point when possible.
+    const wrap = cellWrapFromPoint(e.clientX, e.clientY);
+    if (wrap) {
+      const row = parseInt(wrap.dataset.row, 10);
+      const col = parseInt(wrap.dataset.col, 10);
+      if (!Number.isNaN(row) && !Number.isNaN(col)) {
+        drag.endRow = row;
+        drag.endCol = col;
+      }
+    }
+
+    const b = normalizeRangeBounds(drag.startRow, drag.startCol, drag.endRow, drag.endCol);
+    const rows = b.rMax - b.rMin + 1;
+    const cols = b.cMax - b.cMin + 1;
+    const isMulti = rows > 1 || cols > 1;
+
+    if (isMulti) {
+      suppressCellAutoCopy = true;
+      const tab = activeTab();
+      if (tab) {
+        const tsv = buildCellRangeTsv(tab, b.rMin, b.cMin, b.rMax, b.cMax);
+        const label = rows + '\u00d7' + cols + ' cells';
+        lastAutoCopyKey = (tab.id || '') + ':range:' + b.rMin + ',' + b.cMin + ':' + b.rMax + ',' + b.cMax;
+        lastAutoCopyAt = Date.now();
+        copyTextWithStatus(tsv, 'Copied ' + label);
+      }
+      applyCellRangeHighlight(b.rMin, b.cMin, b.rMax, b.cMax);
+      window.setTimeout(function () {
+        clearCellRangeHighlight();
+        suppressCellAutoCopy = false;
+        cellRangeDrag = null;
+      }, 120);
+      return;
+    }
+
+    clearCellRangeHighlight();
+    suppressCellAutoCopy = false;
+    cellRangeDrag = null;
+  }
+
+  function onCellPointerDownSelect(e) {
+    if (e.button != null && e.button !== 0) return;
+    const ta = e.currentTarget;
+    const row = parseInt(ta.dataset.row, 10);
+    const col = parseInt(ta.dataset.col, 10);
+    if (Number.isNaN(row) || Number.isNaN(col)) return;
+    // Re-click / fresh drag; do not disturb Combined/sleep (those are outside the textarea).
+    if (cellRangeDrag && cellRangeDrag.active) {
+      finishCellRangeListeners();
+    }
+    cellRangeDrag = {
+      active: true,
+      multi: false,
+      startRow: row,
+      startCol: col,
+      endRow: row,
+      endCol: col
+    };
+    document.addEventListener('pointermove', onCellRangePointerMove);
+    document.addEventListener('pointerup', onCellRangePointerUp);
+    document.addEventListener('pointercancel', onCellRangePointerUp);
   }
 
   function onCellFocusSelect(e) {

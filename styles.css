@@ -527,6 +527,23 @@ body.resizing-columns * {
   box-shadow: inset 0 0 0 1px var(--confirmed-border);
 }
 
+.cell-wrap.cell-range-selected {
+  background: rgba(59, 130, 246, 0.22);
+  box-shadow: inset 0 0 0 2px rgba(59, 130, 246, 0.7);
+}
+
+.cell-wrap.cell-range-selected.cell-confirmed {
+  background: rgba(59, 130, 246, 0.28);
+  box-shadow: inset 0 0 0 2px rgba(59, 130, 246, 0.85);
+}
+
+body.selecting-cell-range,
+body.selecting-cell-range * {
+  cursor: cell !important;
+  user-select: none !important;
+}
+
+
 .cell-wrap.is-slept {
   opacity: 0.55;
 }
