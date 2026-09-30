@@ -32,6 +32,9 @@
   let focusedCell = null;
   /** UI-only row filter: 'all' | 'nonempty' | 'included' */
   let gridRowFilter = 'all';
+  /** UI-only Column 1 value filter: null = all values; Set of trimmed strings ('' = blank) */
+  let col1ValueFilter = null;
+  let col1FilterMenuOpen = false;
   const pendingDocumentPaths = [];
   const EVENT_LOG_LIMIT = 40;
   const eventLog = [];
@@ -2207,11 +2210,53 @@
   }
 
 
+  function uniqueCol1Values(tab) {
+    const seen = Object.create(null);
+    const values = [];
+    if (!tab || !tab.cols) return values;
+    for (let r = 0; r < tab.rows; r++) {
+      const v = (tab.cells[r * tab.cols] || '').trim();
+      if (seen[v]) continue;
+      seen[v] = true;
+      values.push(v);
+    }
+    values.sort(function (a, b) {
+      if (!a && !b) return 0;
+      if (!a) return 1;
+      if (!b) return -1;
+      return a.localeCompare(b, undefined, { sensitivity: 'base', numeric: true });
+    });
+    return values;
+  }
+
+  function rowMatchesCol1ValueFilter(tab, rowIndex) {
+    if (col1ValueFilter === null) return true;
+    const v = (tab.cells[rowIndex * tab.cols] || '').trim();
+    return col1ValueFilter.has(v);
+  }
+
   function rowMatchesFilter(tab, rowIndex) {
-    if (gridRowFilter === 'all') return true;
-    if (gridRowFilter === 'nonempty') return !rowIsEmpty(tab, rowIndex);
-    if (gridRowFilter === 'included') return isRowIncluded(tab, rowIndex);
-    return true;
+    let base = true;
+    if (gridRowFilter === 'nonempty') base = !rowIsEmpty(tab, rowIndex);
+    else if (gridRowFilter === 'included') base = isRowIncluded(tab, rowIndex);
+    if (!base) return false;
+    return rowMatchesCol1ValueFilter(tab, rowIndex);
+  }
+
+  function applyRowFilterVisibility() {
+    const tab = activeTab();
+    if (!tab || !el.cellGrid) return;
+    const rowButtons = el.cellGrid.querySelectorAll('.row-append');
+    for (let i = 0; i < rowButtons.length; i++) {
+      const btn = rowButtons[i];
+      const row = parseInt(btn.dataset.row, 10);
+      if (Number.isNaN(row)) continue;
+      const hidden = !rowMatchesFilter(tab, row);
+      const controls = btn.closest('.row-controls');
+      if (controls) controls.classList.toggle('is-row-filtered', hidden);
+      const wraps = el.cellGrid.querySelectorAll('.cell-wrap[data-row="' + row + '"]');
+      for (let w = 0; w < wraps.length; w++) wraps[w].classList.toggle('is-row-filtered', hidden);
+    }
   }
 
   function syncRowFilterButtons() {
@@ -2233,6 +2278,177 @@
     renderGrid();
     const labels = { all: 'Showing all rows', nonempty: 'Showing non-empty rows', included: 'Showing rows in Combined' };
     setStatus(labels[mode] || 'Row filter updated', 'ok');
+  }
+
+  function isCol1ValueSelected(value) {
+    if (col1ValueFilter === null) return true;
+    return col1ValueFilter.has(value);
+  }
+
+  function setCol1ValueFilterSelection(selectedValues, allValues) {
+    const selected = [];
+    const seen = Object.create(null);
+    for (let i = 0; i < selectedValues.length; i++) {
+      const v = selectedValues[i];
+      if (Object.prototype.hasOwnProperty.call(seen, v)) continue;
+      seen[v] = true;
+      selected.push(v);
+    }
+    let allOn = selected.length === allValues.length;
+    if (allOn) {
+      for (let i = 0; i < allValues.length; i++) {
+        if (!Object.prototype.hasOwnProperty.call(seen, allValues[i])) {
+          allOn = false;
+          break;
+        }
+      }
+    }
+    col1ValueFilter = allOn ? null : new Set(selected);
+    applyRowFilterVisibility();
+    syncCol1FilterControls();
+  }
+
+  function positionCol1FilterMenu(btn, menu) {
+    if (!btn || !menu) return;
+    const rect = btn.getBoundingClientRect();
+    const pad = 8;
+    const width = Math.max(220, Math.min(320, window.innerWidth - pad * 2));
+    let left = rect.left;
+    if (left + width > window.innerWidth - pad) left = Math.max(pad, window.innerWidth - pad - width);
+    if (left < pad) left = pad;
+    menu.style.position = 'fixed';
+    menu.style.top = Math.round(rect.bottom + 4) + 'px';
+    menu.style.left = Math.round(left) + 'px';
+    menu.style.width = width + 'px';
+    menu.style.zIndex = '60';
+  }
+
+  function syncCol1FilterControls() {
+    const btn = el.cellGrid && el.cellGrid.querySelector('.column-col1-filter-btn');
+    if (!btn) return;
+    const active = col1ValueFilter !== null;
+    btn.classList.toggle('is-active', active);
+    btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+    btn.setAttribute('aria-expanded', col1FilterMenuOpen ? 'true' : 'false');
+    const count = col1ValueFilter ? col1ValueFilter.size : 0;
+    btn.title = active
+      ? ('Column 1 value filter on (' + count + ' selected) — click to change')
+      : 'Filter rows by Column 1 values';
+    btn.setAttribute('aria-label', btn.title);
+    const menu = el.cellGrid.querySelector('.column-col1-filter-menu');
+    if (menu) {
+      menu.hidden = !col1FilterMenuOpen;
+      if (col1FilterMenuOpen) positionCol1FilterMenu(btn, menu);
+    }
+  }
+
+  function closeCol1FilterMenu() {
+    if (!col1FilterMenuOpen) return;
+    col1FilterMenuOpen = false;
+    syncCol1FilterControls();
+  }
+
+  function buildCol1FilterMenu(tab, menu) {
+    menu.innerHTML = '';
+    const values = uniqueCol1Values(tab);
+
+    const actions = document.createElement('div');
+    actions.className = 'column-col1-filter-actions';
+
+    const selectAll = document.createElement('button');
+    selectAll.type = 'button';
+    selectAll.className = 'column-col1-filter-action';
+    selectAll.textContent = 'Select all';
+    selectAll.addEventListener('click', function (e) {
+      e.preventDefault();
+      e.stopPropagation();
+      col1ValueFilter = null;
+      buildCol1FilterMenu(tab, menu);
+      applyRowFilterVisibility();
+      syncCol1FilterControls();
+      setStatus('Showing all Column 1 values', 'ok');
+    });
+
+    const clearBtn = document.createElement('button');
+    clearBtn.type = 'button';
+    clearBtn.className = 'column-col1-filter-action';
+    clearBtn.textContent = 'Clear';
+    clearBtn.addEventListener('click', function (e) {
+      e.preventDefault();
+      e.stopPropagation();
+      col1ValueFilter = new Set();
+      buildCol1FilterMenu(tab, menu);
+      applyRowFilterVisibility();
+      syncCol1FilterControls();
+      setStatus('Column 1 value filter cleared (no rows)', 'ok');
+    });
+
+    actions.appendChild(selectAll);
+    actions.appendChild(clearBtn);
+    menu.appendChild(actions);
+
+    const list = document.createElement('div');
+    list.className = 'column-col1-filter-list';
+    list.setAttribute('role', 'group');
+    list.setAttribute('aria-label', 'Column 1 values');
+
+    if (!values.length) {
+      const empty = document.createElement('div');
+      empty.className = 'column-col1-filter-empty';
+      empty.textContent = 'No values';
+      list.appendChild(empty);
+    } else {
+      for (let i = 0; i < values.length; i++) {
+        const value = values[i];
+        const label = document.createElement('label');
+        label.className = 'column-col1-filter-option';
+
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.checked = isCol1ValueSelected(value);
+        if (value) cb.dataset.value = value;
+        else cb.dataset.blank = '1';
+        cb.addEventListener('click', function (e) {
+          e.stopPropagation();
+        });
+        cb.addEventListener('change', function () {
+          const selected = [];
+          const boxes = list.querySelectorAll('input[type="checkbox"]');
+          for (let b = 0; b < boxes.length; b++) {
+            if (!boxes[b].checked) continue;
+            selected.push(boxes[b].dataset.blank === '1' ? '' : (boxes[b].dataset.value || ''));
+          }
+          setCol1ValueFilterSelection(selected, values);
+          const n = col1ValueFilter === null ? values.length : col1ValueFilter.size;
+          setStatus(
+            col1ValueFilter === null
+              ? 'Showing all Column 1 values'
+              : ('Showing ' + n + ' Column 1 value' + (n === 1 ? '' : 's')),
+            'ok'
+          );
+        });
+
+        const text = document.createElement('span');
+        text.className = 'column-col1-filter-option-text';
+        text.textContent = value ? value : '(blank)';
+        if (!value) text.classList.add('is-blank');
+
+        label.appendChild(cb);
+        label.appendChild(text);
+        list.appendChild(label);
+      }
+    }
+
+    menu.appendChild(list);
+  }
+
+  function toggleCol1FilterMenu(tab, btn, menu) {
+    col1FilterMenuOpen = !col1FilterMenuOpen;
+    if (col1FilterMenuOpen) {
+      buildCol1FilterMenu(tab, menu);
+      positionCol1FilterMenu(btn, menu);
+    }
+    syncCol1FilterControls();
   }
 
   function renderGrid() {
@@ -2293,6 +2509,39 @@
         sortControls.appendChild(sortAsc);
         sortControls.appendChild(sortDesc);
         header.appendChild(sortControls);
+
+        const filterWrap = document.createElement('span');
+        filterWrap.className = 'column-col1-filter';
+
+        const filterBtn = document.createElement('button');
+        filterBtn.type = 'button';
+        filterBtn.className = 'column-sort-btn column-col1-filter-btn';
+        filterBtn.textContent = 'Values';
+        filterBtn.title = 'Filter rows by Column 1 values';
+        filterBtn.setAttribute('aria-label', filterBtn.title);
+        filterBtn.setAttribute('aria-haspopup', 'true');
+        filterBtn.setAttribute('aria-expanded', 'false');
+        filterBtn.setAttribute('aria-pressed', 'false');
+
+        const filterMenu = document.createElement('div');
+        filterMenu.className = 'column-col1-filter-menu';
+        filterMenu.hidden = true;
+        filterMenu.setAttribute('role', 'dialog');
+        filterMenu.setAttribute('aria-label', 'Column 1 value filter');
+
+        filterBtn.addEventListener('click', function (e) {
+          e.preventDefault();
+          e.stopPropagation();
+          toggleCol1FilterMenu(tab, filterBtn, filterMenu);
+        });
+        filterMenu.addEventListener('click', function (e) {
+          e.stopPropagation();
+        });
+
+        filterWrap.appendChild(filterBtn);
+        filterWrap.appendChild(filterMenu);
+        header.appendChild(filterWrap);
+        header.classList.add('column-header-filterable');
       }
 
       const handle = document.createElement('span');
@@ -2469,6 +2718,11 @@
 
     syncRowFilterButtons();
     applyAppendCheckedState();
+    if (col1FilterMenuOpen) {
+      const menu = el.cellGrid.querySelector('.column-col1-filter-menu');
+      if (menu) buildCol1FilterMenu(tab, menu);
+    }
+    syncCol1FilterControls();
   }
 
   function resizeColumnByKeyboard(tab, col, delta) {
@@ -3629,6 +3883,19 @@
   if (el.btnFilterAll) el.btnFilterAll.addEventListener('click', function () { setGridRowFilter('all'); });
   if (el.btnFilterNonempty) el.btnFilterNonempty.addEventListener('click', function () { setGridRowFilter('nonempty'); });
   if (el.btnFilterIncluded) el.btnFilterIncluded.addEventListener('click', function () { setGridRowFilter('included'); });
+  document.addEventListener('pointerdown', function (e) {
+    if (!col1FilterMenuOpen) return;
+    const wrap = el.cellGrid && el.cellGrid.querySelector('.column-col1-filter');
+    if (wrap && wrap.contains(e.target)) return;
+    closeCol1FilterMenu();
+  });
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') closeCol1FilterMenu();
+  });
+  window.addEventListener('resize', closeCol1FilterMenu);
+  if (el.cellGrid && el.cellGrid.parentElement) {
+    el.cellGrid.parentElement.addEventListener('scroll', closeCol1FilterMenu, { passive: true });
+  }
   el.btnAppend.addEventListener('click', appendAll);
   el.btnCopy.addEventListener('click', copyCombined);
   el.btnClear.addEventListener('click', clearCombined);

@@ -13,6 +13,7 @@ A simple Electron desktop app for composing prompts from reusable parts.
 - **Sticky Master insert** — Master parts picker sits above the grid; its collapse header stays sticky while scrolling the Master insert list
 - **Master insert greens** — Master library cells turn green when that Master text is currently represented in Combined (direct Master link or matching confirmed part cell); green clears when unlinked
 - **Row filters** — All / Non-empty / In Combined buttons hide rows that do not match (data stays intact; empty and Combined inclusion filters)
+- **Column 1 value filter** — Values multi-select on the Column 1 header picks which unique first-column values to show; composes with All / Non-empty / In Combined (data stays intact)
 - **Sort by column 1** — A–Z / Z–A buttons on the Column 1 header reorder all rows by first-column text (case-insensitive); cells, sleep flags, Combined checkboxes, and confirmed-link cell indices stay row-aligned (blank column-1 values sink to the bottom)
 - **Checkbox drag-paint** — click+drag across Combined cell toggles, sleep (Zzz) checkboxes, or row Combined toggles to set many at once to the first control’s new value; Combined, sleep, and row drags never mix
 - **Row / cell Combined toggles** — larger checkbox-like controls on each row and each cell add that content to the Combined prompt and stay checked while included; uncheck removes the linked confirmed segment(s) and clears green. Row toggle covers the whole row; cell toggle is per-cell. Both stay in sync with confirmed links
@@ -78,7 +79,7 @@ Confirmed append links (ranges into the combined prompt tied to source tab/cell)
 ## Usage tips
 
 1. Edit cells in the active tab’s grid.
-2. Use **All** / **Non-empty** / **In Combined** to filter which rows are visible. Use **A–Z** / **Z–A** on the Column 1 header to sort rows by the first column.
+2. Use **All** / **Non-empty** / **In Combined** to filter which rows are visible. Use **Values** on the Column 1 header to multi-select which Column 1 values to show (composes with the row filters). Use **A–Z** / **Z–A** on the Column 1 header to sort rows by the first column.
 3. Check the box left of a row (or the Combined box on a cell) to include it in the Combined prompt; uncheck to remove it. Use the Zzz sleep checkbox above a cell’s Combined toggle to exclude that cell from Append all active.
 4. Or click **Append all active** to include every missing non-empty, non-slept cell.
 5. Use **+ Row** / **+ Column** to expand the grid.
