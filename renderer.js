@@ -113,6 +113,17 @@
       : null;
   }
 
+
+  /** CSS grid-template columns for tab content cells (no row-gutter). Uses tab.columnWidths. */
+  function contentColumnTemplate(tab, equalMinPx) {
+    const widths = normalizeColumnWidths(tab.columnWidths, tab.cols);
+    if (widths) {
+      return widths.map(function (width) { return width + 'px'; }).join(' ');
+    }
+    const min = Number.isFinite(equalMinPx) ? equalMinPx : 120;
+    return 'repeat(' + tab.cols + ', minmax(' + min + 'px, 1fr))';
+  }
+
   function normalizeSeparators(separators) {
     const source = separators && typeof separators === 'object' ? separators : {};
     return {
@@ -1627,7 +1638,8 @@
     const grid = document.createElement('div');
     grid.className = 'master-library-grid';
     grid.setAttribute('role', 'grid');
-    grid.style.gridTemplateColumns = 'repeat(' + master.cols + ', minmax(0, 1fr))';
+    // Mirror Master tab column widths (shared tab.columnWidths state).
+    grid.style.gridTemplateColumns = contentColumnTemplate(master, 0);
 
     for (let row = 0; row < master.rows; row++) {
       let rowHasContent = false;
@@ -1750,15 +1762,8 @@
   }
 
   function applyGridColumns(tab) {
-    if (Array.isArray(tab.columnWidths) && tab.columnWidths.length === tab.cols) {
-      el.cellGrid.style.gridTemplateColumns = '40px ' + tab.columnWidths.map(function (width) {
-        return width + 'px';
-      }).join(' ');
-      return;
-    }
-    // Until the first resize, let the browser distribute columns equally.
-    el.cellGrid.style.gridTemplateColumns =
-      '40px repeat(' + tab.cols + ', minmax(120px, 1fr))';
+    // Row gutter (40px) + shared content widths from tab.columnWidths.
+    el.cellGrid.style.gridTemplateColumns = '40px ' + contentColumnTemplate(tab, 120);
   }
 
   function renderGrid() {
