@@ -3578,8 +3578,12 @@
       el.tabBar.appendChild(btn);
     });
 
+    // Keep the add-part control in the tab strip, immediately after the last part tab.
+    el.tabBar.appendChild(el.btnAdd);
+
     // Shared Tools tab (UI-only) — parks + Row / + Column / Rename; acts on active part.
     // Fixed wrench icon — not customizable / not in the icon picker.
+    // Appended last with CSS margin-left:auto so it sits at the far right of the tab bar.
     const toolsBtn = document.createElement('button');
     toolsBtn.type = 'button';
     toolsBtn.className = 'tab tools-tab' + (toolsTabActive ? ' active' : '');
@@ -3594,9 +3598,6 @@
       selectToolsTab();
     });
     el.tabBar.appendChild(toolsBtn);
-
-    // Keep the add-part control in the tab strip, immediately after the last part tab.
-    el.tabBar.appendChild(el.btnAdd);
 
     const tab = activeTab();
     el.btnDelete.disabled = !tab || isMasterTab(tab) || partTabs().length <= 1 || toolsTabActive;

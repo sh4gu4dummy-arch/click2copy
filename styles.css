@@ -404,7 +404,7 @@ body {
   border-color: rgba(var(--tools-rgb), 0.55);
   font-weight: 700;
   color: #f0c674;
-  margin-left: 6px;
+  margin-left: auto; /* pin Tools to the far right of the tab bar */
   background: var(--tools-soft);
 }
 
