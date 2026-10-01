@@ -7,7 +7,7 @@
   <title>Click2Copy</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
-<body>
+<body class="theme-soft-dark">
   <div class="app">
     <div class="update-banner" id="update-banner" hidden role="status" aria-live="polite">
       <span class="update-banner-text" id="update-banner-text">Update ready — Restart</span>
@@ -26,13 +26,13 @@
       <div class="document-bar" id="document-bar" role="tablist" aria-label="Open prompt documents"></div>
     </section>
 
-    <section class="tabs-section">
+    <section class="tabs-section tabs-chrome">
       <div class="tab-bar" id="tab-bar" role="tablist">
         <button type="button" class="btn btn-icon" id="btn-add-tab" title="Add tab">+</button>
       </div>
     </section>
 
-    <section class="part-section">
+    <section class="part-section panel-soft">
       <div class="part-search-bar" id="part-search-bar" role="search" aria-label="Find, replace, and part filters">
         <input type="search" id="part-find-input" class="part-search-input" placeholder="Find in this part…" spellcheck="false" aria-label="Find in current part" />
         <input type="search" id="part-replace-input" class="part-search-input" placeholder="Replace with…" spellcheck="false" aria-label="Replace with" />
@@ -86,7 +86,7 @@
 
     <div class="section-resizer" id="combined-resizer" role="separator" aria-orientation="horizontal" aria-label="Resize combined prompt height" tabindex="0" title="Drag to resize combined prompt"></div>
 
-    <section class="combined-section">
+    <section class="combined-section panel-soft">
       <div class="section-label-row">
         <div class="combined-title">
           <label class="section-label" for="combined-prompt">Combined prompt</label>

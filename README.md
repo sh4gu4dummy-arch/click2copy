@@ -5,7 +5,7 @@ A simple Electron desktop app for composing prompts from reusable parts.
 ## Features
 
 - **Editable tabs** — add, rename (double-click or Tools → Rename), and delete tabs
-- **Per-tab icons** — Master and part tabs each show a customizable icon from **text (Aa)**, **video**, **img**, **sparkle**, **tag**, **folder**, **layers**, **hash**. Click the tab icon or right-click the tab to open a small picker (part tabs also get Rename / Delete there). Chosen icons persist on the tab in the project/session across reload. The **Tools** tab is **wrench-only** (fixed; not in the picker). Master / part / Tools tabs also use light distinct chrome (Master gold double border, Tools dashed slate + wrench)
+- **Per-tab icons** — Master and part tabs each show a customizable icon from **text (Aa)**, **video**, **img**, **sparkle**, **tag**, **folder**, **layers**, **hash**. Click the tab icon or right-click the tab to open a small picker (part tabs also get Rename / Delete there). Chosen icons persist on the tab in the project/session across reload. The **Tools** tab is **wrench-only** (fixed; not in the picker). Master / part / Tools tabs use Soft dark Draft A chrome (**Master** filled teal / library feel, **part** tabs outlined / neutral, **Tools** amber wrench utility chrome)
 - **Tools tab** — shared UI tab that parks little-used controls (**+ Row**, **+ Column**, **Rename**, and **Part / Column / Row separators**) so the Find/filter row stays uncluttered; actions still apply to the active part tab (highlighted while Tools is open)
 - **Find / Replace + part controls** — one compact row on the current part tab: **Find**, **Find All**, **Replace** (Shift+Replace = replace all) plus **All / Non-empty / In Combined**, **Fit row heights**, and **Delete** (wraps on narrow widths); Ctrl/Cmd+F focuses Find. The old “Part name (cols×rows)” caption above the grid is gone (tab title is enough).
 - **Cell grid** — each tab is a grid of independently editable cells (default 3 columns × 8 rows)
@@ -65,7 +65,7 @@ This launches Electron with the Click2Copy window.
 | `main.js` | Electron main process (window state + JSON persistence) |
 | `preload.js` | Secure bridge for load/save IPC |
 | `index.html` | UI structure |
-| `styles.css` | Dark, practical styling |
+| `styles.css` | Soft dark charcoal theme (teal accents, amber Tools) |
 | `renderer.js` | Tabs, cell grid, append, copy, and autosave logic |
 
 ## Data shape
