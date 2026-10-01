@@ -5021,12 +5021,13 @@
               nestTa.addEventListener('input', onNestInput);
               nestTa.addEventListener('keydown', function (ev) {
                 if (ev.isComposing) return;
-                // Enter confirms / moves to next parent cell; Shift+Enter inserts newline.
+                // Enter confirms (copy) / moves to next parent cell; Shift+Enter inserts newline (no copy).
                 if (ev.key === 'Enter' && !ev.shiftKey) {
                   ev.preventDefault();
                   if (stickyCellRange) clearStickyCellRange();
                   const active = activeTab();
                   if (!active || idx < 0 || idx >= active.cells.length) return;
+                  autoCopyCellToClipboard(ev.currentTarget);
                   if (idx < active.cells.length - 1) {
                     moveToNextCell(ev.currentTarget, idx + 1);
                     return;
@@ -5065,7 +5066,6 @@
               });
               nestTa.addEventListener('click', function (ev) {
                 ev.stopPropagation();
-                autoCopyCellToClipboard(ev.currentTarget);
               });
 
               nestRow.appendChild(nestChrome);
@@ -5214,10 +5214,9 @@
     focusedCell = { tabId: tab.id, index: idx };
   }
 
-  // Click2Copy: selecting/focusing a cell with content writes it to the clipboard.
-  // Prefer click/focus (not input/keystrokes while typing). Guard against click+focus double-fire.
-  // Short click/focus = leave caret where clicked + auto-copy (no whole-cell select).
-  // Hold+drag = relocate/swap one cell.
+  // Click2Copy cells: short click/focus leaves the caret (no auto-copy). Enter confirms and
+  // copies the cell, then moves to the next (Shift+Enter = newline, no copy). Combined
+  // click-copy / Combined auto-clipboard stay separate. Hold+drag = relocate/swap one cell.
   // Immediate click+drag across cells selects a rectangle; mouseup copies TSV and keeps a sticky
   // multi-cell highlight (Excel-ish). Drag inside that sticky selection moves/swaps the block.
   let lastAutoCopyKey = '';
@@ -5803,15 +5802,7 @@
       clearCellRangeHighlight();
       suppressCellAutoCopy = false;
       cellRangeDrag = null;
-      // Jittered drag that never left the cell — leave caret + auto-copy (unless Ctrl/Cmd).
-      const tabStay = activeTab();
-      if (tabStay && !drag.modKey) {
-        const stayIdx = drag.startRow * tabStay.cols + drag.startCol;
-        const taStay = el.cellGrid.querySelector('textarea.cell[data-idx="' + stayIdx + '"]');
-        if (taStay) {
-          autoCopyCellToClipboard(taStay);
-        }
-      }
+      // Jittered drag that never left the cell — leave caret (copy on Enter confirm).
       return;
     }
 
@@ -5844,26 +5835,14 @@
             cellRangeDrag = null;
             focusCell(toIdx);
             const ta = el.cellGrid.querySelector('textarea.cell[data-idx="' + toIdx + '"]');
-            if (ta) {
-              selectWholeCellContents(ta);
-              autoCopyCellToClipboard(ta);
-            }
+            if (ta) selectWholeCellContents(ta);
           }, 0);
           return;
         }
       }
-      // Hold released on same cell (or failed relocate): leave caret + auto-copy (unless Ctrl/Cmd).
-      const skipActivateCopy = !!drag.modKey;
+      // Hold released on same cell (or failed relocate): leave caret (copy on Enter confirm).
       suppressCellAutoCopy = false;
       cellRangeDrag = null;
-      const tab2 = activeTab();
-      if (tab2 && !skipActivateCopy) {
-        const stayIdx = drag.startRow * tab2.cols + drag.startCol;
-        const taStay = el.cellGrid.querySelector('textarea.cell[data-idx="' + stayIdx + '"]');
-        if (taStay) {
-          autoCopyCellToClipboard(taStay);
-        }
-      }
       return;
     }
 
@@ -5917,7 +5896,7 @@
       return;
     }
 
-    // Short click / hold-without-drag: caret stays where clicked; copy via click/focus handlers.
+    // Short click / hold-without-drag: caret stays where clicked (copy on Enter confirm).
     // Click inside sticky multi-cell range keeps the sticky highlight.
     if (drag.fromStickyBlock && getStickyCellRange()) {
       clearCellRelocateHighlight();
@@ -5964,8 +5943,6 @@
       startY: e.clientY,
       pointerId: e.pointerId,
       captureEl: ta,
-      // Ctrl/Cmd+click: skip activate auto-copy so clipboard stays for paste overwrite.
-      modKey: !!(e.ctrlKey || e.metaKey),
       fromStickyBlock: !!sticky,
       blockBounds: sticky ? {
         rMin: sticky.rMin,
@@ -5997,22 +5974,13 @@
   }
 
   function onCellFocusSelect(e) {
+    // Leave caret where the user clicked / Tab landed; no activate auto-copy (Enter confirms).
     rememberFocusedCell(e);
-    if (suppressCellAutoCopy) return;
-    // Ctrl/Cmd+click: skip activate auto-copy (focus may lack modifier flags).
-    if (e.ctrlKey || e.metaKey || (cellRangeDrag && cellRangeDrag.modKey)) return;
-    if (cellRangeDrag && cellRangeDrag.active && cellRangeDrag.mode) return;
-    // Do not selectWholeCellContents — leave caret where the user clicked / Tab landed.
-    autoCopyCellToClipboard(e.currentTarget);
   }
 
   function onCellClickSelect(e) {
+    // Leave caret at click position (or word select on double-click); copy on Enter confirm.
     rememberFocusedCell(e);
-    if (suppressCellAutoCopy) return;
-    if (e.ctrlKey || e.metaKey || (cellRangeDrag && cellRangeDrag.modKey)) return;
-    if (cellRangeDrag && cellRangeDrag.mode) return;
-    // Leave caret at click position (or word select on double-click); still auto-copy.
-    autoCopyCellToClipboard(e.currentTarget);
   }
 
   function onCellInput(e) {
@@ -6120,6 +6088,10 @@
     // Keep Tab/Shift+Tab inside the cell grid (skip Combined controls).
     e.preventDefault();
     if (stickyCellRange) clearStickyCellRange();
+
+    // Enter confirms edit + copies cell; Shift+Enter is newline (handled above via !isEnter).
+    // Tab navigates without copying.
+    if (isEnter) autoCopyCellToClipboard(e.currentTarget);
 
     if (isTab && e.shiftKey) {
       if (idx > 0) moveToNextCell(e.currentTarget, idx - 1);
