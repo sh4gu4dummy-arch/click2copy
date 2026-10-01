@@ -492,9 +492,14 @@ body.resizing-sections * {
   border-left: 1px solid var(--border);
 }
 
-/* Spreadsheet-like header row and resize affordances. */
+/* Spreadsheet-like header row and resize affordances.
+   Sticky top keeps Column 1 A–Z / Values reachable while scrolling the grid
+   (same idea as sticky Master insert summary). */
 .grid-corner,
 .column-header {
+  position: sticky;
+  top: 0;
+  z-index: 4;
   min-height: 32px;
   padding: 7px 12px;
   background: var(--surface-2);
@@ -505,10 +510,10 @@ body.resizing-sections * {
 
 .grid-corner {
   padding: 0;
+  z-index: 5;
 }
 
 .column-header {
-  position: relative;
   display: flex;
   align-items: center;
   gap: 6px;
