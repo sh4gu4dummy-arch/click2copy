@@ -2744,6 +2744,7 @@
       if (menu) buildCol1FilterMenu(tab, menu);
     }
     syncCol1FilterControls();
+    restoreStickyCellRangeHighlight();
   }
 
   function resizeColumnByKeyboard(tab, col, delta) {
@@ -2864,11 +2865,14 @@
   // Prefer click/focus (not input/keystrokes while typing). Guard against click+focus double-fire.
   // Short click/focus = leave caret where clicked + auto-copy (no whole-cell select).
   // Hold+drag = relocate/swap one cell.
-  // Immediate click+drag across cells selects a rectangle; mouseup copies TSV (tabs/newlines like sheets).
+  // Immediate click+drag across cells selects a rectangle; mouseup copies TSV and keeps a sticky
+  // multi-cell highlight (Excel-ish). Drag inside that sticky selection moves/swaps the block.
   let lastAutoCopyKey = '';
   let lastAutoCopyAt = 0;
   let suppressCellAutoCopy = false;
   let cellRangeDrag = null;
+  /** Sticky multi-cell range after drag-copy (Excel-ish). Cleared on Esc / outside click / edit / nav. */
+  let stickyCellRange = null;
   const CELL_HOLD_MS = 220;
   const CELL_DRAG_MOVE_PX = 8;
 
@@ -2965,6 +2969,52 @@
     };
   }
 
+  function isMultiCellBounds(b) {
+    return !!(b && (b.rMax > b.rMin || b.cMax > b.cMin));
+  }
+
+  function getStickyCellRange() {
+    if (!stickyCellRange || !isMultiCellBounds(stickyCellRange)) return null;
+    const tab = activeTab();
+    if (!tab || stickyCellRange.tabId !== tab.id) return null;
+    return stickyCellRange;
+  }
+
+  function cellInStickyRange(row, col) {
+    const b = getStickyCellRange();
+    if (!b) return false;
+    return row >= b.rMin && row <= b.rMax && col >= b.cMin && col <= b.cMax;
+  }
+
+  function setStickyCellRange(bounds, tabId) {
+    const tab = activeTab();
+    const id = tabId || (tab && tab.id) || null;
+    if (!bounds || !isMultiCellBounds(bounds) || !id) {
+      stickyCellRange = null;
+      clearCellRangeHighlight();
+      return;
+    }
+    stickyCellRange = {
+      rMin: bounds.rMin,
+      rMax: bounds.rMax,
+      cMin: bounds.cMin,
+      cMax: bounds.cMax,
+      tabId: id
+    };
+    applyCellRangeHighlight(bounds.rMin, bounds.cMin, bounds.rMax, bounds.cMax);
+  }
+
+  function clearStickyCellRange() {
+    stickyCellRange = null;
+    clearCellRangeHighlight();
+  }
+
+  function restoreStickyCellRangeHighlight() {
+    const b = getStickyCellRange();
+    if (!b) return;
+    applyCellRangeHighlight(b.rMin, b.cMin, b.rMax, b.cMax);
+  }
+
   function applyCellRangeHighlight(r0, c0, r1, c1) {
     clearCellRangeHighlight();
     clearCellRelocateHighlight();
@@ -3048,6 +3098,146 @@
     return true;
   }
 
+  /**
+   * Move/swap a rectangular cell block so its top-left lands at destRMin/destCMin.
+   * Non-overlapping + dest has content ⇒ rectangle swap; otherwise move (overwrite dest,
+   * clear vacated source). Sleep flags and Combined-link indices follow content.
+   * Returns { swapped, bounds } or null on failure.
+   */
+  function relocateOrSwapCellBlock(tab, srcBounds, destRMin, destCMin) {
+    if (!tab || !srcBounds || !isMultiCellBounds(srcBounds)) return null;
+    const nRows = srcBounds.rMax - srcBounds.rMin + 1;
+    const nCols = srcBounds.cMax - srcBounds.cMin + 1;
+    if (destRMin < 0 || destCMin < 0) return null;
+    if (destRMin + nRows - 1 >= tab.rows || destCMin + nCols - 1 >= tab.cols) return null;
+    if (destRMin === srcBounds.rMin && destCMin === srcBounds.cMin) return null;
+
+    const srcIndices = [];
+    const dstIndices = [];
+    for (let r = 0; r < nRows; r++) {
+      for (let c = 0; c < nCols; c++) {
+        srcIndices.push((srcBounds.rMin + r) * tab.cols + (srcBounds.cMin + c));
+        dstIndices.push((destRMin + r) * tab.cols + (destCMin + c));
+      }
+    }
+
+    const overlap = !(
+      srcBounds.rMax < destRMin ||
+      destRMin + nRows - 1 < srcBounds.rMin ||
+      srcBounds.cMax < destCMin ||
+      destCMin + nCols - 1 < srcBounds.cMin
+    );
+
+    ensureSleptCells(tab);
+    const srcCells = srcIndices.map(function (i) { return tab.cells[i]; });
+    const srcSlept = srcIndices.map(function (i) { return !!tab.sleptCells[i]; });
+    const dstCells = dstIndices.map(function (i) { return tab.cells[i]; });
+    const dstSlept = dstIndices.map(function (i) { return !!tab.sleptCells[i]; });
+
+    let destHadContent = false;
+    if (!overlap) {
+      for (let i = 0; i < dstCells.length; i++) {
+        if ((dstCells[i] || '').trim()) {
+          destHadContent = true;
+          break;
+        }
+      }
+    }
+
+    pushHistory();
+
+    const indexMap = {};
+    const destroyed = {};
+
+    if (!overlap && destHadContent) {
+      for (let i = 0; i < srcIndices.length; i++) {
+        tab.cells[dstIndices[i]] = srcCells[i];
+        tab.sleptCells[dstIndices[i]] = srcSlept[i];
+        tab.cells[srcIndices[i]] = dstCells[i];
+        tab.sleptCells[srcIndices[i]] = dstSlept[i];
+        indexMap[srcIndices[i]] = dstIndices[i];
+        indexMap[dstIndices[i]] = srcIndices[i];
+      }
+    } else {
+      const srcSet = {};
+      for (let i = 0; i < srcIndices.length; i++) srcSet[srcIndices[i]] = true;
+      for (let i = 0; i < dstIndices.length; i++) {
+        if (!srcSet[dstIndices[i]]) destroyed[dstIndices[i]] = true;
+      }
+      for (let i = 0; i < srcIndices.length; i++) {
+        tab.cells[srcIndices[i]] = '';
+        tab.sleptCells[srcIndices[i]] = false;
+      }
+      for (let i = 0; i < srcIndices.length; i++) {
+        tab.cells[dstIndices[i]] = srcCells[i];
+        tab.sleptCells[dstIndices[i]] = srcSlept[i];
+        indexMap[srcIndices[i]] = dstIndices[i];
+      }
+    }
+
+    state.confirmedLinks = state.confirmedLinks.filter(function (link) {
+      if (link.tabId !== tab.id) return true;
+      return !destroyed[link.cellIndex];
+    });
+    // Remap in two passes so swap cycles do not collide.
+    const pending = [];
+    state.confirmedLinks.forEach(function (link) {
+      if (link.tabId !== tab.id) return;
+      if (Object.prototype.hasOwnProperty.call(indexMap, link.cellIndex)) {
+        pending.push({ link: link, to: indexMap[link.cellIndex] });
+      }
+    });
+    pending.forEach(function (item) {
+      item.link.cellIndex = item.to;
+    });
+
+    return {
+      swapped: !overlap && destHadContent,
+      bounds: {
+        rMin: destRMin,
+        rMax: destRMin + nRows - 1,
+        cMin: destCMin,
+        cMax: destCMin + nCols - 1
+      }
+    };
+  }
+
+  function clampBlockDest(tab, srcBounds, destRMin, destCMin) {
+    const nRows = srcBounds.rMax - srcBounds.rMin + 1;
+    const nCols = srcBounds.cMax - srcBounds.cMin + 1;
+    const maxR = Math.max(0, tab.rows - nRows);
+    const maxC = Math.max(0, tab.cols - nCols);
+    return {
+      destRMin: Math.max(0, Math.min(destRMin, maxR)),
+      destCMin: Math.max(0, Math.min(destCMin, maxC))
+    };
+  }
+
+  function applyBlockRelocateHighlight(srcBounds, destBounds) {
+    clearCellRangeHighlight();
+    clearCellRelocateHighlight();
+    if (!el.cellGrid || !srcBounds) return;
+    function markRect(b, cls) {
+      for (let r = b.rMin; r <= b.rMax; r++) {
+        for (let c = b.cMin; c <= b.cMax; c++) {
+          const wrap = el.cellGrid.querySelector(
+            '.cell-wrap[data-row="' + r + '"][data-col="' + c + '"]'
+          );
+          if (!wrap) continue;
+          wrap.classList.add(cls);
+          const ta = wrap.querySelector('textarea.cell');
+          if (ta) ta.classList.add(cls);
+        }
+      }
+    }
+    markRect(srcBounds, 'cell-relocate-source');
+    if (destBounds &&
+        (destBounds.rMin !== srcBounds.rMin || destBounds.cMin !== srcBounds.cMin ||
+         destBounds.rMax !== srcBounds.rMax || destBounds.cMax !== srcBounds.cMax)) {
+      markRect(destBounds, 'cell-relocate-target');
+    }
+  }
+
   function finishCellRangeListeners() {
     document.removeEventListener('pointermove', onCellRangePointerMove);
     document.removeEventListener('pointerup', onCellRangePointerUp);
@@ -3089,29 +3279,63 @@
 
   function beginMultiCellRangeDrag() {
     if (!cellRangeDrag || cellRangeDrag.mode === 'multi') return;
-    if (cellRangeDrag.mode === 'relocate') return;
+    if (cellRangeDrag.mode === 'relocate' || cellRangeDrag.mode === 'block-relocate') return;
     cellRangeDrag.mode = 'multi';
     cellRangeDrag.multi = true;
     suppressCellAutoCopy = true;
     document.body.classList.remove('relocating-cell');
     document.body.classList.add('selecting-cell-range');
+    clearStickyCellRange();
     clearCellRelocateHighlight();
     collapseCellTextSelection();
   }
 
   function beginCellRelocateDrag() {
     if (!cellRangeDrag || cellRangeDrag.mode === 'relocate') return;
-    if (cellRangeDrag.mode === 'multi') return;
+    if (cellRangeDrag.mode === 'multi' || cellRangeDrag.mode === 'block-relocate') return;
     cellRangeDrag.mode = 'relocate';
     cellRangeDrag.multi = false;
     suppressCellAutoCopy = true;
     document.body.classList.remove('selecting-cell-range');
     document.body.classList.add('relocating-cell');
+    clearStickyCellRange();
     collapseCellTextSelection();
     applyCellRelocateHighlight(
       cellRangeDrag.startRow, cellRangeDrag.startCol,
       cellRangeDrag.endRow, cellRangeDrag.endCol
     );
+  }
+
+  function beginBlockRelocateDrag() {
+    if (!cellRangeDrag || cellRangeDrag.mode === 'block-relocate') return;
+    if (cellRangeDrag.mode === 'multi' || cellRangeDrag.mode === 'relocate') return;
+    if (!cellRangeDrag.blockBounds || !isMultiCellBounds(cellRangeDrag.blockBounds)) return;
+    cellRangeDrag.mode = 'block-relocate';
+    cellRangeDrag.multi = false;
+    suppressCellAutoCopy = true;
+    document.body.classList.remove('selecting-cell-range');
+    document.body.classList.add('relocating-cell');
+    collapseCellTextSelection();
+    const tab = activeTab();
+    const b = cellRangeDrag.blockBounds;
+    const deltaR = cellRangeDrag.endRow - cellRangeDrag.grabRow;
+    const deltaC = cellRangeDrag.endCol - cellRangeDrag.grabCol;
+    let destRMin = b.rMin + deltaR;
+    let destCMin = b.cMin + deltaC;
+    if (tab) {
+      const clamped = clampBlockDest(tab, b, destRMin, destCMin);
+      destRMin = clamped.destRMin;
+      destCMin = clamped.destCMin;
+    }
+    const destBounds = {
+      rMin: destRMin,
+      rMax: destRMin + (b.rMax - b.rMin),
+      cMin: destCMin,
+      cMax: destCMin + (b.cMax - b.cMin)
+    };
+    cellRangeDrag.destRMin = destRMin;
+    cellRangeDrag.destCMin = destCMin;
+    applyBlockRelocateHighlight(b, destBounds);
   }
 
   function onCellRangePointerMove(e) {
@@ -3134,7 +3358,8 @@
     }
 
     if (!cellRangeDrag.mode && moved) {
-      if (cellRangeDrag.held) beginCellRelocateDrag();
+      if (cellRangeDrag.fromStickyBlock) beginBlockRelocateDrag();
+      else if (cellRangeDrag.held) beginCellRelocateDrag();
       else beginMultiCellRangeDrag();
     }
 
@@ -3159,6 +3384,25 @@
         cellRangeDrag.startRow, cellRangeDrag.startCol,
         cellRangeDrag.endRow, cellRangeDrag.endCol
       );
+      return;
+    }
+
+    if (cellRangeDrag.mode === 'block-relocate') {
+      if (e.cancelable) e.preventDefault();
+      const tab = activeTab();
+      const b = cellRangeDrag.blockBounds;
+      if (!tab || !b) return;
+      const deltaR = cellRangeDrag.endRow - cellRangeDrag.grabRow;
+      const deltaC = cellRangeDrag.endCol - cellRangeDrag.grabCol;
+      const clamped = clampBlockDest(tab, b, b.rMin + deltaR, b.cMin + deltaC);
+      cellRangeDrag.destRMin = clamped.destRMin;
+      cellRangeDrag.destCMin = clamped.destCMin;
+      applyBlockRelocateHighlight(b, {
+        rMin: clamped.destRMin,
+        rMax: clamped.destRMin + (b.rMax - b.rMin),
+        cMin: clamped.destCMin,
+        cMax: clamped.destCMin + (b.cMax - b.cMin)
+      });
     }
   }
 
@@ -3194,11 +3438,12 @@
           lastAutoCopyAt = Date.now();
           copyTextWithStatus(tsv, 'Copied ' + label);
         }
-        applyCellRangeHighlight(b.rMin, b.cMin, b.rMax, b.cMax);
+        // Keep Excel-ish sticky multi-cell highlight after copy until cleared.
+        setStickyCellRange(b, tab && tab.id);
         window.setTimeout(function () {
-          clearCellRangeHighlight();
           suppressCellAutoCopy = false;
           cellRangeDrag = null;
+          restoreStickyCellRangeHighlight();
         }, 120);
         return;
       }
@@ -3269,8 +3514,66 @@
       return;
     }
 
+    if (drag.mode === 'block-relocate') {
+      suppressCellAutoCopy = true;
+      clearCellRelocateHighlight();
+      const tab = activeTab();
+      const b = drag.blockBounds;
+      if (tab && b && isMultiCellBounds(b)) {
+        const deltaR = drag.endRow - drag.grabRow;
+        const deltaC = drag.endCol - drag.grabCol;
+        const clamped = clampBlockDest(tab, b, b.rMin + deltaR, b.cMin + deltaC);
+        const same = clamped.destRMin === b.rMin && clamped.destCMin === b.cMin;
+        if (!same) {
+          const result = relocateOrSwapCellBlock(tab, b, clamped.destRMin, clamped.destCMin);
+          if (result) {
+            stickyCellRange = null;
+            renderTabs();
+            renderGrid();
+            renderMasterLibrary();
+            renderCombinedPrompt();
+            scheduleSave();
+            setStickyCellRange(result.bounds, tab.id);
+            const rows = result.bounds.rMax - result.bounds.rMin + 1;
+            const cols = result.bounds.cMax - result.bounds.cMin + 1;
+            const sizeLabel = rows + '\u00d7' + cols;
+            const toLabel = 'R' + (result.bounds.rMin + 1) + 'C' + (result.bounds.cMin + 1);
+            setStatus(
+              result.swapped
+                ? ('Swapped ' + sizeLabel + ' block \u2194 ' + toLabel)
+                : ('Moved ' + sizeLabel + ' block \u2192 ' + toLabel),
+              'ok'
+            );
+            window.setTimeout(function () {
+              suppressCellAutoCopy = false;
+              cellRangeDrag = null;
+              restoreStickyCellRangeHighlight();
+              const focusIdx = result.bounds.rMin * tab.cols + result.bounds.cMin;
+              focusCell(focusIdx);
+              const ta = el.cellGrid.querySelector('textarea.cell[data-idx="' + focusIdx + '"]');
+              if (ta) selectWholeCellContents(ta);
+            }, 0);
+            return;
+          }
+        }
+      }
+      // Cancelled / same place: keep sticky selection highlight.
+      restoreStickyCellRangeHighlight();
+      suppressCellAutoCopy = false;
+      cellRangeDrag = null;
+      return;
+    }
+
     // Short click / hold-without-drag: caret stays where clicked; copy via click/focus handlers.
-    clearCellRangeHighlight();
+    // Click inside sticky multi-cell range keeps the sticky highlight.
+    if (drag.fromStickyBlock && getStickyCellRange()) {
+      clearCellRelocateHighlight();
+      restoreStickyCellRangeHighlight();
+      suppressCellAutoCopy = false;
+      cellRangeDrag = null;
+      return;
+    }
+    clearStickyCellRange();
     clearCellRelocateHighlight();
     suppressCellAutoCopy = false;
     cellRangeDrag = null;
@@ -3286,6 +3589,14 @@
     if (cellRangeDrag && cellRangeDrag.active) {
       finishCellRangeListeners();
     }
+
+    const insideSticky = cellInStickyRange(row, col);
+    if (!insideSticky && stickyCellRange) {
+      // Click outside sticky multi-cell selection clears it (Excel-ish).
+      clearStickyCellRange();
+    }
+
+    const sticky = insideSticky ? getStickyCellRange() : null;
     cellRangeDrag = {
       active: true,
       mode: null,
@@ -3301,14 +3612,28 @@
       pointerId: e.pointerId,
       captureEl: ta,
       // Ctrl/Cmd+click: skip activate auto-copy so clipboard stays for paste overwrite.
-      modKey: !!(e.ctrlKey || e.metaKey)
+      modKey: !!(e.ctrlKey || e.metaKey),
+      fromStickyBlock: !!sticky,
+      blockBounds: sticky ? {
+        rMin: sticky.rMin,
+        rMax: sticky.rMax,
+        cMin: sticky.cMin,
+        cMax: sticky.cMax,
+        tabId: sticky.tabId
+      } : null,
+      grabRow: row,
+      grabCol: col,
+      destRMin: sticky ? sticky.rMin : row,
+      destCMin: sticky ? sticky.cMin : col
     };
-    cellRangeDrag.holdTimer = window.setTimeout(function () {
-      if (!cellRangeDrag || !cellRangeDrag.active || cellRangeDrag.mode) return;
-      cellRangeDrag.held = true;
-      // Affordance: held long enough that a drag will relocate instead of range-copy.
-      applyCellRelocateHighlight(cellRangeDrag.startRow, cellRangeDrag.startCol, null, null);
-    }, CELL_HOLD_MS);
+    if (!insideSticky) {
+      cellRangeDrag.holdTimer = window.setTimeout(function () {
+        if (!cellRangeDrag || !cellRangeDrag.active || cellRangeDrag.mode) return;
+        cellRangeDrag.held = true;
+        // Affordance: held long enough that a drag will relocate instead of range-copy.
+        applyCellRelocateHighlight(cellRangeDrag.startRow, cellRangeDrag.startCol, null, null);
+      }, CELL_HOLD_MS);
+    }
     document.addEventListener('pointermove', onCellRangePointerMove);
     document.addEventListener('pointerup', onCellRangePointerUp);
     document.addEventListener('pointercancel', onCellRangePointerUp);
@@ -3343,6 +3668,7 @@
     rememberFocusedCell(e);
     const idx = parseInt(e.target.dataset.idx, 10);
     if (Number.isNaN(idx) || idx < 0 || idx >= tab.cells.length) return;
+    if (stickyCellRange) clearStickyCellRange();
     pushHistory({ coalesce: true });
     tab.cells[idx] = e.target.value;
     revalidateLinksForCell(tab.id, idx);
@@ -3431,12 +3757,14 @@
       const next = adjacentCellIndex(idx, tab.cols, tab.rows, e.key);
       if (next < 0) return;
       e.preventDefault();
+      if (stickyCellRange) clearStickyCellRange();
       moveToNextCell(ta, next);
       return;
     }
 
     // Keep Tab/Shift+Tab inside the cell grid (skip sleep / Combined controls).
     e.preventDefault();
+    if (stickyCellRange) clearStickyCellRange();
 
     if (isTab && e.shiftKey) {
       if (idx > 0) moveToNextCell(e.currentTarget, idx - 1);
@@ -3466,6 +3794,7 @@
     if (!tab) return;
     state.activeTabId = id;
     focusedCell = null;
+    clearStickyCellRange();
     renderTabs();
     renderGrid();
     renderMasterLibrary();
@@ -4184,7 +4513,10 @@
     closeCol1FilterMenu();
   });
   document.addEventListener('keydown', function (e) {
-    if (e.key === 'Escape') closeCol1FilterMenu();
+    if (e.key === 'Escape') {
+      closeCol1FilterMenu();
+      if (stickyCellRange) clearStickyCellRange();
+    }
   });
   window.addEventListener('resize', closeCol1FilterMenu);
   if (el.cellGrid && el.cellGrid.parentElement) {
