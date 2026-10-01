@@ -1,6 +1,6 @@
 {
   "name": "click2copy",
-  "version": "0.063",
+  "version": "0.064",
   "description": "Click2Copy \u2014 a simple prompt builder desktop app",
   "main": "main.js",
   "scripts": {
