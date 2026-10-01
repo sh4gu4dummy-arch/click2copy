@@ -1168,9 +1168,11 @@ body.relocating-cell * {
   pointer-events: none;
 }
 
+/* Match Global Combined (.global-toggle input): outline + small teal check,
+   same accent-color treatment — no solid fill / dark chrome. */
 .cell-append:hover {
-  background: var(--accent);
-  color: #fff;
+  background: transparent;
+  color: var(--accent);
 }
 
 .cell-append-mark {
@@ -1179,9 +1181,9 @@ body.relocating-cell * {
   justify-content: center;
   width: 16px;
   height: 16px;
-  border: 2px solid rgba(148, 163, 184, 0.55);
+  border: 1.5px solid rgba(148, 163, 184, 0.75);
   border-radius: 3px;
-  background: rgba(15, 23, 42, 0.55);
+  background: transparent;
   box-sizing: border-box;
   position: relative;
   color: transparent;
@@ -1202,39 +1204,39 @@ body.relocating-cell * {
 
 .cell-append.is-checked {
   background: transparent;
-  color: var(--confirmed);
+  color: var(--accent);
 }
 
 .cell-append.is-checked .cell-append-mark {
-  background: rgba(15, 23, 42, 0.72);
-  border-color: rgba(var(--confirmed-rgb), 0.7);
+  background: transparent;
+  border-color: var(--accent);
   box-shadow: none;
-  color: var(--confirmed);
+  color: var(--accent);
 }
 
 .cell-append.is-checked .cell-append-mark::after {
-  border-color: var(--confirmed);
+  border-color: var(--accent);
   opacity: 1;
 }
 
 .cell-append:hover .cell-append-mark {
-  border-color: rgba(255, 255, 255, 0.55);
-  background: rgba(255, 255, 255, 0.08);
+  border-color: var(--accent);
+  background: transparent;
 }
 
 .cell-append.is-checked:hover {
-  background: rgba(var(--confirmed-rgb), 0.14);
-  color: var(--confirmed);
+  background: transparent;
+  color: var(--accent-hover);
 }
 
 .cell-append.is-checked:hover .cell-append-mark {
-  background: rgba(15, 23, 42, 0.85);
-  border-color: var(--confirmed);
-  filter: brightness(1.08);
+  background: transparent;
+  border-color: var(--accent-hover);
+  filter: none;
 }
 
 .cell-append.is-checked:hover .cell-append-mark::after {
-  border-color: var(--confirmed);
+  border-color: var(--accent-hover);
   opacity: 1;
 }
 
@@ -1410,6 +1412,12 @@ body.relocating-cell * {
   width: 12px;
   height: 12px;
   border-width: 1.5px;
+}
+
+.cell-nest-append .cell-append-mark::after {
+  width: 3px;
+  height: 6px;
+  border-width: 0 1.5px 1.5px 0;
 }
 
 .cell-nest-input::placeholder {
@@ -1962,24 +1970,25 @@ body.relocating-cell * {
   cursor: not-allowed;
 }
 
+/* Same Global Combined treatment as .cell-append-mark (outline + teal check). */
 .row-append:hover {
-  background: var(--accent);
-  color: #fff;
+  background: transparent;
+  color: var(--accent);
 }
 
 .row-append:active {
-  background: var(--accent-hover);
+  background: transparent;
 }
 
 .row-append-mark {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 18px;
-  height: 18px;
-  border: 2px solid rgba(148, 163, 184, 0.55);
+  width: 16px;
+  height: 16px;
+  border: 1.5px solid rgba(148, 163, 184, 0.75);
   border-radius: 3px;
-  background: rgba(15, 23, 42, 0.55);
+  background: transparent;
   box-sizing: border-box;
   position: relative;
   color: transparent;
@@ -1988,51 +1997,51 @@ body.relocating-cell * {
 .row-append-mark::after {
   content: '';
   display: block;
-  width: 5px;
-  height: 9px;
+  width: 4px;
+  height: 8px;
   margin-top: -1px;
   border: solid transparent;
-  border-width: 0 2.5px 2.5px 0;
+  border-width: 0 2px 2px 0;
   transform: rotate(45deg);
   box-sizing: border-box;
   opacity: 0;
 }
 
 .row-append:hover .row-append-mark {
-  border-color: rgba(255, 255, 255, 0.55);
-  background: rgba(255, 255, 255, 0.08);
+  border-color: var(--accent);
+  background: transparent;
 }
 
 .row-append.is-checked {
   background: transparent;
-  color: var(--confirmed);
+  color: var(--accent);
 }
 
 .row-append.is-checked .row-append-mark {
-  background: rgba(15, 23, 42, 0.72);
-  border-color: rgba(var(--confirmed-rgb), 0.7);
+  background: transparent;
+  border-color: var(--accent);
   box-shadow: none;
-  color: var(--confirmed);
+  color: var(--accent);
 }
 
 .row-append.is-checked .row-append-mark::after {
-  border-color: var(--confirmed);
+  border-color: var(--accent);
   opacity: 1;
 }
 
 .row-append.is-checked:hover {
-  background: rgba(var(--confirmed-rgb), 0.14);
-  color: var(--confirmed);
+  background: transparent;
+  color: var(--accent-hover);
 }
 
 .row-append.is-checked:hover .row-append-mark {
-  background: rgba(15, 23, 42, 0.85);
-  border-color: var(--confirmed);
-  filter: brightness(1.08);
+  background: transparent;
+  border-color: var(--accent-hover);
+  filter: none;
 }
 
 .row-append.is-checked:hover .row-append-mark::after {
-  border-color: var(--confirmed);
+  border-color: var(--accent-hover);
   opacity: 1;
 }
 
