@@ -766,8 +766,27 @@ function saveWindowState(win) {
   }
 }
 
+let flushTrackedWindowState = null;
+
+function flushWindowState() {
+  if (typeof flushTrackedWindowState === 'function') {
+    flushTrackedWindowState();
+    return;
+  }
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    saveWindowState(mainWindow);
+  }
+}
+
 function trackWindowState(win) {
   let saveTimer = null;
+  const flush = () => {
+    if (saveTimer) {
+      clearTimeout(saveTimer);
+      saveTimer = null;
+    }
+    saveWindowState(win);
+  };
   const scheduleSave = () => {
     if (saveTimer) clearTimeout(saveTimer);
     saveTimer = setTimeout(() => {
@@ -776,18 +795,17 @@ function trackWindowState(win) {
     }, 200);
   };
 
+  flushTrackedWindowState = flush;
+
   win.on('resize', scheduleSave);
   win.on('move', scheduleSave);
   win.on('maximize', scheduleSave);
   win.on('unmaximize', scheduleSave);
   win.on('enter-full-screen', scheduleSave);
   win.on('leave-full-screen', scheduleSave);
-  win.on('close', () => {
-    if (saveTimer) {
-      clearTimeout(saveTimer);
-      saveTimer = null;
-    }
-    saveWindowState(win);
+  win.on('close', flush);
+  win.on('closed', () => {
+    if (flushTrackedWindowState === flush) flushTrackedWindowState = null;
   });
 }
 
@@ -796,12 +814,14 @@ function getParentWindow() {
 }
 
 function createWindow() {
+  // Always reload from disk so relaunch / Update-ready Restart restores the last flush.
   const windowState = loadWindowState();
   const options = {
     width: windowState.width,
     height: windowState.height,
     minWidth: MIN_WINDOW_WIDTH,
     minHeight: MIN_WINDOW_HEIGHT,
+    show: false,
     title: `Click2Copy v${app.getVersion()}`,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -816,17 +836,27 @@ function createWindow() {
 
   mainWindow = new BrowserWindow(options);
 
-  if (windowState.isFullScreen) {
-    mainWindow.setFullScreen(true);
-  } else if (windowState.isMaximized) {
-    mainWindow.maximize();
-  }
-
   trackWindowState(mainWindow);
+
+  const applyRestoredChrome = () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    if (windowState.isFullScreen) {
+      mainWindow.setFullScreen(true);
+    } else if (windowState.isMaximized) {
+      mainWindow.maximize();
+    }
+  };
+
+  mainWindow.once('ready-to-show', () => {
+    applyRestoredChrome();
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.show();
+  });
 
   mainWindow.loadFile('index.html');
   mainWindow.webContents.once('did-finish-load', () => {
     mainWindowLoaded = true;
+    // Re-apply maximize/fullscreen after content load — some platforms drop it if applied too early.
+    applyRestoredChrome();
     while (pendingOpenPaths.length > 0) {
       mainWindow.webContents.send('document:open-path', pendingOpenPaths.shift());
     }
@@ -878,6 +908,10 @@ app.whenReady().then(() => {
   });
 });
 
+app.on('before-quit', () => {
+  flushWindowState();
+});
+
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
     app.quit();
@@ -889,6 +923,9 @@ ipcMain.handle('store:load', () => loadData());
 ipcMain.handle('store:save', (_event, data) => saveData(data));
 ipcMain.handle('app:version', () => app.getVersion());
 ipcMain.handle('app:relaunch', () => {
+  // app.exit skips before-quit/will-quit and can skip a reliable BrowserWindow 'close'
+  // flush — cancel debounce and write window-state.json synchronously before restart.
+  flushWindowState();
   app.relaunch();
   app.exit(0);
 });
