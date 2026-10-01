@@ -5,6 +5,7 @@ A simple Electron desktop app for composing prompts from reusable parts.
 ## Features
 
 - **Editable tabs** — add, rename (double-click or Tools → Rename), and delete tabs
+- **Per-tab icons** — Master and part tabs each show a customizable icon from **text (Aa)**, **video**, **img**, **sparkle**, **tag**, **folder**, **layers**, **hash**. Click the tab icon or right-click the tab to open a small picker (part tabs also get Rename / Delete there). Chosen icons persist on the tab in the project/session across reload. The **Tools** tab is **wrench-only** (fixed; not in the picker). Master / part / Tools tabs also use light distinct chrome (Master gold double border, Tools dashed slate + wrench)
 - **Tools tab** — shared UI tab that parks little-used controls (**+ Row**, **+ Column**, **Rename**, and **Part / Column / Row separators**) so the Find/filter row stays uncluttered; actions still apply to the active part tab (highlighted while Tools is open)
 - **Find / Replace + part controls** — one compact row on the current part tab: **Find**, **Find All**, **Replace** (Shift+Replace = replace all) plus **All / Non-empty / In Combined**, **Fit row heights**, and **Delete** (wraps on narrow widths); Ctrl/Cmd+F focuses Find. The old “Part name (cols×rows)” caption above the grid is gone (tab title is enough).
 - **Cell grid** — each tab is a grid of independently editable cells (default 3 columns × 8 rows)
@@ -75,6 +76,7 @@ Each tab is stored as:
 {
   "id": "tab-1",
   "title": "Part 1",
+  "icon": "text",
   "cols": 3,
   "rows": 8,
   "cells": ["…", "…"],
@@ -82,7 +84,7 @@ Each tab is stored as:
 }
 ```
 
-`cells` is a flat row-major array of length `cols * rows`. Older documents may still carry a `sleptCells` array; it is ignored on load. `nestedCells` is a parallel array of nest lists; each nest is `{ pages: string[], page: number }` (`page` is the current page index). When a cell is checked / Append all, Combined gets **parent text, then each nest’s pages in order** (all non-empty pages), joined by the row separator. Optional `columnWidths` / `rowHeights` arrays (lengths `cols` / `rows`) store resized column widths and auto-fitted row heights in pixels (autofit includes nested height).
+`cells` is a flat row-major array of length `cols * rows`. Older documents may still carry a `sleptCells` array; it is ignored on load. Optional `icon` is one of `text` | `video` | `img` | `sparkle` | `tag` | `folder` | `layers` | `hash` (defaults: Master → `layers`, parts → `text`; Tools is UI-only wrench and is not stored). `nestedCells` is a parallel array of nest lists; each nest is `{ pages: string[], page: number }` (`page` is the current page index). When a cell is checked / Append all, Combined gets **parent text, then each nest’s pages in order** (all non-empty pages), joined by the row separator. Optional `columnWidths` / `rowHeights` arrays (lengths `cols` / `rows`) store resized column widths and auto-fitted row heights in pixels (autofit includes nested height).
 
 Confirmed append links (ranges into the combined prompt tied to source tab/cell, with optional `nestIndex` for nested cells) are stored as `confirmedLinks` on the document. Master-origin segments also store `masterOrigin`, `locked`, and optional `masterCellIndex` so Combined Master locks restore on launch. They round-trip through session JSON, untitled autosave, named `.c2copy` files, and recoverable backups so cell greens and Master-insert greens restore on launch (offsets are repaired if Combined text still matches).
 
@@ -95,7 +97,7 @@ Confirmed append links (ranges into the combined prompt tied to source tab/cell,
 5. Open the shared **Tools** tab for **+ Row** / **+ Column** / **Rename** and separator settings (they still act on the active part tab). Use the part **Find** bar to search or replace text in cells (and nests).
 6. Click a cell to place the caret where you clicked and copy its text (or Tab/Enter/arrow keys onto it). Click+hold+drag a cell onto another to move/swap (Combined links stay aligned). Click+drag across cells immediately to select a rectangle (full range stays highlighted sticky after mouseup) — on mouseup the range is copied as TSV for pasting into Sheets/Excel; drag the sticky selection to move/swap the block. Paste from Google Sheets or Excel into a focused cell — tab-separated or HTML table data fills the grid (expanding rows/columns as needed) instead of dumping into one cell. Copy/cut with no text selection copies the whole focused cell.
 7. Click **Copy** when ready to paste elsewhere.
-8. Double-click a tab title to rename it (or use Tools → Rename); use **Delete** (with confirm if non-empty) to remove a tab.
+8. Double-click a tab title to rename it (or use Tools → Rename); use **Delete** (with confirm if non-empty) to remove a tab. Click the tab’s icon or right-click the tab to pick an icon (Master + parts); Tools stays wrench-only.
 
 Data is autosaved shortly after edits. Click the status line → under-the-hood panel to see the current autosave target and recoverable backup paths (`Documents/Click2Copy/latest-autosave.c2copy` and `userData/backups/latest-autosave.c2copy`).
 

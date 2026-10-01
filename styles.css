@@ -273,16 +273,43 @@ body {
   border: 1px solid var(--border);
   background: var(--surface);
   color: var(--muted);
-  padding: 5px 12px;
+  padding: 5px 10px;
   border-radius: var(--radius);
   cursor: pointer;
   font: inherit;
   font-weight: 500;
-  max-width: 180px;
+  max-width: 200px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   transition: background 0.12s, color 0.12s, border-color 0.12s;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.tab-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  color: inherit;
+  opacity: 0.9;
+}
+
+.tab-icon svg {
+  width: 14px;
+  height: 14px;
+  display: block;
+}
+
+.tab-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .tab:hover {
@@ -316,13 +343,140 @@ body {
 .tab.master-tab {
   border-style: double;
   border-width: 3px;
-  padding: 5px 12px;
+  border-color: #c4a35a;
+  color: #e8d5a3;
+  padding: 5px 10px;
   font-weight: 700;
+  background: linear-gradient(180deg, #243044 0%, #1f2a3d 100%);
+}
+
+.tab.master-tab:hover {
+  color: #f5e6c0;
+  border-color: #d4b56a;
+}
+
+.tab.master-tab.active {
+  background: linear-gradient(180deg, #b8860b 0%, #9a7209 100%);
+  border-color: #e8c547;
+  color: #fff;
+}
+
+.tab.part-tab {
+  border-style: solid;
 }
 
 .tab.tools-tab {
   border-style: dashed;
+  border-color: #6b7c99;
   font-weight: 700;
+  color: #a8b8d0;
+  margin-left: 4px;
+}
+
+.tab.tools-tab:hover {
+  color: var(--text);
+  border-color: #8b9bb4;
+}
+
+.tab.tools-tab.active {
+  background: #475569;
+  border-color: #94a3b8;
+  border-style: dashed;
+  color: #fff;
+}
+
+.tab-icon-picker {
+  position: fixed;
+  z-index: 1200;
+  min-width: 168px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  color: var(--text);
+}
+
+.tab-icon-picker-heading {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin: 0 0 6px 2px;
+}
+
+.tab-icon-picker-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 4px;
+}
+
+.tab-icon-picker-choice {
+  appearance: none;
+  width: 34px;
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+  padding: 0;
+}
+
+.tab-icon-picker-choice svg {
+  width: 16px;
+  height: 16px;
+  display: block;
+}
+
+.tab-icon-picker-choice:hover {
+  border-color: var(--accent);
+  background: var(--surface-2);
+}
+
+.tab-icon-picker-choice.is-selected {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+  background: rgba(59, 130, 246, 0.18);
+}
+
+.tab-icon-picker-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.tab-icon-picker-action {
+  appearance: none;
+  flex: 1;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 5px 8px;
+  cursor: pointer;
+}
+
+.tab-icon-picker-action:hover {
+  background: var(--surface-2);
+}
+
+.tab-icon-picker-action.is-danger {
+  color: #fecaca;
+  border-color: rgba(239, 68, 68, 0.45);
+}
+
+.tab-icon-picker-action.is-danger:hover {
+  background: rgba(239, 68, 68, 0.18);
 }
 
 .tab.tools-target:not(.active) {
@@ -419,15 +573,21 @@ body {
 
 
 .tab.editing {
-  padding: 0;
-  max-width: 200px;
+  padding: 4px 8px;
+  max-width: 220px;
+}
+
+.tab.editing .tab-icon {
+  pointer-events: none;
 }
 
 .tab-rename-input {
-  width: 140px;
-  padding: 6px 10px;
+  width: 120px;
+  min-width: 0;
+  flex: 1;
+  padding: 2px 6px;
   border: 1px solid var(--accent);
-  border-radius: var(--radius);
+  border-radius: 4px;
   background: var(--bg);
   color: var(--text);
   font: inherit;

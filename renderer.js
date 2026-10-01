@@ -13,6 +13,54 @@
     row: '\\n'
   };
 
+  /** Pickable tab icons (Master + part tabs). Tools uses fixed wrench only. */
+  const TAB_ICON_IDS = ['text', 'video', 'img', 'sparkle', 'tag', 'folder', 'layers', 'hash'];
+  const TAB_ICON_LABELS = {
+    text: 'Text (Aa)',
+    video: 'Video',
+    img: 'Image',
+    sparkle: 'Sparkle',
+    tag: 'Tag',
+    folder: 'Folder',
+    layers: 'Layers',
+    hash: 'Hash',
+    wrench: 'Tools'
+  };
+  const DEFAULT_PART_ICON = 'text';
+  const DEFAULT_MASTER_ICON = 'layers';
+  const TOOLS_ICON = 'wrench';
+
+  const TAB_ICON_SVG = {
+    text: '<svg viewBox="0 0 16 16" aria-hidden="true"><text x="8" y="12" text-anchor="middle" font-size="10" font-weight="700" font-family="Segoe UI,system-ui,sans-serif" fill="currentColor">Aa</text></svg>',
+    video: '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="1.5" y="3.5" width="9" height="9" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M11.2 6.2 L14.5 4.2 V11.8 L11.2 9.8 Z" fill="currentColor"/></svg>',
+    img: '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="5.5" cy="6" r="1.3" fill="currentColor"/><path d="M2.5 12.2 L6.2 8.2 L8.5 10.2 L11 7.5 L14.5 12.2 Z" fill="currentColor"/></svg>',
+    sparkle: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.2 L9.1 6.1 L14 7.2 L9.1 8.3 L8 13.2 L6.9 8.3 L2 7.2 L6.9 6.1 Z" fill="currentColor"/><path d="M12.5 1.8 L13 3.5 L14.7 4 L13 4.5 L12.5 6.2 L12 4.5 L10.3 4 L12 3.5 Z" fill="currentColor"/></svg>',
+    tag: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.2 8.8 V3.2 H7.8 L13.8 9.2 L9.2 13.8 Z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><circle cx="5.2" cy="5.2" r="1.1" fill="currentColor"/></svg>',
+    folder: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M1.5 4.2 H6 L7.4 5.6 H14.5 V12.5 H1.5 Z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>',
+    layers: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.2 L14 5.2 L8 8.2 L2 5.2 Z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M2 8 L8 11 L14 8" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M2 10.6 L8 13.6 L14 10.6" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>',
+    hash: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6.2 2.5 L5.2 13.5 M10.8 2.5 L9.8 13.5 M2.5 6.2 H13.5 M2.5 10.2 H13.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>',
+    wrench: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M10.8 2.2 a3.2 3.2 0 0 0-4.3 3.7 L2.2 10.2 l1.3 1.3 2.3-2.3 1.3 1.3-2.3 2.3 1.3 1.3 4.3-4.3 a3.2 3.2 0 0 0 3.7-4.3 l-2.2 2.2 -1.4-1.4 2.2-2.2 z" fill="currentColor"/></svg>'
+  };
+
+  function isTabIconId(id) {
+    return typeof id === 'string' && TAB_ICON_IDS.indexOf(id) !== -1;
+  }
+
+  function defaultIconForTab(tab) {
+    if (tab && (tab.id === 'master' || (tab.title && tab.title.trim().toLowerCase() === 'master'))) {
+      return DEFAULT_MASTER_ICON;
+    }
+    return DEFAULT_PART_ICON;
+  }
+
+  function resolveTabIcon(tab) {
+    if (tab && isTabIconId(tab.icon)) return tab.icon;
+    return defaultIconForTab(tab);
+  }
+
+  function tabIconMarkup(iconId) {
+    return TAB_ICON_SVG[iconId] || TAB_ICON_SVG[DEFAULT_PART_ICON];
+  }
 
   /** Excel-style column letters: 0→A, 25→Z, 26→AA, … */
   function columnLetter(colIndex) {
@@ -226,8 +274,8 @@
 
   /** Boolean array parallel to cells; missing/short arrays pad with false. */
 
-  function makeTab(id, title) {
-    return {
+  function makeTab(id, title, icon) {
+    const tab = {
       id: id,
       title: title,
       cols: DEFAULT_COLS,
@@ -235,15 +283,17 @@
       cells: emptyCells(DEFAULT_COLS, DEFAULT_ROWS),
       nestedCells: emptyNestedCells(DEFAULT_COLS, DEFAULT_ROWS)
     };
+    tab.icon = isTabIconId(icon) ? icon : defaultIconForTab(tab);
+    return tab;
   }
 
   function makeDefaultData() {
     return {
       tabs: [
-        makeTab('master', 'Master'),
-        makeTab('tab-1', 'Part 1'),
-        makeTab('tab-2', 'Part 2'),
-        makeTab('tab-3', 'Part 3')
+        makeTab('master', 'Master', DEFAULT_MASTER_ICON),
+        makeTab('tab-1', 'Part 1', DEFAULT_PART_ICON),
+        makeTab('tab-2', 'Part 2', DEFAULT_PART_ICON),
+        makeTab('tab-3', 'Part 3', DEFAULT_PART_ICON)
       ],
       activeTabId: 'tab-1',
       combinedPrompt: '',
@@ -323,7 +373,7 @@
     if (typeof t.content === 'string' && !Array.isArray(t.cells)) {
       const cells = emptyCells(DEFAULT_COLS, DEFAULT_ROWS);
       cells[0] = t.content;
-      return {
+      const legacy = {
         id: t.id,
         title: t.title,
         cols: DEFAULT_COLS,
@@ -331,6 +381,8 @@
         cells: cells,
         nestedCells: emptyNestedCells(DEFAULT_COLS, DEFAULT_ROWS)
       };
+      legacy.icon = isTabIconId(t.icon) ? t.icon : defaultIconForTab(legacy);
+      return legacy;
     }
 
     let cols = Number.isInteger(t.cols) && t.cols > 0 ? t.cols : DEFAULT_COLS;
@@ -364,6 +416,7 @@
       cells: cells,
       nestedCells: nestedCells
     };
+    normalized.icon = isTabIconId(t.icon) ? t.icon : defaultIconForTab(normalized);
     if (columnWidths) normalized.columnWidths = columnWidths;
     if (rowHeights) normalized.rowHeights = rowHeights;
     return normalized;
@@ -3434,29 +3487,54 @@
     scheduleSave();
   }
 
+  function fillTabButtonContent(btn, tab, options) {
+    const opts = options || {};
+    const iconId = opts.fixedIcon || resolveTabIcon(tab);
+    btn.textContent = '';
+    const icon = document.createElement('span');
+    icon.className = 'tab-icon';
+    icon.setAttribute('aria-hidden', 'true');
+    icon.dataset.icon = iconId;
+    icon.innerHTML = tabIconMarkup(iconId);
+    const title = document.createElement('span');
+    title.className = 'tab-title';
+    title.textContent = opts.titleText != null ? opts.titleText : (tab ? tab.title : '');
+    btn.appendChild(icon);
+    btn.appendChild(title);
+    return { icon: icon, title: title };
+  }
+
   function renderTabs() {
+    closeTabIconPicker();
     el.tabBar.innerHTML = '';
     const targetPartId = toolsTabActive ? resolveLastPartTabId() : null;
     state.tabs.forEach(function (tab) {
       const btn = document.createElement('button');
       btn.type = 'button';
       const isActive = !toolsTabActive && tab.id === state.activeTabId;
-      btn.className = 'tab' + (isActive ? ' active' : '');
-      btn.textContent = tab.title;
+      const master = isMasterTab(tab);
+      btn.className = 'tab' + (isActive ? ' active' : '') + (master ? ' master-tab' : ' part-tab');
+      fillTabButtonContent(btn, tab);
       btn.setAttribute('role', 'tab');
       btn.setAttribute('aria-selected', isActive ? 'true' : 'false');
       btn.dataset.id = tab.id;
-      btn.draggable = !isMasterTab(tab);
-      if (isMasterTab(tab)) btn.classList.add('master-tab');
+      btn.draggable = !master;
       if (toolsTabActive && tab.id === targetPartId) btn.classList.add('tools-target');
-      btn.title = isMasterTab(tab)
-        ? 'Master parts — edit reusable text here'
-        : tab.title + ' (drag to reorder; double-click to rename)';
+      btn.title = master
+        ? 'Master parts — edit reusable text here (right-click or click icon to change icon)'
+        : tab.title + ' (drag to reorder; double-click to rename; right-click or click icon to change icon)';
 
-      btn.addEventListener('click', function () {
+      btn.addEventListener('click', function (e) {
+        if (e.target && e.target.closest && e.target.closest('.tab-icon')) {
+          e.preventDefault();
+          e.stopPropagation();
+          openTabIconPicker(btn, tab);
+          return;
+        }
         selectTab(tab.id);
       });
       btn.addEventListener('dragstart', function (event) {
+        closeTabIconPicker();
         event.dataTransfer.setData('text/plain', tab.id);
         event.dataTransfer.effectAllowed = 'move';
         btn.classList.add('dragging');
@@ -3488,33 +3566,31 @@
       btn.addEventListener('dblclick', function (e) {
         e.preventDefault();
         e.stopPropagation();
-        if (isMasterTab(tab)) return;
+        if (master) return;
+        if (e.target && e.target.closest && e.target.closest('.tab-icon')) return;
         startInlineRename(btn, tab);
       });
       btn.addEventListener('contextmenu', function (e) {
         e.preventDefault();
-        if (isMasterTab(tab)) return;
-        const action = window.prompt('Tab actions — type: rename | delete', 'rename');
-        if (!action) return;
-        const a = action.trim().toLowerCase();
-        if (a === 'rename') startInlineRename(btn, tab);
-        else if (a === 'delete') deleteTab(tab.id);
+        openTabIconPicker(btn, tab, { x: e.clientX, y: e.clientY, showActions: !master });
       });
 
       el.tabBar.appendChild(btn);
     });
 
     // Shared Tools tab (UI-only) — parks + Row / + Column / Rename; acts on active part.
+    // Fixed wrench icon — not customizable / not in the icon picker.
     const toolsBtn = document.createElement('button');
     toolsBtn.type = 'button';
     toolsBtn.className = 'tab tools-tab' + (toolsTabActive ? ' active' : '');
-    toolsBtn.textContent = 'Tools';
+    fillTabButtonContent(toolsBtn, null, { fixedIcon: TOOLS_ICON, titleText: 'Tools' });
     toolsBtn.setAttribute('role', 'tab');
     toolsBtn.setAttribute('aria-selected', toolsTabActive ? 'true' : 'false');
     toolsBtn.dataset.id = '__tools__';
     toolsBtn.draggable = false;
-    toolsBtn.title = 'Shared tools — + Row, + Column, Rename for the active part tab';
+    toolsBtn.title = 'Shared tools — + Row, + Column, Rename for the active part tab (wrench icon fixed)';
     toolsBtn.addEventListener('click', function () {
+      closeTabIconPicker();
       selectToolsTab();
     });
     el.tabBar.appendChild(toolsBtn);
@@ -6093,8 +6169,10 @@
 
   function startInlineRename(btn, tab) {
     if (btn.classList.contains('editing')) return;
+    closeTabIconPicker();
     btn.classList.add('editing');
-    btn.textContent = '';
+    const parts = fillTabButtonContent(btn, tab);
+    if (parts.title) parts.title.remove();
 
     const input = document.createElement('input');
     input.type = 'text';
@@ -6136,6 +6214,118 @@
     input.addEventListener('blur', function () {
       finish(true);
     });
+  }
+
+  let tabIconPickerEl = null;
+  let tabIconPickerTabId = null;
+
+  function closeTabIconPicker() {
+    if (tabIconPickerEl && tabIconPickerEl.parentNode) {
+      tabIconPickerEl.parentNode.removeChild(tabIconPickerEl);
+    }
+    tabIconPickerEl = null;
+    tabIconPickerTabId = null;
+  }
+
+  function setTabIcon(tab, iconId) {
+    if (!tab || !isTabIconId(iconId)) return;
+    if (resolveTabIcon(tab) === iconId) {
+      closeTabIconPicker();
+      return;
+    }
+    pushHistory();
+    tab.icon = iconId;
+    closeTabIconPicker();
+    renderTabs();
+    scheduleSave();
+    setStatus('Tab icon → ' + (TAB_ICON_LABELS[iconId] || iconId), 'ok');
+  }
+
+  function openTabIconPicker(anchorBtn, tab, opts) {
+    opts = opts || {};
+    if (!tab || !anchorBtn) return;
+    closeTabIconPicker();
+    tabIconPickerTabId = tab.id;
+
+    const pop = document.createElement('div');
+    pop.className = 'tab-icon-picker';
+    pop.setAttribute('role', 'dialog');
+    pop.setAttribute('aria-label', 'Choose tab icon');
+
+    const heading = document.createElement('div');
+    heading.className = 'tab-icon-picker-heading';
+    heading.textContent = 'Icon';
+    pop.appendChild(heading);
+
+    const grid = document.createElement('div');
+    grid.className = 'tab-icon-picker-grid';
+    const current = resolveTabIcon(tab);
+    TAB_ICON_IDS.forEach(function (id) {
+      const choice = document.createElement('button');
+      choice.type = 'button';
+      choice.className = 'tab-icon-picker-choice' + (id === current ? ' is-selected' : '');
+      choice.title = TAB_ICON_LABELS[id] || id;
+      choice.setAttribute('aria-label', TAB_ICON_LABELS[id] || id);
+      choice.dataset.icon = id;
+      choice.innerHTML = tabIconMarkup(id);
+      choice.addEventListener('click', function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        setTabIcon(tab, id);
+      });
+      grid.appendChild(choice);
+    });
+    pop.appendChild(grid);
+
+    if (opts.showActions) {
+      const actions = document.createElement('div');
+      actions.className = 'tab-icon-picker-actions';
+      const renameBtn = document.createElement('button');
+      renameBtn.type = 'button';
+      renameBtn.className = 'tab-icon-picker-action';
+      renameBtn.textContent = 'Rename';
+      renameBtn.addEventListener('click', function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        closeTabIconPicker();
+        startInlineRename(anchorBtn, tab);
+      });
+      const deleteBtn = document.createElement('button');
+      deleteBtn.type = 'button';
+      deleteBtn.className = 'tab-icon-picker-action is-danger';
+      deleteBtn.textContent = 'Delete';
+      deleteBtn.addEventListener('click', function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        closeTabIconPicker();
+        deleteTab(tab.id);
+      });
+      actions.appendChild(renameBtn);
+      actions.appendChild(deleteBtn);
+      pop.appendChild(actions);
+    }
+
+    document.body.appendChild(pop);
+    tabIconPickerEl = pop;
+
+    const pad = 6;
+    let left;
+    let top;
+    if (Number.isFinite(opts.x) && Number.isFinite(opts.y)) {
+      left = opts.x;
+      top = opts.y;
+    } else {
+      const rect = anchorBtn.getBoundingClientRect();
+      left = rect.left;
+      top = rect.bottom + 4;
+    }
+    pop.style.left = '0px';
+    pop.style.top = '0px';
+    const size = pop.getBoundingClientRect();
+    left = Math.max(pad, Math.min(left, window.innerWidth - size.width - pad));
+    top = Math.max(pad, Math.min(top, window.innerHeight - size.height - pad));
+    pop.style.left = left + 'px';
+    pop.style.top = top + 'px';
   }
 
   function addTab() {
@@ -7287,9 +7477,14 @@
       const wrap = el.masterLibraryItems && el.masterLibraryItems.querySelector('.master-library-filter');
       if (!(wrap && wrap.contains(e.target))) closeMasterLibFilterMenu();
     }
+    if (tabIconPickerEl && !tabIconPickerEl.contains(e.target)) {
+      const onIcon = e.target && e.target.closest && e.target.closest('.tab-icon');
+      if (!onIcon) closeTabIconPicker();
+    }
   });
   document.addEventListener('keydown', function (e) {
     if (e.key === 'Escape') {
+      closeTabIconPicker();
       closeCol1FilterMenu();
       closeMasterLibFilterMenu();
       if (stickyCellRange) clearStickyCellRange();
@@ -7305,6 +7500,7 @@
     }
   });
   window.addEventListener('resize', function () {
+    closeTabIconPicker();
     closeCol1FilterMenu();
     closeMasterLibFilterMenu();
   });
