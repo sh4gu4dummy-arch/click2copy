@@ -19,6 +19,7 @@ A simple Electron desktop app for composing prompts from reusable parts.
 - **Checkbox drag-paint** — click+drag across Combined cell toggles, sleep (Zzz) checkboxes, or row Combined toggles to set many at once to the first control’s new value; Combined, sleep, and row drags never mix
 - **Row / cell Combined toggles** — larger checkbox-like controls on each row and each cell add that content to the Combined prompt and stay checked while included; uncheck removes the linked confirmed segment(s) and clears green. Row toggle covers the whole row; cell toggle is per-cell. Both stay in sync with confirmed links
 - **Sleep cell** — distinct Zzz checkbox above each cell’s Combined toggle marks that cell slept; slept cells stay visible but are skipped by Append all active (state persists with the document)
+- **Nested cells** — **+** under each cell’s Combined checkbox adds an indented nested text field under that cell (multiple nests per parent). Each nest has **pages** (◀ ▶, `1/3` label, **+** page); arrow keys at the caret edge also flip pages (▶ past the end adds a page). Nested content persists with the document
 - **Append all active** — includes every not-yet-included non-empty cell of the active part that is not slept (row-major)
 - **Undo / Redo** — Ctrl/Cmd+Z undoes document edits (cells, Combined prompt, confirmed links, paste, append, Master insert, clear, etc.); Ctrl/Cmd+Shift+Z or Ctrl+Y redoes. Typing in a cell or Combined is coalesced into one undo step
 - **Combined auto-copy** — clicking or focusing the Combined prompt copies its current text to the clipboard (edit still works); any edit also auto-copies (the Copy button remains as a manual fallback). Hold Ctrl/Cmd while activating Combined to skip the activate copy (clipboard stays for paste overwrite)
@@ -70,11 +71,12 @@ Each tab is stored as:
   "cols": 3,
   "rows": 8,
   "cells": ["…", "…"],
-  "sleptCells": [false, false]
+  "sleptCells": [false, false],
+  "nestedCells": [[{ "pages": ["…"], "page": 0 }], []]
 }
 ```
 
-`cells` is a flat row-major array of length `cols * rows`. `sleptCells` is a parallel boolean array (same length); slept cells are excluded from Append all active. Optional `columnWidths` / `rowHeights` arrays (lengths `cols` / `rows`) store resized column widths and auto-fitted row heights in pixels.
+`cells` is a flat row-major array of length `cols * rows`. `sleptCells` is a parallel boolean array (same length); slept cells are excluded from Append all active. `nestedCells` is a parallel array of nest lists; each nest is `{ pages: string[], page: number }` (`page` is the current page index). When a cell is checked / Append all, Combined gets **parent text, then each nest’s pages in order** (all non-empty pages), joined by the row separator. Optional `columnWidths` / `rowHeights` arrays (lengths `cols` / `rows`) store resized column widths and auto-fitted row heights in pixels (autofit includes nested height).
 
 Confirmed append links (ranges into the combined prompt tied to source tab/cell) are stored as `confirmedLinks` on the document. They round-trip through session JSON, untitled autosave, named `.c2copy` files, and recoverable backups so cell greens and Master-insert greens restore on launch (offsets are repaired if Combined text still matches).
 
@@ -82,7 +84,7 @@ Confirmed append links (ranges into the combined prompt tied to source tab/cell)
 
 1. Edit cells in the active tab’s grid.
 2. Use **All** / **Non-empty** / **In Combined** to filter which rows are visible. Use **Values** on the Column 1 header to multi-select which Column 1 values to show (composes with the row filters). Use **A–Z** / **Z–A** on the Column 1 header to sort rows by the first column.
-3. Check the box left of a row (or the Combined box on a cell) to include it in the Combined prompt; uncheck to remove it. Use the Zzz sleep checkbox above a cell’s Combined toggle to exclude that cell from Append all active.
+3. Check the box left of a row (or the Combined box on a cell) to include it in the Combined prompt; uncheck to remove it. Use the Zzz sleep checkbox above a cell’s Combined toggle to exclude that cell from Append all active. Use **+** under the Combined checkbox to add indented nested cells (pages via ◀ ▶).
 4. Or click **Append all active** to include every missing non-empty, non-slept cell.
 5. Use **+ Row** / **+ Column** to expand the grid.
 6. Click a cell to place the caret where you clicked and copy its text (or Tab/Enter/arrow keys onto it). Click+hold+drag a cell onto another to move/swap (sleep + Combined links stay aligned). Click+drag across cells immediately to select a rectangle (full range stays highlighted sticky after mouseup) — on mouseup the range is copied as TSV for pasting into Sheets/Excel; drag the sticky selection to move/swap the block. Paste from Google Sheets or Excel into a focused cell — tab-separated or HTML table data fills the grid (expanding rows/columns as needed) instead of dumping into one cell. Copy/cut with no text selection copies the whole focused cell.

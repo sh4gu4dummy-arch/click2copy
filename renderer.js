@@ -96,6 +96,80 @@
     return Array(cols * rows).fill(false);
   }
 
+  /** Parallel to cells: each entry is an array of nest objects { pages, page }. */
+  function emptyNestedCells(cols, rows) {
+    const out = [];
+    const n = cols * rows;
+    for (let i = 0; i < n; i++) out.push([]);
+    return out;
+  }
+
+  function makeEmptyNest() {
+    return { pages: [''], page: 0 };
+  }
+
+  /** One nest: pages[] of strings + current page index. Legacy string → one page. */
+  function normalizeNest(item) {
+    if (typeof item === 'string') {
+      return { pages: [item], page: 0 };
+    }
+    if (!item || typeof item !== 'object') return makeEmptyNest();
+    let pages;
+    if (Array.isArray(item.pages) && item.pages.length) {
+      pages = item.pages.map(function (p) { return typeof p === 'string' ? p : ''; });
+    } else if (typeof item.text === 'string') {
+      pages = [item.text];
+    } else {
+      pages = [''];
+    }
+    let page = Number.isInteger(item.page) ? item.page : 0;
+    if (page < 0) page = 0;
+    if (page >= pages.length) page = pages.length - 1;
+    return { pages: pages, page: page };
+  }
+
+  function normalizeNestList(list) {
+    if (!Array.isArray(list)) return [];
+    return list.map(normalizeNest);
+  }
+
+  /** Nested-cell arrays parallel to cells; missing/short pad with []. */
+  function normalizeNestedCells(nested, length) {
+    const needed = length > 0 ? length : 0;
+    let out;
+    if (Array.isArray(nested)) {
+      out = nested.map(normalizeNestList);
+    } else {
+      out = emptyNestedCells(1, needed);
+    }
+    if (out.length < needed) {
+      while (out.length < needed) out.push([]);
+    } else if (out.length > needed) {
+      out = out.slice(0, needed);
+    }
+    return out;
+  }
+
+  function nestPageText(nest, pageIndex) {
+    if (!nest || !Array.isArray(nest.pages)) return '';
+    if (pageIndex < 0 || pageIndex >= nest.pages.length) return '';
+    return nest.pages[pageIndex] == null ? '' : String(nest.pages[pageIndex]);
+  }
+
+  function nestExportText(nest) {
+    if (!nest || !Array.isArray(nest.pages)) return '';
+    const parts = [];
+    for (let i = 0; i < nest.pages.length; i++) {
+      const t = (nest.pages[i] || '').trim();
+      if (t) parts.push(t);
+    }
+    return parts.join(separatorValue(state.separators.row));
+  }
+
+  function nestHasContent(nest) {
+    return !!nestExportText(nest);
+  }
+
   /** Boolean array parallel to cells; missing/short arrays pad with false. */
   function normalizeSleptCells(slept, length) {
     const needed = length > 0 ? length : 0;
@@ -120,7 +194,8 @@
       cols: DEFAULT_COLS,
       rows: DEFAULT_ROWS,
       cells: emptyCells(DEFAULT_COLS, DEFAULT_ROWS),
-      sleptCells: emptySleptCells(DEFAULT_COLS, DEFAULT_ROWS)
+      sleptCells: emptySleptCells(DEFAULT_COLS, DEFAULT_ROWS),
+      nestedCells: emptyNestedCells(DEFAULT_COLS, DEFAULT_ROWS)
     };
   }
 
@@ -215,7 +290,8 @@
         cols: DEFAULT_COLS,
         rows: DEFAULT_ROWS,
         cells: cells,
-        sleptCells: emptySleptCells(DEFAULT_COLS, DEFAULT_ROWS)
+        sleptCells: emptySleptCells(DEFAULT_COLS, DEFAULT_ROWS),
+        nestedCells: emptyNestedCells(DEFAULT_COLS, DEFAULT_ROWS)
       };
     }
 
@@ -241,7 +317,16 @@
     const columnWidths = normalizeColumnWidths(t.columnWidths, cols);
     const rowHeights = normalizeRowHeights(t.rowHeights, rows);
     const sleptCells = normalizeSleptCells(t.sleptCells, needed);
-    const normalized = { id: t.id, title: t.title, cols: cols, rows: rows, cells: cells, sleptCells: sleptCells };
+    const nestedCells = normalizeNestedCells(t.nestedCells, needed);
+    const normalized = {
+      id: t.id,
+      title: t.title,
+      cols: cols,
+      rows: rows,
+      cells: cells,
+      sleptCells: sleptCells,
+      nestedCells: nestedCells
+    };
     if (columnWidths) normalized.columnWidths = columnWidths;
     if (rowHeights) normalized.rowHeights = rowHeights;
     return normalized;
@@ -612,9 +697,13 @@
   }
 
   function tabHasContent(tab) {
-    return tab.cells.some(function (c) {
-      return (c || '').trim().length > 0;
-    }) || !!(state.partPrompts[tab.id] || '').trim();
+    ensureNestedCells(tab);
+    const hasCell = tab.cells.some(function (c, i) {
+      if ((c || '').trim().length > 0) return true;
+      const nests = tab.nestedCells[i] || [];
+      return nests.some(function (n) { return nestHasContent(n); });
+    });
+    return hasCell || !!(state.partPrompts[tab.id] || '').trim();
   }
 
   function linkUid() {
@@ -774,7 +863,7 @@
   function sourceCellText(tabId, cellIndex) {
     const tab = state.tabs.find(function (t) { return t.id === tabId; });
     if (!tab || cellIndex < 0 || cellIndex >= tab.cells.length) return null;
-    return (tab.cells[cellIndex] || '').trim();
+    return cellCombinedText(tab, cellIndex);
   }
 
   function linkMatchesSource(link, segmentText) {
@@ -800,7 +889,7 @@
   function isMasterCellRepresentedInCombined(master, masterIdx) {
     if (!master || masterIdx < 0 || masterIdx >= master.cells.length) return false;
     if (isCellConfirmed(master.id, masterIdx)) return true;
-    const text = (master.cells[masterIdx] || '').trim();
+    const text = cellCombinedText(master, masterIdx);
     if (!text) return false;
     return state.confirmedLinks.some(function (link) {
       const expected = sourceCellText(link.tabId, link.cellIndex);
@@ -958,6 +1047,247 @@
     }
   }
 
+  function ensureNestedCells(tab) {
+    if (!tab) return;
+    tab.nestedCells = normalizeNestedCells(tab.nestedCells, tab.cols * tab.rows);
+  }
+
+  function getCellNests(tab, cellIndex) {
+    if (!tab || cellIndex < 0) return [];
+    ensureNestedCells(tab);
+    if (cellIndex >= tab.nestedCells.length) return [];
+    return tab.nestedCells[cellIndex];
+  }
+
+  function setCellNests(tab, cellIndex, nests) {
+    if (!tab || cellIndex < 0 || cellIndex >= tab.cells.length) return;
+    ensureNestedCells(tab);
+    tab.nestedCells[cellIndex] = normalizeNestList(nests);
+  }
+
+  /**
+   * Plain text used when a cell is sent to Combined: parent, then each nest's
+   * pages in order (all pages), joined by the row separator — nests are part of
+   * the same cell block.
+   */
+  function cellCombinedText(tab, cellIndex) {
+    if (!tab || cellIndex < 0 || cellIndex >= tab.cells.length) return '';
+    const parts = [];
+    const parent = (tab.cells[cellIndex] || '').trim();
+    if (parent) parts.push(parent);
+    const nests = getCellNests(tab, cellIndex);
+    for (let i = 0; i < nests.length; i++) {
+      const nestText = nestExportText(nests[i]);
+      if (nestText) parts.push(nestText);
+    }
+    if (!parts.length) return '';
+    return parts.join(separatorValue(state.separators.row));
+  }
+
+  function cellHasExportableContent(tab, cellIndex) {
+    return !!cellCombinedText(tab, cellIndex);
+  }
+
+  function swapNestedCellIndices(tab, indexA, indexB) {
+    if (!tab || indexA === indexB) return;
+    ensureNestedCells(tab);
+    if (indexA < 0 || indexB < 0 || indexA >= tab.nestedCells.length || indexB >= tab.nestedCells.length) return;
+    const tmp = tab.nestedCells[indexA];
+    tab.nestedCells[indexA] = tab.nestedCells[indexB];
+    tab.nestedCells[indexB] = tmp;
+  }
+
+  function remapNestedAfterColumnAdd(tab, oldCols, newCols) {
+    const oldNested = Array.isArray(tab.nestedCells) ? tab.nestedCells : [];
+    const next = emptyNestedCells(newCols, tab.rows);
+    for (let r = 0; r < tab.rows; r++) {
+      for (let c = 0; c < oldCols; c++) {
+        const oldIdx = r * oldCols + c;
+        next[r * newCols + c] = oldIdx < oldNested.length
+          ? normalizeNestList(oldNested[oldIdx])
+          : [];
+      }
+    }
+    tab.nestedCells = next;
+  }
+
+  function swapNestedRowIndices(tab, rowA, rowB) {
+    ensureNestedCells(tab);
+    for (let col = 0; col < tab.cols; col++) {
+      const a = rowA * tab.cols + col;
+      const b = rowB * tab.cols + col;
+      const tmp = tab.nestedCells[a];
+      tab.nestedCells[a] = tab.nestedCells[b];
+      tab.nestedCells[b] = tmp;
+    }
+  }
+
+  function shiftNestedRowsDown(tab, fromRow, emptyRow) {
+    ensureNestedCells(tab);
+    for (let row = emptyRow; row > fromRow + 1; row--) {
+      for (let col = 0; col < tab.cols; col++) {
+        tab.nestedCells[row * tab.cols + col] = tab.nestedCells[(row - 1) * tab.cols + col];
+      }
+    }
+    const moving = tab.nestedCells.slice(fromRow * tab.cols, (fromRow + 1) * tab.cols);
+    for (let col = 0; col < tab.cols; col++) {
+      tab.nestedCells[(fromRow + 1) * tab.cols + col] = moving[col];
+      tab.nestedCells[fromRow * tab.cols + col] = [];
+    }
+  }
+
+  function addNestedCell(cellIndex) {
+    const tab = activeTab();
+    if (!tab || cellIndex < 0 || cellIndex >= tab.cells.length) return;
+    pushHistory();
+    ensureNestedCells(tab);
+    tab.nestedCells[cellIndex] = tab.nestedCells[cellIndex].concat([makeEmptyNest()]);
+    const nestIndex = tab.nestedCells[cellIndex].length - 1;
+    renderGrid();
+    scheduleSave();
+    const nestTa = el.cellGrid.querySelector(
+      'textarea.cell-nest-input[data-idx="' + cellIndex + '"][data-nest="' + nestIndex + '"]'
+    );
+    if (nestTa) nestTa.focus();
+    const row = Math.floor(cellIndex / tab.cols) + 1;
+    const col = (cellIndex % tab.cols) + 1;
+    setStatus('Added nest under R' + row + 'C' + col);
+  }
+
+  function removeNestedCell(cellIndex, nestIndex) {
+    const tab = activeTab();
+    if (!tab || cellIndex < 0 || cellIndex >= tab.cells.length) return;
+    ensureNestedCells(tab);
+    const nests = tab.nestedCells[cellIndex];
+    if (nestIndex < 0 || nestIndex >= nests.length) return;
+    pushHistory();
+    nests.splice(nestIndex, 1);
+    revalidateLinksForCell(tab.id, cellIndex, { silent: true });
+    renderGrid();
+    renderCombinedPrompt();
+    applyConfirmedCellHighlights();
+    applyAppendCheckedState();
+    scheduleSave();
+    const row = Math.floor(cellIndex / tab.cols) + 1;
+    const col = (cellIndex % tab.cols) + 1;
+    setStatus('Removed nest from R' + row + 'C' + col);
+  }
+
+  function refreshNestConfirmedUi(idx, nestEl) {
+    const tab = activeTab();
+    if (!tab) return;
+    const confirmed = isCellConfirmed(tab.id, idx);
+    const wrap = nestEl && nestEl.closest ? nestEl.closest('.cell-wrap') : null;
+    if (wrap) {
+      wrap.classList.toggle('cell-confirmed', confirmed);
+      const parentTa = wrap.querySelector('textarea.cell');
+      if (parentTa) parentTa.classList.toggle('cell-confirmed', confirmed);
+    }
+    applyAppendCheckedState();
+    if (isMasterTab(tab)) renderMasterLibrary();
+  }
+
+  function onNestInput(e) {
+    const tab = activeTab();
+    if (!tab) return;
+    const idx = parseInt(e.target.dataset.idx, 10);
+    const nestIdx = parseInt(e.target.dataset.nest, 10);
+    if (Number.isNaN(idx) || idx < 0 || idx >= tab.cells.length) return;
+    if (Number.isNaN(nestIdx) || nestIdx < 0) return;
+    ensureNestedCells(tab);
+    const nest = tab.nestedCells[idx][nestIdx];
+    if (!nest) return;
+    const page = nest.page || 0;
+    if (page < 0 || page >= nest.pages.length) return;
+    if (stickyCellRange) clearStickyCellRange();
+    pushHistory({ coalesce: true });
+    nest.pages[page] = e.target.value;
+    revalidateLinksForCell(tab.id, idx);
+    refreshNestConfirmedUi(idx, e.target);
+    scheduleSave();
+  }
+
+  function setNestPage(cellIndex, nestIndex, pageIndex, opts) {
+    const tab = activeTab();
+    if (!tab || cellIndex < 0 || cellIndex >= tab.cells.length) return;
+    ensureNestedCells(tab);
+    const nest = tab.nestedCells[cellIndex][nestIndex];
+    if (!nest || !nest.pages.length) return;
+    let next = pageIndex;
+    if (next < 0) next = 0;
+    if (next >= nest.pages.length) next = nest.pages.length - 1;
+    if (nest.page === next && !(opts && opts.forceRender)) return;
+    // Page flip is view state — still persist so reopen lands on same page.
+    nest.page = next;
+    if (opts && opts.skipRender) {
+      scheduleSave();
+      return;
+    }
+    renderGrid();
+    scheduleSave();
+    const nestTa = el.cellGrid.querySelector(
+      'textarea.cell-nest-input[data-idx="' + cellIndex + '"][data-nest="' + nestIndex + '"]'
+    );
+    if (nestTa) nestTa.focus();
+  }
+
+  function addNestPage(cellIndex, nestIndex) {
+    const tab = activeTab();
+    if (!tab || cellIndex < 0 || cellIndex >= tab.cells.length) return;
+    ensureNestedCells(tab);
+    const nest = tab.nestedCells[cellIndex][nestIndex];
+    if (!nest) return;
+    pushHistory();
+    nest.pages.push('');
+    nest.page = nest.pages.length - 1;
+    renderGrid();
+    scheduleSave();
+    const nestTa = el.cellGrid.querySelector(
+      'textarea.cell-nest-input[data-idx="' + cellIndex + '"][data-nest="' + nestIndex + '"]'
+    );
+    if (nestTa) nestTa.focus();
+    setStatus('Added nest page (' + nest.pages.length + ')');
+  }
+
+  function removeNestPage(cellIndex, nestIndex) {
+    const tab = activeTab();
+    if (!tab || cellIndex < 0 || cellIndex >= tab.cells.length) return;
+    ensureNestedCells(tab);
+    const nest = tab.nestedCells[cellIndex][nestIndex];
+    if (!nest || nest.pages.length <= 1) {
+      removeNestedCell(cellIndex, nestIndex);
+      return;
+    }
+    pushHistory();
+    const removeAt = nest.page || 0;
+    nest.pages.splice(removeAt, 1);
+    if (nest.page >= nest.pages.length) nest.page = nest.pages.length - 1;
+    revalidateLinksForCell(tab.id, cellIndex, { silent: true });
+    renderGrid();
+    renderCombinedPrompt();
+    applyConfirmedCellHighlights();
+    applyAppendCheckedState();
+    scheduleSave();
+    setStatus('Removed nest page (' + nest.pages.length + ' left)');
+  }
+
+  function stepNestPage(cellIndex, nestIndex, delta) {
+    const tab = activeTab();
+    if (!tab) return;
+    ensureNestedCells(tab);
+    const nest = tab.nestedCells[cellIndex] && tab.nestedCells[cellIndex][nestIndex];
+    if (!nest) return;
+    const cur = nest.page || 0;
+    const next = cur + delta;
+    if (next < 0) return;
+    if (next >= nest.pages.length) {
+      // Past the end → create a new page (clear UX for multi-page nests).
+      addNestPage(cellIndex, nestIndex);
+      return;
+    }
+    setNestPage(cellIndex, nestIndex, next);
+  }
+
   function toggleCellSleep(cellIndex, slept) {
     const tab = activeTab();
     if (!tab || cellIndex < 0 || cellIndex >= tab.cells.length) return;
@@ -993,7 +1323,7 @@
     const isOn = isCellConfirmedInScope(tab.id, cellIndex, scope);
     if (isOn === !!wantOn) return false;
     if (wantOn) {
-      const value = (tab.cells[cellIndex] || '').trim();
+      const value = cellCombinedText(tab, cellIndex);
       if (!value) return false;
       appendPieces([{
         type: 'confirmed',
@@ -1455,7 +1785,7 @@
       return;
     }
 
-    const value = (tab.cells[cellIndex] || '').trim();
+    const value = cellCombinedText(tab, cellIndex);
     if (!value) {
       setStatus('Nothing to append', 'err');
       return;
@@ -1565,7 +1895,7 @@
     const colSep = separatorValue(state.separators.column);
     for (let c = 0; c < tab.cols; c++) {
       const idx = rowIndex * tab.cols + c;
-      const value = (tab.cells[idx] || '').trim();
+      const value = cellCombinedText(tab, idx);
       if (!value) continue;
       if (pieces.length) pieces.push({ type: 'plain', text: colSep });
       pieces.push({
@@ -2266,14 +2596,10 @@
    * Measure wrapped content height for a cell textarea.
    * Uses an off-DOM clone so filtered (display:none) rows still measure correctly.
    */
-  function measureCellContentHeight(ta, tab) {
+  function measureTextareaContentHeight(ta, className, widthPx) {
     if (!ta) return MIN_ROW_HEIGHT;
-    const col = parseInt(ta.dataset.col, 10);
-    let width = ta.getBoundingClientRect().width;
-    if (!(width > 0)) width = columnWidthForMeasure(tab, col) - 26; // approx gutter + padding space
-    if (!(width > 0)) width = DEFAULT_COLUMN_WIDTH;
     const helper = document.createElement('textarea');
-    helper.className = 'cell';
+    helper.className = className || 'cell';
     helper.setAttribute('aria-hidden', 'true');
     helper.tabIndex = -1;
     helper.rows = 1;
@@ -2281,23 +2607,68 @@
     helper.style.cssText =
       'position:absolute;left:-99999px;top:0;height:0;min-height:0;' +
       'overflow:hidden;visibility:hidden;resize:none;box-sizing:border-box;';
-    helper.style.width = width + 'px';
+    helper.style.width = widthPx + 'px';
     document.body.appendChild(helper);
     const needed = Math.max(MIN_ROW_HEIGHT, helper.scrollHeight);
     document.body.removeChild(helper);
     return needed;
   }
 
+  function measureCellContentHeight(ta, tab) {
+    if (!ta) return MIN_ROW_HEIGHT;
+    const col = parseInt(ta.dataset.col, 10);
+    let width = ta.getBoundingClientRect().width;
+    if (!(width > 0)) width = columnWidthForMeasure(tab, col) - 26; // approx gutter + padding space
+    if (!(width > 0)) width = DEFAULT_COLUMN_WIDTH;
+    return measureTextareaContentHeight(ta, 'cell', width);
+  }
+
+  /** Parent content height + visible nest chrome/pages for autofit. */
+  function measureCellStackHeight(wrap, tab) {
+    if (!wrap) return MIN_ROW_HEIGHT;
+    const ta = wrap.querySelector('textarea.cell');
+    let total = measureCellContentHeight(ta, tab);
+    const nests = wrap.querySelectorAll('.cell-nest');
+    for (let i = 0; i < nests.length; i++) {
+      const nestTa = nests[i].querySelector('textarea.cell-nest-input');
+      let nestWidth = nestTa ? nestTa.getBoundingClientRect().width : 0;
+      if (!(nestWidth > 0) && ta) {
+        nestWidth = Math.max(40, (ta.getBoundingClientRect().width || columnWidthForMeasure(tab, parseInt(ta.dataset.col, 10)) || DEFAULT_COLUMN_WIDTH) - 14);
+      }
+      if (!(nestWidth > 0)) nestWidth = DEFAULT_COLUMN_WIDTH - 40;
+      const nestH = measureTextareaContentHeight(nestTa, 'cell-nest-input', nestWidth);
+      // chrome row (~22) + nest textarea
+      total += 22 + nestH;
+    }
+    return total;
+  }
+
   function applyHeightToGridRow(row, heightPx) {
     if (!el.cellGrid) return;
+    const tab = activeTab();
     const h = Math.max(MIN_ROW_HEIGHT, heightPx);
-    const textareas = el.cellGrid.querySelectorAll('textarea.cell[data-row="' + row + '"]');
-    for (let i = 0; i < textareas.length; i++) {
-      textareas[i].style.height = h + 'px';
-    }
     const wraps = el.cellGrid.querySelectorAll('.cell-wrap[data-row="' + row + '"]');
     for (let w = 0; w < wraps.length; w++) {
-      wraps[w].style.minHeight = h + 'px';
+      const wrap = wraps[w];
+      wrap.style.minHeight = h + 'px';
+      const ta = wrap.querySelector('textarea.cell');
+      const nestTas = wrap.querySelectorAll('textarea.cell-nest-input');
+      let nestExtra = 0;
+      for (let n = 0; n < nestTas.length; n++) {
+        const nt = nestTas[n];
+        let nestWidth = nt.getBoundingClientRect().width;
+        if (!(nestWidth > 0)) nestWidth = DEFAULT_COLUMN_WIDTH - 40;
+        const nestH = measureTextareaContentHeight(nt, 'cell-nest-input', nestWidth);
+        nt.style.height = nestH + 'px';
+        nestExtra += 22 + nestH;
+      }
+      if (ta) {
+        const parentContent = measureCellContentHeight(ta, tab);
+        // When nests exist, keep parent at content size; otherwise stretch to row height.
+        ta.style.height = (nestTas.length
+          ? Math.max(MIN_ROW_HEIGHT, parentContent)
+          : h) + 'px';
+      }
     }
     const controls = el.cellGrid.querySelector('.row-controls[data-row="' + row + '"]');
     if (controls) controls.style.minHeight = h + 'px';
@@ -2319,9 +2690,9 @@
     const heights = [];
     for (let r = 0; r < tab.rows; r++) {
       let maxH = MIN_ROW_HEIGHT;
-      const textareas = el.cellGrid.querySelectorAll('textarea.cell[data-row="' + r + '"]');
-      for (let i = 0; i < textareas.length; i++) {
-        const h = measureCellContentHeight(textareas[i], tab);
+      const wraps = el.cellGrid.querySelectorAll('.cell-wrap[data-row="' + r + '"]');
+      for (let i = 0; i < wraps.length; i++) {
+        const h = measureCellStackHeight(wraps[i], tab);
         if (h > maxH) maxH = h;
       }
       heights.push(maxH);
@@ -2806,7 +3177,26 @@
           ev.stopPropagation();
         });
         gutter.appendChild(cellBtn);
+
+        const nestAddBtn = document.createElement('button');
+        nestAddBtn.type = 'button';
+        nestAddBtn.className = 'cell-nest-add';
+        nestAddBtn.title = 'Add nested cell under this cell';
+        nestAddBtn.setAttribute('aria-label', 'Add nest under row ' + (r + 1) + ' column ' + (c + 1));
+        nestAddBtn.innerHTML = '<span class="cell-nest-add-mark" aria-hidden="true">+</span>';
+        nestAddBtn.addEventListener('pointerdown', function (ev) {
+          ev.stopPropagation();
+        });
+        nestAddBtn.addEventListener('click', function (ev) {
+          ev.preventDefault();
+          ev.stopPropagation();
+          addNestedCell(idx);
+        });
+        gutter.appendChild(nestAddBtn);
         wrap.appendChild(gutter);
+
+        const stack = document.createElement('div');
+        stack.className = 'cell-stack';
 
         const ta = document.createElement('textarea');
         ta.className = 'cell';
@@ -2827,7 +3217,146 @@
         ta.addEventListener('paste', onCellPaste);
         ta.addEventListener('copy', onCellCopy);
         ta.addEventListener('cut', onCellCut);
-        wrap.appendChild(ta);
+        stack.appendChild(ta);
+
+        const nests = getCellNests(tab, idx);
+        if (nests.length) {
+          const nestsEl = document.createElement('div');
+          nestsEl.className = 'cell-nests';
+          for (let ni = 0; ni < nests.length; ni++) {
+            (function (nestIndex) {
+              const nest = nests[nestIndex];
+              const pageCount = nest.pages.length;
+              const page = Math.min(Math.max(nest.page || 0, 0), pageCount - 1);
+              nest.page = page;
+
+              const nestRow = document.createElement('div');
+              nestRow.className = 'cell-nest';
+              nestRow.dataset.idx = String(idx);
+              nestRow.dataset.nest = String(nestIndex);
+
+              const nestChrome = document.createElement('div');
+              nestChrome.className = 'cell-nest-chrome';
+
+              const prevBtn = document.createElement('button');
+              prevBtn.type = 'button';
+              prevBtn.className = 'cell-nest-page-btn';
+              prevBtn.textContent = '\u25c0';
+              prevBtn.title = 'Previous nest page';
+              prevBtn.setAttribute('aria-label', 'Previous nest page');
+              prevBtn.disabled = page <= 0;
+              prevBtn.addEventListener('click', function (ev) {
+                ev.preventDefault();
+                ev.stopPropagation();
+                stepNestPage(idx, nestIndex, -1);
+              });
+
+              const pageLabel = document.createElement('span');
+              pageLabel.className = 'cell-nest-page-label';
+              pageLabel.textContent = (page + 1) + '/' + pageCount;
+              pageLabel.title = 'Nest page ' + (page + 1) + ' of ' + pageCount;
+
+              const nextBtn = document.createElement('button');
+              nextBtn.type = 'button';
+              nextBtn.className = 'cell-nest-page-btn';
+              nextBtn.textContent = '\u25b6';
+              nextBtn.title = 'Next nest page (adds a page at the end)';
+              nextBtn.setAttribute('aria-label', 'Next nest page');
+              nextBtn.addEventListener('click', function (ev) {
+                ev.preventDefault();
+                ev.stopPropagation();
+                stepNestPage(idx, nestIndex, 1);
+              });
+
+              const addPageBtn = document.createElement('button');
+              addPageBtn.type = 'button';
+              addPageBtn.className = 'cell-nest-page-btn cell-nest-page-add';
+              addPageBtn.textContent = '+';
+              addPageBtn.title = 'Add nest page';
+              addPageBtn.setAttribute('aria-label', 'Add nest page');
+              addPageBtn.addEventListener('click', function (ev) {
+                ev.preventDefault();
+                ev.stopPropagation();
+                addNestPage(idx, nestIndex);
+              });
+
+              const removeBtn = document.createElement('button');
+              removeBtn.type = 'button';
+              removeBtn.className = 'cell-nest-remove';
+              removeBtn.textContent = '\u00d7';
+              removeBtn.title = pageCount > 1
+                ? 'Remove current nest page'
+                : 'Remove nested cell';
+              removeBtn.setAttribute('aria-label', removeBtn.title);
+              removeBtn.addEventListener('click', function (ev) {
+                ev.preventDefault();
+                ev.stopPropagation();
+                removeNestPage(idx, nestIndex);
+              });
+
+              nestChrome.appendChild(prevBtn);
+              nestChrome.appendChild(pageLabel);
+              nestChrome.appendChild(nextBtn);
+              nestChrome.appendChild(addPageBtn);
+              nestChrome.appendChild(removeBtn);
+
+              const nestTa = document.createElement('textarea');
+              nestTa.className = 'cell-nest-input';
+              nestTa.rows = 2;
+              nestTa.spellcheck = false;
+              nestTa.placeholder = 'Nest ' + (nestIndex + 1) + ' p' + (page + 1);
+              nestTa.value = nestPageText(nest, page);
+              nestTa.dataset.idx = String(idx);
+              nestTa.dataset.nest = String(nestIndex);
+              nestTa.dataset.page = String(page);
+              nestTa.setAttribute(
+                'aria-label',
+                'Nest ' + (nestIndex + 1) + ' page ' + (page + 1) + ' of ' + pageCount +
+                  ' under row ' + (r + 1) + ' column ' + (c + 1)
+              );
+              nestTa.addEventListener('input', onNestInput);
+              nestTa.addEventListener('keydown', function (ev) {
+                if (ev.altKey && (ev.key === 'ArrowLeft' || ev.key === 'ArrowRight')) {
+                  ev.preventDefault();
+                  stepNestPage(idx, nestIndex, ev.key === 'ArrowRight' ? 1 : -1);
+                  return;
+                }
+                // Plain arrows at caret edge flip pages when not editing mid-text selection.
+                if (ev.key === 'ArrowLeft' || ev.key === 'ArrowRight') {
+                  const taEl = ev.currentTarget;
+                  if (typeof taEl.selectionStart === 'number' && taEl.selectionStart === taEl.selectionEnd) {
+                    const atStart = taEl.selectionStart === 0;
+                    const atEnd = taEl.selectionStart === (taEl.value || '').length;
+                    if (ev.key === 'ArrowLeft' && atStart && page > 0) {
+                      ev.preventDefault();
+                      stepNestPage(idx, nestIndex, -1);
+                      return;
+                    }
+                    if (ev.key === 'ArrowRight' && atEnd) {
+                      ev.preventDefault();
+                      stepNestPage(idx, nestIndex, 1);
+                      return;
+                    }
+                  }
+                }
+              });
+              nestTa.addEventListener('pointerdown', function (ev) {
+                ev.stopPropagation();
+              });
+              nestTa.addEventListener('click', function (ev) {
+                ev.stopPropagation();
+                autoCopyCellToClipboard(ev.currentTarget);
+              });
+
+              nestRow.appendChild(nestChrome);
+              nestRow.appendChild(nestTa);
+              nestsEl.appendChild(nestRow);
+            })(ni);
+          }
+          stack.appendChild(nestsEl);
+        }
+
+        wrap.appendChild(stack);
         el.cellGrid.appendChild(wrap);
       }
 
@@ -3193,10 +3722,12 @@
     }
     pushHistory();
     ensureSleptCells(tab);
+    ensureNestedCells(tab);
     const tmp = tab.cells[fromIdx];
     tab.cells[fromIdx] = tab.cells[toIdx];
     tab.cells[toIdx] = tmp;
     swapSleptCellIndices(tab, fromIdx, toIdx);
+    swapNestedCellIndices(tab, fromIdx, toIdx);
     swapConfirmedCellIndices(tab.id, fromIdx, toIdx);
     return true;
   }
@@ -3232,10 +3763,13 @@
     );
 
     ensureSleptCells(tab);
+    ensureNestedCells(tab);
     const srcCells = srcIndices.map(function (i) { return tab.cells[i]; });
     const srcSlept = srcIndices.map(function (i) { return !!tab.sleptCells[i]; });
+    const srcNested = srcIndices.map(function (i) { return normalizeNestList(tab.nestedCells[i]); });
     const dstCells = dstIndices.map(function (i) { return tab.cells[i]; });
     const dstSlept = dstIndices.map(function (i) { return !!tab.sleptCells[i]; });
+    const dstNested = dstIndices.map(function (i) { return normalizeNestList(tab.nestedCells[i]); });
 
     let destHadContent = false;
     if (!overlap) {
@@ -3256,8 +3790,10 @@
       for (let i = 0; i < srcIndices.length; i++) {
         tab.cells[dstIndices[i]] = srcCells[i];
         tab.sleptCells[dstIndices[i]] = srcSlept[i];
+        tab.nestedCells[dstIndices[i]] = srcNested[i];
         tab.cells[srcIndices[i]] = dstCells[i];
         tab.sleptCells[srcIndices[i]] = dstSlept[i];
+        tab.nestedCells[srcIndices[i]] = dstNested[i];
         indexMap[srcIndices[i]] = dstIndices[i];
         indexMap[dstIndices[i]] = srcIndices[i];
       }
@@ -3270,10 +3806,12 @@
       for (let i = 0; i < srcIndices.length; i++) {
         tab.cells[srcIndices[i]] = '';
         tab.sleptCells[srcIndices[i]] = false;
+        tab.nestedCells[srcIndices[i]] = [];
       }
       for (let i = 0; i < srcIndices.length; i++) {
         tab.cells[dstIndices[i]] = srcCells[i];
         tab.sleptCells[dstIndices[i]] = srcSlept[i];
+        tab.nestedCells[dstIndices[i]] = srcNested[i];
         indexMap[srcIndices[i]] = dstIndices[i];
       }
     }
@@ -4116,6 +4654,7 @@
 
   function ensureTabSize(tab, rows, cols) {
     ensureSleptCells(tab);
+    ensureNestedCells(tab);
     while (tab.cols < cols) {
       const oldCols = tab.cols;
       const newCells = [];
@@ -4132,12 +4671,15 @@
       tab.cols += 1;
       tab.cells = newCells;
       remapSleptAfterColumnAdd(tab, oldCols, tab.cols);
+      remapNestedAfterColumnAdd(tab, oldCols, tab.cols);
       remapConfirmedAfterColumnAdd(tab.id, oldCols, tab.cols);
     }
     while (tab.rows < rows) {
+      ensureNestedCells(tab);
       for (let c = 0; c < tab.cols; c++) {
         tab.cells.push('');
         tab.sleptCells.push(false);
+        tab.nestedCells.push([]);
       }
       tab.rows += 1;
       ensureRowHeightsLength(tab);
@@ -4248,9 +4790,11 @@
     if (!tab) return;
     pushHistory();
     ensureSleptCells(tab);
+    ensureNestedCells(tab);
     for (let c = 0; c < tab.cols; c++) {
       tab.cells.push('');
       tab.sleptCells.push(false);
+      tab.nestedCells.push([]);
     }
     tab.rows += 1;
     ensureRowHeightsLength(tab);
@@ -4262,8 +4806,14 @@
   }
 
   function rowIsEmpty(tab, rowIndex) {
+    ensureNestedCells(tab);
     for (let col = 0; col < tab.cols; col++) {
-      if ((tab.cells[rowIndex * tab.cols + col] || '').trim()) return false;
+      const idx = rowIndex * tab.cols + col;
+      if ((tab.cells[idx] || '').trim()) return false;
+      const nests = tab.nestedCells[idx] || [];
+      for (let n = 0; n < nests.length; n++) {
+        if (nestHasContent(nests[n])) return false;
+      }
     }
     return true;
   }
@@ -4276,6 +4826,7 @@
 
     pushHistory();
     ensureSleptCells(tab);
+    ensureNestedCells(tab);
 
     const cols = tab.cols;
     const rows = tab.rows;
@@ -4296,12 +4847,14 @@
 
     const newCells = [];
     const newSlept = [];
+    const newNested = [];
     for (let i = 0; i < order.length; i++) {
       const src = order[i];
       for (let c = 0; c < cols; c++) {
         const idx = src * cols + c;
         newCells.push(tab.cells[idx] || '');
         newSlept.push(!!tab.sleptCells[idx]);
+        newNested.push(normalizeNestList(tab.nestedCells[idx]));
       }
     }
 
@@ -4312,6 +4865,7 @@
 
     tab.cells = newCells;
     tab.sleptCells = newSlept;
+    tab.nestedCells = newNested;
     if (Array.isArray(tab.rowHeights) && tab.rowHeights.length === rows) {
       tab.rowHeights = order.map(function (src) { return tab.rowHeights[src]; });
     }
@@ -4339,6 +4893,7 @@
 
     pushHistory();
     ensureSleptCells(tab);
+    ensureNestedCells(tab);
     if (direction < 0) {
       for (let col = 0; col < tab.cols; col++) {
         const sourceIndex = rowIndex * tab.cols + col;
@@ -4348,6 +4903,7 @@
         tab.cells[sourceIndex] = cell;
       }
       swapSleptRowIndices(tab, rowIndex, destination);
+      swapNestedRowIndices(tab, rowIndex, destination);
       swapConfirmedRowIndices(tab.id, tab.cols, rowIndex, destination);
       if (Array.isArray(tab.rowHeights) && tab.rowHeights.length === tab.rows) {
         const tmpH = tab.rowHeights[rowIndex];
@@ -4361,30 +4917,36 @@
       if (emptyRow === tab.rows) {
         tab.cells.push.apply(tab.cells, emptyCells(tab.cols, 1));
         tab.sleptCells.push.apply(tab.sleptCells, emptySleptCells(tab.cols, 1));
+        tab.nestedCells.push.apply(tab.nestedCells, emptyNestedCells(tab.cols, 1));
         tab.rows++;
         ensureRowHeightsLength(tab);
         emptyRow = tab.rows - 1;
       }
 
       const movingCells = tab.cells.slice(rowIndex * tab.cols, (rowIndex + 1) * tab.cols);
+      const movingNested = tab.nestedCells.slice(rowIndex * tab.cols, (rowIndex + 1) * tab.cols);
       const movingHeight = Array.isArray(tab.rowHeights) && tab.rowHeights.length === tab.rows
         ? tab.rowHeights[rowIndex]
         : null;
       for (let row = emptyRow; row > rowIndex + 1; row--) {
         for (let col = 0; col < tab.cols; col++) {
           tab.cells[row * tab.cols + col] = tab.cells[(row - 1) * tab.cols + col];
+          tab.nestedCells[row * tab.cols + col] = tab.nestedCells[(row - 1) * tab.cols + col];
         }
         if (movingHeight != null) tab.rowHeights[row] = tab.rowHeights[row - 1];
       }
       for (let col = 0; col < tab.cols; col++) {
         tab.cells[(rowIndex + 1) * tab.cols + col] = movingCells[col];
         tab.cells[rowIndex * tab.cols + col] = '';
+        tab.nestedCells[(rowIndex + 1) * tab.cols + col] = movingNested[col];
+        tab.nestedCells[rowIndex * tab.cols + col] = [];
       }
       if (movingHeight != null) {
         tab.rowHeights[rowIndex + 1] = movingHeight;
         tab.rowHeights[rowIndex] = MIN_ROW_HEIGHT;
       }
       shiftSleptRowsDown(tab, rowIndex, emptyRow);
+      shiftNestedRowsDown(tab, rowIndex, emptyRow);
       shiftConfirmedRowsDown(tab.id, tab.cols, rowIndex, emptyRow);
     }
 
@@ -4399,6 +4961,7 @@
     if (!tab) return;
     pushHistory();
     ensureSleptCells(tab);
+    ensureNestedCells(tab);
     const oldCols = tab.cols;
     const newCells = [];
     for (let r = 0; r < tab.rows; r++) {
@@ -4414,6 +4977,7 @@
     tab.cols += 1;
     tab.cells = newCells;
     remapSleptAfterColumnAdd(tab, oldCols, tab.cols);
+    remapNestedAfterColumnAdd(tab, oldCols, tab.cols);
     remapConfirmedAfterColumnAdd(tab.id, oldCols, tab.cols);
     renderTabs();
     renderGrid();
@@ -4434,7 +4998,7 @@
     const colSep = separatorValue(state.separators.column);
     for (let c = 0; c < tab.cols; c++) {
       const idx = rowIndex * tab.cols + c;
-      const value = (tab.cells[idx] || '').trim();
+      const value = cellCombinedText(tab, idx);
       if (!value) continue;
       if (isCellSlept(tab, idx)) continue;
       if (isCellConfirmedInScope(tab.id, idx, scope)) continue;
