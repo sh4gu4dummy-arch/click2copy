@@ -3365,17 +3365,30 @@
   }
 
   function onCellKeydown(e) {
-    if (e.key !== 'Enter' || e.shiftKey || e.isComposing) return;
+    if (e.isComposing) return;
+    const isEnter = e.key === 'Enter' && !e.shiftKey;
+    const isTab = e.key === 'Tab';
+    if (!isEnter && !isTab) return;
 
     const tab = activeTab();
     const idx = parseInt(e.currentTarget.dataset.idx, 10);
     if (!tab || Number.isNaN(idx) || idx < 0 || idx >= tab.cells.length) return;
 
+    // Keep Tab/Shift+Tab inside the cell grid (skip sleep / Combined controls).
     e.preventDefault();
+
+    if (isTab && e.shiftKey) {
+      if (idx > 0) moveToNextCell(e.currentTarget, idx - 1);
+      return;
+    }
+
+    // Enter or Tab: next cell (row-major).
     if (idx < tab.cells.length - 1) {
       moveToNextCell(e.currentTarget, idx + 1);
       return;
     }
+
+    if (!isEnter) return;
 
     // Blur before re-rendering so the current edit is finished cleanly.
     e.currentTarget.blur();
