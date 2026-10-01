@@ -107,10 +107,12 @@
   let autosaveLocations = null;
   let initialized = false;
   let focusedCell = null;
-  /** UI-only row filter: 'all' | 'nonempty' | 'included' */
-  let gridRowFilter = 'all';
-  /** UI-only Column A value filter: null = all values; Set of trimmed strings ('' = blank) */
-  let col1ValueFilter = null;
+  /**
+   * Per-tab grid filter prefs (UI-only).
+   * Keyed by tab id → { rowFilter: 'all'|'nonempty'|'included', valueFilter: null|Set }.
+   * Prevents editing Values / row filter on one tab from overwriting another tab's selections.
+   */
+  const gridFilterPrefsByTabId = Object.create(null);
   let col1FilterMenuOpen = false;
   /** UI-only Master insert filter menu open (ephemeral; not per-tab) */
   let masterLibFilterMenuOpen = false;
@@ -1687,6 +1689,37 @@
       link.cellIndex = oldToNew[row] * cols + col;
     });
   }
+
+  /** When Master rows reorder, keep part-tab locks + Combined masterCellIndex in sync. */
+  function remapMasterCellIndices(oldToNew, cols) {
+    if (!oldToNew || !cols) return;
+    function mapIndex(idx) {
+      if (!Number.isInteger(idx) || idx < 0) return idx;
+      const row = Math.floor(idx / cols);
+      const col = idx % cols;
+      if (row < 0 || row >= oldToNew.length) return idx;
+      const next = oldToNew[row];
+      if (!Number.isInteger(next) || next < 0) return idx;
+      return next * cols + col;
+    }
+    state.tabs.forEach(function (tab) {
+      if (isMasterTab(tab)) return;
+      ensureCellLocks(tab);
+      for (let i = 0; i < tab.cellLocks.length; i++) {
+        const lock = tab.cellLocks[i];
+        if (lock && Number.isInteger(lock.masterCellIndex) && lock.masterCellIndex >= 0) {
+          lock.masterCellIndex = mapIndex(lock.masterCellIndex);
+        }
+      }
+    });
+    state.confirmedLinks.forEach(function (link) {
+      if (Number.isInteger(link.masterCellIndex) && link.masterCellIndex >= 0) {
+        link.masterCellIndex = mapIndex(link.masterCellIndex);
+      }
+    });
+  }
+
+
 
 
 
@@ -3432,7 +3465,6 @@
 
   function applyData(data) {
     focusedCell = null;
-    clearMasterLibPrefs();
     const tabs = [];
     for (let i = 0; i < data.tabs.length; i++) {
       const n = normalizeTab(data.tabs[i]);
@@ -3463,6 +3495,10 @@
     lastPartTabId = active && !isMasterTab(active)
       ? active.id
       : (partTabs()[0] ? partTabs()[0].id : null);
+    // Keep per-part Master insert Values/sort prefs for tabs that still exist
+    // (undo/redo must not wipe other tabs' remembered picker selections).
+    pruneMasterLibPrefs();
+    pruneGridFilterPrefs();
     state.combinedPrompt = typeof data.combinedPrompt === 'string' ? data.combinedPrompt : '';
     state.globalCombined = typeof data.globalCombined === 'boolean' ? data.globalCombined : true;
     state.matchSourceOrder = typeof data.matchSourceOrder === 'boolean' ? data.matchSourceOrder : false;
@@ -3951,9 +3987,46 @@
     });
   }
 
+  /** Drop Master-insert prefs for part ids that no longer exist; keep the rest. */
+  function pruneMasterLibPrefs() {
+    const live = Object.create(null);
+    partTabs().forEach(function (tab) {
+      live[tab.id] = true;
+    });
+    Object.keys(masterLibPrefsByPartId).forEach(function (key) {
+      if (!live[key]) delete masterLibPrefsByPartId[key];
+    });
+  }
+
   function clearMasterLibPrefsForPart(partId) {
     if (partId) delete masterLibPrefsByPartId[partId];
   }
+
+  function gridFilterPrefsTabId() {
+    const tab = activeTab();
+    return tab ? tab.id : null;
+  }
+
+  function getGridFilterPrefs(tabId) {
+    const id = tabId || gridFilterPrefsTabId();
+    if (!id) return { rowFilter: 'all', valueFilter: null };
+    let prefs = gridFilterPrefsByTabId[id];
+    if (!prefs) {
+      prefs = { rowFilter: 'all', valueFilter: null };
+      gridFilterPrefsByTabId[id] = prefs;
+    }
+    return prefs;
+  }
+
+  function pruneGridFilterPrefs() {
+    const live = Object.create(null);
+    state.tabs.forEach(function (tab) { live[tab.id] = true; });
+    Object.keys(gridFilterPrefsByTabId).forEach(function (key) {
+      if (!live[key]) delete gridFilterPrefsByTabId[key];
+    });
+  }
+
+
 
   function uniqueMasterLibCol1Values(master) {
     const seen = Object.create(null);
@@ -3999,7 +4072,7 @@
         }
       }
     }
-    getMasterLibPrefs().valueFilter = allOn ? null : new Set(selected);
+    getMasterLibPrefs(masterLibPrefsPartId()).valueFilter = allOn ? null : new Set(selected);
     // Keep Values menu open and in place (match Column A Values): refresh results only.
     masterLibFilterMenuOpen = true;
     const master = state.tabs.find(isMasterTab);
@@ -4055,7 +4128,7 @@
     selectAll.addEventListener('click', function (e) {
       e.preventDefault();
       e.stopPropagation();
-      getMasterLibPrefs().valueFilter = null;
+      getMasterLibPrefs(masterLibPrefsPartId()).valueFilter = null;
       masterLibFilterMenuOpen = true;
       buildMasterLibFilterMenu(master, menu);
       const current = activeTab();
@@ -4071,7 +4144,7 @@
     clearBtn.addEventListener('click', function (e) {
       e.preventDefault();
       e.stopPropagation();
-      getMasterLibPrefs().valueFilter = new Set();
+      getMasterLibPrefs(masterLibPrefsPartId()).valueFilter = new Set();
       masterLibFilterMenuOpen = true;
       buildMasterLibFilterMenu(master, menu);
       const current = activeTab();
@@ -4150,7 +4223,9 @@
 
   function setMasterLibSortDir(dir) {
     if (dir !== 'asc' && dir !== 'desc') return;
-    const prefs = getMasterLibPrefs();
+    // Always key off the active part tab so sort never writes a shared/global slot.
+    const partId = masterLibPrefsPartId();
+    const prefs = getMasterLibPrefs(partId);
     prefs.sortDir = prefs.sortDir === dir ? null : dir;
     masterLibFilterMenuOpen = false;
     renderMasterLibrary();
@@ -4848,15 +4923,17 @@
   }
 
   function rowMatchesCol1ValueFilter(tab, rowIndex) {
-    if (col1ValueFilter === null) return true;
+    const filter = getGridFilterPrefs(tab && tab.id).valueFilter;
+    if (filter === null) return true;
     const v = (tab.cells[rowIndex * tab.cols] || '').trim();
-    return col1ValueFilter.has(v);
+    return filter.has(v);
   }
 
   function rowMatchesFilter(tab, rowIndex) {
     let base = true;
-    if (gridRowFilter === 'nonempty') base = !rowIsEmpty(tab, rowIndex);
-    else if (gridRowFilter === 'included') base = isRowIncluded(tab, rowIndex);
+    const rowFilter = getGridFilterPrefs(tab && tab.id).rowFilter;
+    if (rowFilter === 'nonempty') base = !rowIsEmpty(tab, rowIndex);
+    else if (rowFilter === 'included') base = isRowIncluded(tab, rowIndex);
     if (!base) return false;
     return rowMatchesCol1ValueFilter(tab, rowIndex);
   }
@@ -4881,7 +4958,7 @@
     for (let i = 0; i < buttons.length; i++) {
       const btn = buttons[i];
       if (!btn) continue;
-      const on = btn.dataset.filter === gridRowFilter;
+      const on = btn.dataset.filter === getGridFilterPrefs().rowFilter;
       btn.classList.toggle('is-active', on);
       btn.setAttribute('aria-pressed', on ? 'true' : 'false');
     }
@@ -4889,8 +4966,9 @@
 
   function setGridRowFilter(mode) {
     if (mode !== 'all' && mode !== 'nonempty' && mode !== 'included') return;
-    if (gridRowFilter === mode) return;
-    gridRowFilter = mode;
+    const prefs = getGridFilterPrefs();
+    if (prefs.rowFilter === mode) return;
+    prefs.rowFilter = mode;
     syncRowFilterButtons();
     renderGrid();
     const labels = { all: 'Showing all rows', nonempty: 'Showing non-empty rows', included: 'Showing rows in Combined' };
@@ -4898,8 +4976,9 @@
   }
 
   function isCol1ValueSelected(value) {
-    if (col1ValueFilter === null) return true;
-    return col1ValueFilter.has(value);
+    const filter = getGridFilterPrefs().valueFilter;
+    if (filter === null) return true;
+    return filter.has(value);
   }
 
   function setCol1ValueFilterSelection(selectedValues, allValues) {
@@ -4920,7 +4999,7 @@
         }
       }
     }
-    col1ValueFilter = allOn ? null : new Set(selected);
+    getGridFilterPrefs().valueFilter = allOn ? null : new Set(selected);
     applyRowFilterVisibility();
     syncCol1FilterControls();
   }
@@ -4943,11 +5022,12 @@
   function syncCol1FilterControls() {
     const btn = el.cellGrid && el.cellGrid.querySelector('.column-col1-filter-btn');
     if (!btn) return;
-    const active = col1ValueFilter !== null;
+    const prefs = getGridFilterPrefs();
+    const active = prefs.valueFilter !== null;
     btn.classList.toggle('is-active', active);
     btn.setAttribute('aria-pressed', active ? 'true' : 'false');
     btn.setAttribute('aria-expanded', col1FilterMenuOpen ? 'true' : 'false');
-    const count = col1ValueFilter ? col1ValueFilter.size : 0;
+    const count = prefs.valueFilter ? prefs.valueFilter.size : 0;
     btn.title = active
       ? ('Column A value filter on (' + count + ' selected) — click to change')
       : 'Filter rows by Column A values';
@@ -4979,7 +5059,7 @@
     selectAll.addEventListener('click', function (e) {
       e.preventDefault();
       e.stopPropagation();
-      col1ValueFilter = null;
+      getGridFilterPrefs().valueFilter = null;
       buildCol1FilterMenu(tab, menu);
       applyRowFilterVisibility();
       syncCol1FilterControls();
@@ -4993,7 +5073,7 @@
     clearBtn.addEventListener('click', function (e) {
       e.preventDefault();
       e.stopPropagation();
-      col1ValueFilter = new Set();
+      getGridFilterPrefs().valueFilter = new Set();
       buildCol1FilterMenu(tab, menu);
       applyRowFilterVisibility();
       syncCol1FilterControls();
@@ -5036,9 +5116,10 @@
             selected.push(boxes[b].dataset.blank === '1' ? '' : (boxes[b].dataset.value || ''));
           }
           setCol1ValueFilterSelection(selected, values);
-          const n = col1ValueFilter === null ? values.length : col1ValueFilter.size;
+          const filter = getGridFilterPrefs().valueFilter;
+          const n = filter === null ? values.length : filter.size;
           setStatus(
-            col1ValueFilter === null
+            filter === null
               ? 'Showing all Column A values'
               : ('Showing ' + n + ' Column A value' + (n === 1 ? '' : 's')),
             'ok'
@@ -7210,6 +7291,9 @@
       link.cellIndex = oldToNew[row] * cols + col;
     });
 
+    // Master grid A–Z rewrites shared Master cells — remap other tabs' Master locks.
+    if (isMasterTab(tab)) remapMasterCellIndices(oldToNew, cols);
+
     renderTabs();
     renderGrid();
     renderMasterLibrary();
@@ -7269,6 +7353,7 @@
         tab.rowHeights = order.map(function (src) { return tab.rowHeights[src]; });
       }
       remapConfirmedRowsByOrder(tab.id, cols, oldToNew);
+      if (isMasterTab(tab)) remapMasterCellIndices(oldToNew, cols);
     } else {
       // ↓ Grow by one, push everything below further down, move this row into the gap.
       ensureCellLocks(tab);
