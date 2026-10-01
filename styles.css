@@ -1491,12 +1491,18 @@ body.relocating-cell * {
   outline: none;
 }
 
-/* Part-grid Master locks (insert-from-Master): same bold green / amber edit chrome */
+/* Part-grid Master locks (insert-from-Master): stronger/more obvious than Combined */
 .cell-wrap.master-cell-locked {
-  box-shadow: inset 0 0 0 2px var(--confirmed-locked);
+  box-shadow:
+    inset 0 0 0 3px var(--confirmed-locked),
+    inset 0 0 0 1px rgba(var(--confirmed-locked-rgb), 0.35),
+    0 0 0 2px rgba(var(--confirmed-locked-rgb), 0.55);
 }
 .cell-wrap.master-cell-locked.cell-confirmed {
-  box-shadow: inset 0 0 0 2px var(--confirmed-locked);
+  box-shadow:
+    inset 0 0 0 3px var(--confirmed-locked),
+    inset 0 0 0 1px rgba(var(--confirmed-locked-rgb), 0.35),
+    0 0 0 2px rgba(var(--confirmed-locked-rgb), 0.55);
 }
 .cell.master-cell-locked {
   cursor: default;
