@@ -3893,16 +3893,10 @@
       btn.draggable = !master;
       if (toolsTabActive && tab.id === targetPartId) btn.classList.add('tools-target');
       btn.title = master
-        ? 'Master parts — edit reusable text here (right-click or click icon to change icon)'
-        : tab.title + ' (drag to reorder; double-click to rename; right-click or click icon to change icon)';
+        ? 'Master parts — edit reusable text here (right-click to change icon)'
+        : tab.title + ' (drag to reorder; double-click to rename; right-click to change icon)';
 
-      btn.addEventListener('click', function (e) {
-        if (e.target && e.target.closest && e.target.closest('.tab-icon')) {
-          e.preventDefault();
-          e.stopPropagation();
-          openTabIconPicker(btn, tab);
-          return;
-        }
+      btn.addEventListener('click', function () {
         selectTab(tab.id);
       });
       btn.addEventListener('dragstart', function (event) {
@@ -7987,8 +7981,7 @@
       if (!(wrap && wrap.contains(e.target))) closeMasterLibFilterMenu();
     }
     if (tabIconPickerEl && !tabIconPickerEl.contains(e.target)) {
-      const onIcon = e.target && e.target.closest && e.target.closest('.tab-icon');
-      if (!onIcon) closeTabIconPicker();
+      closeTabIconPicker();
     }
   });
   document.addEventListener('keydown', function (e) {
