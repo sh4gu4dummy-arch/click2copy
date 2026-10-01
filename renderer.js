@@ -114,6 +114,8 @@
   let col1FilterMenuOpen = false;
   /** UI-only Master insert filter menu open (ephemeral; not per-tab) */
   let masterLibFilterMenuOpen = false;
+  /** Skip scroll-dismiss while Values filter refresh changes Master insert height. */
+  let suppressMasterLibMenuScrollClose = false;
   /**
    * Per-part-tab Master insert prefs (UI-only, not persisted).
    * Keyed by part tab id → { valueFilter: null|Set, sortDir: null|'asc'|'desc' }.
@@ -4053,7 +4055,12 @@
       }
     }
     getMasterLibPrefs().valueFilter = allOn ? null : new Set(selected);
-    renderMasterLibrary();
+    // Keep Values menu open and in place (match Column A Values): refresh results only.
+    masterLibFilterMenuOpen = true;
+    const master = state.tabs.find(isMasterTab);
+    const current = activeTab();
+    refreshMasterLibraryResults(master, current);
+    syncMasterLibFilterControls();
   }
 
   function closeMasterLibFilterMenu() {
@@ -4104,7 +4111,11 @@
       e.preventDefault();
       e.stopPropagation();
       getMasterLibPrefs().valueFilter = null;
-      renderMasterLibrary();
+      masterLibFilterMenuOpen = true;
+      buildMasterLibFilterMenu(master, menu);
+      const current = activeTab();
+      refreshMasterLibraryResults(master, current);
+      syncMasterLibFilterControls();
       setStatus('Showing all Master Column A values', 'ok');
     });
 
@@ -4116,7 +4127,11 @@
       e.preventDefault();
       e.stopPropagation();
       getMasterLibPrefs().valueFilter = new Set();
-      renderMasterLibrary();
+      masterLibFilterMenuOpen = true;
+      buildMasterLibFilterMenu(master, menu);
+      const current = activeTab();
+      refreshMasterLibraryResults(master, current);
+      syncMasterLibFilterControls();
       setStatus('Master Column A filter cleared (none selected)', 'ok');
     });
 
@@ -4202,6 +4217,112 @@
           : 'Master insert sort cleared (Master order)',
       'ok'
     );
+  }
+
+  /** Replace Master-insert result grid/empty only — leave Values toolbar/menu intact. */
+  function refreshMasterLibraryResults(master, current) {
+    if (!el.masterLibraryItems) return;
+    if (!master || !current || isMasterTab(current)) return;
+
+    suppressMasterLibMenuScrollClose = true;
+    try {
+      const stale = el.masterLibraryItems.querySelectorAll('.master-library-grid, .master-library-empty');
+      for (let i = 0; i < stale.length; i++) stale[i].remove();
+
+      let hasContent = false;
+      for (let i = 0; i < master.cells.length; i++) {
+        if (master.cells[i] && String(master.cells[i]).trim()) {
+          hasContent = true;
+          break;
+        }
+      }
+      if (!hasContent) {
+        const empty = document.createElement('span');
+        empty.className = 'master-library-empty';
+        empty.textContent = 'Add reusable text in the Master part first.';
+        el.masterLibraryItems.appendChild(empty);
+        return;
+      }
+
+      let rows = [];
+      for (let row = 0; row < master.rows; row++) {
+        if (masterRowHasContent(master, row)) rows.push(row);
+      }
+
+      const prefs = getMasterLibPrefs(current.id);
+      if (prefs.valueFilter !== null) {
+        rows = rows.filter(function (row) {
+          const v = (master.cells[row * master.cols] || '').trim();
+          return prefs.valueFilter.has(v);
+        });
+      }
+
+      if (prefs.sortDir === 'asc' || prefs.sortDir === 'desc') {
+        const dir = prefs.sortDir;
+        rows = rows.slice().sort(function (a, b) {
+          const va = (master.cells[a * master.cols] || '').trim();
+          const vb = (master.cells[b * master.cols] || '').trim();
+          if (!va && !vb) return a - b;
+          if (!va) return 1;
+          if (!vb) return -1;
+          const cmp = va.localeCompare(vb, undefined, { sensitivity: 'base', numeric: true });
+          if (cmp !== 0) return dir === 'desc' ? -cmp : cmp;
+          return a - b;
+        });
+      }
+
+      if (!rows.length) {
+        const empty = document.createElement('span');
+        empty.className = 'master-library-empty';
+        empty.textContent = prefs.valueFilter !== null
+          ? 'No Master parts match the Column A Values filter.'
+          : 'Add reusable text in the Master part first.';
+        el.masterLibraryItems.appendChild(empty);
+        return;
+      }
+
+      const grid = document.createElement('div');
+      grid.className = 'master-library-grid';
+      grid.setAttribute('role', 'grid');
+      grid.style.gridTemplateColumns = contentColumnTemplate(master, 0);
+
+      for (let ri = 0; ri < rows.length; ri++) {
+        const row = rows[ri];
+        for (let col = 0; col < master.cols; col++) {
+          const cellText = master.cells[row * master.cols + col] || '';
+          const trimmed = String(cellText).trim();
+          if (trimmed) {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'master-library-cell';
+            const masterIdx = row * master.cols + col;
+            if (isMasterCellRepresentedInCombined(master, masterIdx)) button.classList.add('cell-confirmed');
+            button.textContent = cellText;
+            button.title = 'Add to the selected cell, or next empty cell, in ' + current.title;
+            button.setAttribute('role', 'gridcell');
+            button.dataset.row = String(row);
+            button.dataset.col = String(col);
+            button.addEventListener('click', function () {
+              insertMasterText(cellText);
+            });
+            grid.appendChild(button);
+          } else {
+            const blank = document.createElement('div');
+            blank.className = 'master-library-cell master-library-cell-empty';
+            blank.setAttribute('role', 'gridcell');
+            blank.setAttribute('aria-hidden', 'true');
+            blank.dataset.row = String(row);
+            blank.dataset.col = String(col);
+            grid.appendChild(blank);
+          }
+        }
+      }
+      el.masterLibraryItems.appendChild(grid);
+    } finally {
+      requestAnimationFrame(function () {
+        suppressMasterLibMenuScrollClose = false;
+      });
+    }
   }
 
   function renderMasterLibrary() {
@@ -4301,79 +4422,7 @@
     toolbar.appendChild(filterWrap);
     el.masterLibraryItems.appendChild(toolbar);
 
-    let rows = [];
-    for (let row = 0; row < master.rows; row++) {
-      if (masterRowHasContent(master, row)) rows.push(row);
-    }
-
-    const prefs = getMasterLibPrefs(current.id);
-    if (prefs.valueFilter !== null) {
-      rows = rows.filter(function (row) {
-        const v = (master.cells[row * master.cols] || '').trim();
-        return prefs.valueFilter.has(v);
-      });
-    }
-
-    if (prefs.sortDir === 'asc' || prefs.sortDir === 'desc') {
-      const dir = prefs.sortDir;
-      rows = rows.slice().sort(function (a, b) {
-        const va = (master.cells[a * master.cols] || '').trim();
-        const vb = (master.cells[b * master.cols] || '').trim();
-        if (!va && !vb) return a - b;
-        if (!va) return 1;
-        if (!vb) return -1;
-        const cmp = va.localeCompare(vb, undefined, { sensitivity: 'base', numeric: true });
-        if (cmp !== 0) return dir === 'desc' ? -cmp : cmp;
-        return a - b;
-      });
-    }
-
-    const grid = document.createElement('div');
-    grid.className = 'master-library-grid';
-    grid.setAttribute('role', 'grid');
-    grid.style.gridTemplateColumns = contentColumnTemplate(master, 0);
-
-    if (!rows.length) {
-      const empty = document.createElement('span');
-      empty.className = 'master-library-empty';
-      empty.textContent = prefs.valueFilter !== null
-        ? 'No Master parts match the Column A Values filter.'
-        : 'Add reusable text in the Master part first.';
-      el.masterLibraryItems.appendChild(empty);
-    } else {
-      for (let ri = 0; ri < rows.length; ri++) {
-        const row = rows[ri];
-        for (let col = 0; col < master.cols; col++) {
-          const cellText = master.cells[row * master.cols + col] || '';
-          const trimmed = String(cellText).trim();
-          if (trimmed) {
-            const button = document.createElement('button');
-            button.type = 'button';
-            button.className = 'master-library-cell';
-            const masterIdx = row * master.cols + col;
-            if (isMasterCellRepresentedInCombined(master, masterIdx)) button.classList.add('cell-confirmed');
-            button.textContent = cellText;
-            button.title = 'Add to the selected cell, or next empty cell, in ' + current.title;
-            button.setAttribute('role', 'gridcell');
-            button.dataset.row = String(row);
-            button.dataset.col = String(col);
-            button.addEventListener('click', function () {
-              insertMasterText(cellText);
-            });
-            grid.appendChild(button);
-          } else {
-            const blank = document.createElement('div');
-            blank.className = 'master-library-cell master-library-cell-empty';
-            blank.setAttribute('role', 'gridcell');
-            blank.setAttribute('aria-hidden', 'true');
-            blank.dataset.row = String(row);
-            blank.dataset.col = String(col);
-            grid.appendChild(blank);
-          }
-        }
-      }
-      el.masterLibraryItems.appendChild(grid);
-    }
+    refreshMasterLibraryResults(master, current);
 
     masterLibFilterMenuOpen = keepMenuOpen;
     if (keepMenuOpen) {
@@ -8011,7 +8060,10 @@
     el.cellGrid.parentElement.addEventListener('scroll', closeCol1FilterMenu, { passive: true });
   }
   if (el.masterLibrary) {
-    el.masterLibrary.addEventListener('scroll', closeMasterLibFilterMenu, { passive: true });
+    el.masterLibrary.addEventListener('scroll', function () {
+      if (suppressMasterLibMenuScrollClose) return;
+      closeMasterLibFilterMenu();
+    }, { passive: true });
   }
   el.btnAppend.addEventListener('click', appendAll);
   el.btnCopy.addEventListener('click', copyCombined);
