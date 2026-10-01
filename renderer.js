@@ -2081,8 +2081,50 @@
     document.body.classList.remove('painting-checkboxes');
   }
 
+  /**
+   * Ash Col1 Combined cascade (part tabs only): when checking Column A into
+   * Combined, also check same-row Col B and every other Col A cell with the
+   * same trimmed value V (exact string match, same as Values filter) plus each
+   * of those rows' Col B. Uncheck stays single-cell — no group auto-uncheck.
+   * Nest Combined checkboxes are independent (not included). Master skipped.
+   * Parent grid cells only (cellParentText).
+   */
+  function collectCol1CombinedCascadeIndices(tab, cellIndex) {
+    const cols = tab.cols || 0;
+    const rows = tab.rows || 0;
+    const value = cellParentText(tab, cellIndex);
+    const out = [];
+    const seen = Object.create(null);
+    function add(idx) {
+      if (!Number.isInteger(idx) || idx < 0 || idx >= tab.cells.length) return;
+      if (seen[idx]) return;
+      seen[idx] = true;
+      out.push(idx);
+    }
+    if (!value || cols < 2) {
+      add(cellIndex);
+      return out;
+    }
+    for (let r = 0; r < rows; r++) {
+      const col1 = r * cols;
+      if (cellParentText(tab, col1) !== value) continue;
+      add(col1);
+      add(col1 + 1);
+    }
+    return out;
+  }
+
+  function shouldCol1CombinedCascade(tab, cellIndex) {
+    if (!tab || isMasterTab(tab)) return false;
+    const cols = tab.cols || 0;
+    if (cols < 2) return false;
+    if (cellIndex < 0 || cellIndex >= tab.cells.length) return false;
+    return (cellIndex % cols) === 0;
+  }
+
   function ensureCellConfirmedState(cellIndex, wantOn, opts) {
     const quiet = !!(opts && opts.quiet);
+    const col1Cascade = !!(opts && opts.col1Cascade);
     const tab = activeTab();
     if (!tab || cellIndex < 0 || cellIndex >= tab.cells.length) return false;
     const scope = currentPromptScope();
@@ -2091,14 +2133,30 @@
     if (wantOn) {
       const value = cellParentText(tab, cellIndex);
       if (!value) return false;
-      appendPieces([{
-        type: 'confirmed',
-        text: value,
-        tabId: tab.id,
-        cellIndex: cellIndex
-      }], quiet ? null : (tab.title + ' ' + cellAddressFromIndex(tab, cellIndex)), { quiet: quiet });
+      let indices = [cellIndex];
+      // Only auto-batch on Combined checkbox check (col1Cascade), never on uncheck
+      // or other callers (e.g. Master insert).
+      if (col1Cascade && shouldCol1CombinedCascade(tab, cellIndex)) {
+        indices = collectCol1CombinedCascadeIndices(tab, cellIndex);
+      }
+      const pieces = [];
+      for (let i = 0; i < indices.length; i++) {
+        const idx = indices[i];
+        if (isCellConfirmedInScope(tab.id, idx, scope)) continue;
+        const text = cellParentText(tab, idx);
+        if (!text) continue;
+        pieces.push({
+          type: 'confirmed',
+          text: text,
+          tabId: tab.id,
+          cellIndex: idx
+        });
+      }
+      if (!pieces.length) return false;
+      appendPieces(pieces, quiet ? null : (tab.title + ' ' + cellAddressFromIndex(tab, cellIndex)), { quiet: quiet });
       return true;
     }
+    // Uncheck: only this parent cell — do not auto-uncheck the Col1 group.
     const links = linksForCellsInScope(tab.id, [cellIndex], scope).filter(function (link) {
       return linkNestIndex(link) === null;
     });
@@ -2113,7 +2171,7 @@
     if (checkboxDrag.visited[key]) return;
     checkboxDrag.visited[key] = true;
     const want = checkboxDrag.value;
-    if (kind === 'combined') ensureCellConfirmedState(key, want, { quiet: true });
+    if (kind === 'combined') ensureCellConfirmedState(key, want, { quiet: true, col1Cascade: true });
     else if (kind === 'nest') {
       const parts = String(key).split(':');
       const cellIndex = parseInt(parts[0], 10);
@@ -2182,7 +2240,7 @@
     document.addEventListener('pointermove', onCheckboxDragMove);
     document.addEventListener('pointerup', endCheckboxDrag);
     document.addEventListener('pointercancel', endCheckboxDrag);
-    if (kind === 'combined') ensureCellConfirmedState(key, value, { quiet: true });
+    if (kind === 'combined') ensureCellConfirmedState(key, value, { quiet: true, col1Cascade: true });
     else if (kind === 'nest') {
       const parts = String(key).split(':');
       const cellIndex = parseInt(parts[0], 10);
