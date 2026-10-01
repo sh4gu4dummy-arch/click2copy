@@ -493,8 +493,9 @@ body.resizing-sections * {
 }
 
 /* Spreadsheet-like header row and resize affordances.
-   Sticky top keeps Column 1 A–Z / Values reachable while scrolling the grid
-   (same idea as sticky Master insert summary). */
+   Sticky top keeps Column A A–Z / Values reachable while scrolling the grid
+   (same idea as sticky Master insert summary). Excel letters (A, B, C…) label
+   columns; row-header-label shows 1, 2, 3… on the left gutter. */
 .grid-corner,
 .column-header {
   position: sticky;
@@ -530,6 +531,7 @@ body.resizing-sections * {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
 }
 
 .column-sort-controls {
@@ -1537,7 +1539,8 @@ body.relocating-cell * {
   font-style: italic;
 }
 
-/* Append and reorder controls share the narrow row-header column. */
+/* Append and reorder controls share the narrow row-header column.
+   Excel-style row numbers sit in .row-header-label (1, 2, 3…). */
 .row-controls {
   display: flex;
   width: 100%;
@@ -1546,6 +1549,24 @@ body.relocating-cell * {
   align-self: stretch;
   border-right: 1px solid var(--border);
   border-bottom: 1px solid var(--border);
+  background: var(--surface-2);
+}
+
+.row-header-label {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 18px;
+  width: 18px;
+  min-width: 18px;
+  padding: 0 1px;
+  color: var(--muted);
+  font-size: 0.7rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+  user-select: none;
+  border-right: 1px solid var(--border);
   background: var(--surface-2);
 }
 

@@ -13,6 +13,32 @@
     row: '\\n'
   };
 
+
+  /** Excel-style column letters: 0→A, 25→Z, 26→AA, … */
+  function columnLetter(colIndex) {
+    let n = (Number(colIndex) || 0) + 1;
+    if (n < 1) n = 1;
+    let s = '';
+    while (n > 0) {
+      n--;
+      s = String.fromCharCode(65 + (n % 26)) + s;
+      n = Math.floor(n / 26);
+    }
+    return s;
+  }
+
+  /** Excel-style cell address from 0-based row/col: (0,0)→A1 */
+  function cellAddress(rowIndex, colIndex) {
+    return columnLetter(colIndex) + String((Number(rowIndex) || 0) + 1);
+  }
+
+  /** Address from flat cell index on a tab (0-based). */
+  function cellAddressFromIndex(tab, cellIndex) {
+    if (!tab || !Number.isInteger(cellIndex) || cellIndex < 0) return '?';
+    const cols = tab.cols || 1;
+    return cellAddress(Math.floor(cellIndex / cols), cellIndex % cols);
+  }
+
   const state = {
     documents: [],
     activeDocumentId: null,
@@ -35,7 +61,7 @@
   let focusedCell = null;
   /** UI-only row filter: 'all' | 'nonempty' | 'included' */
   let gridRowFilter = 'all';
-  /** UI-only Column 1 value filter: null = all values; Set of trimmed strings ('' = blank) */
+  /** UI-only Column A value filter: null = all values; Set of trimmed strings ('' = blank) */
   let col1ValueFilter = null;
   let col1FilterMenuOpen = false;
   /** UI-only Master insert picker: null = all col1 values; Set of trimmed strings */
@@ -586,11 +612,10 @@
         focusedCell.index < 0 || focusedCell.index >= tab.cells.length) {
       return 'none (tab ' + tab.title + ')';
     }
-    const row = Math.floor(focusedCell.index / tab.cols) + 1;
-    const col = (focusedCell.index % tab.cols) + 1;
+    const addr = cellAddressFromIndex(tab, focusedCell.index);
     const preview = (tab.cells[focusedCell.index] || '').trim().replace(/\s+/g, ' ');
     const short = preview.length > 40 ? preview.slice(0, 37) + '…' : preview;
-    return 'R' + row + 'C' + col + ' idx ' + focusedCell.index +
+    return addr + ' idx ' + focusedCell.index +
       (short ? ' — "' + short + '"' : ' — empty');
   }
 
@@ -1392,7 +1417,7 @@
     if (nestTa) nestTa.focus();
     const row = Math.floor(cellIndex / tab.cols) + 1;
     const col = (cellIndex % tab.cols) + 1;
-    setStatus('Added nest under R' + row + 'C' + col);
+    setStatus('Added nest under ' + cellAddressFromIndex(tab, cellIndex));
   }
 
   function remapNestLinksAfterRemove(tabId, cellIndex, removedNestIndex) {
@@ -1440,7 +1465,7 @@
     scheduleSave();
     const row = Math.floor(cellIndex / tab.cols) + 1;
     const col = (cellIndex % tab.cols) + 1;
-    setStatus('Removed nest from R' + row + 'C' + col);
+    setStatus('Removed nest from ' + cellAddressFromIndex(tab, cellIndex));
   }
 
   function refreshNestConfirmedUi(idx, nestIdx, nestEl) {
@@ -1565,7 +1590,7 @@
     scheduleSave();
     const row = Math.floor(cellIndex / tab.cols) + 1;
     const col = (cellIndex % tab.cols) + 1;
-    setStatus(slept ? ('Slept R' + row + 'C' + col) : ('Woke R' + row + 'C' + col));
+    setStatus(slept ? ('Slept ' + cellAddressFromIndex(tab, cellIndex)) : ('Woke ' + cellAddressFromIndex(tab, cellIndex)));
   }
 
   /**
@@ -1597,8 +1622,7 @@
         text: value,
         tabId: tab.id,
         cellIndex: cellIndex
-      }], quiet ? null : (tab.title + ' R' + (Math.floor(cellIndex / tab.cols) + 1) +
-        'C' + ((cellIndex % tab.cols) + 1)), { quiet: quiet });
+      }], quiet ? null : (tab.title + ' ' + cellAddressFromIndex(tab, cellIndex)), { quiet: quiet });
       return true;
     }
     const links = linksForCellsInScope(tab.id, [cellIndex], scope).filter(function (link) {
@@ -1646,7 +1670,7 @@
       scheduleSave();
       const row = Math.floor(cellIndex / tab.cols) + 1;
       const col = (cellIndex % tab.cols) + 1;
-      setStatus(wantSlept ? ('Slept R' + row + 'C' + col) : ('Woke R' + row + 'C' + col));
+      setStatus(wantSlept ? ('Slept ' + cellAddressFromIndex(tab, cellIndex)) : ('Woke ' + cellAddressFromIndex(tab, cellIndex)));
     }
     return true;
   }
@@ -1803,8 +1827,8 @@
       const row = Math.floor(idx / tab.cols) + 1;
       const col = (idx % tab.cols) + 1;
       btn.title = on
-        ? 'Remove cell R' + row + 'C' + col + ' from combined prompt'
-        : 'Add cell R' + row + 'C' + col + ' to combined prompt';
+        ? 'Remove cell ' + cellAddress(row - 1, col - 1) + ' from combined prompt'
+        : 'Add cell ' + cellAddress(row - 1, col - 1) + ' to combined prompt';
       btn.setAttribute('aria-label', btn.title);
     }
 
@@ -1820,8 +1844,8 @@
       const row = Math.floor(idx / tab.cols) + 1;
       const col = (idx % tab.cols) + 1;
       btn.title = on
-        ? 'Remove nest ' + (nest + 1) + ' of R' + row + 'C' + col + ' from combined prompt'
-        : 'Add nest ' + (nest + 1) + ' of R' + row + 'C' + col + ' to combined prompt';
+        ? 'Remove nest ' + (nest + 1) + ' of ' + cellAddress(row - 1, col - 1) + ' from combined prompt'
+        : 'Add nest ' + (nest + 1) + ' of ' + cellAddress(row - 1, col - 1) + ' to combined prompt';
       btn.setAttribute('aria-label', btn.title);
     }
   }
@@ -2332,7 +2356,7 @@
       refreshAfterConfirmedChange();
       const row = Math.floor(cellIndex / tab.cols) + 1;
       const col = (cellIndex % tab.cols) + 1;
-      setStatus('Removed R' + row + 'C' + col + ' from combined', 'ok');
+      setStatus('Removed ' + cellAddress(row - 1, col - 1) + ' from combined', 'ok');
       return;
     }
 
@@ -2346,8 +2370,7 @@
       text: value,
       tabId: tab.id,
       cellIndex: cellIndex
-    }], tab.title + ' R' + (Math.floor(cellIndex / tab.cols) + 1) +
-      'C' + ((cellIndex % tab.cols) + 1));
+    }], tab.title + ' ' + cellAddressFromIndex(tab, cellIndex));
   }
 
   function toggleNestConfirmed(cellIndex, nestIndex) {
@@ -2369,7 +2392,7 @@
       refreshAfterConfirmedChange();
       const row = Math.floor(cellIndex / tab.cols) + 1;
       const col = (cellIndex % tab.cols) + 1;
-      setStatus('Removed nest ' + (nestIndex + 1) + ' of R' + row + 'C' + col + ' from combined', 'ok');
+      setStatus('Removed nest ' + (nestIndex + 1) + ' of ' + cellAddress(row - 1, col - 1) + ' from combined', 'ok');
       return;
     }
 
@@ -2384,8 +2407,7 @@
       tabId: tab.id,
       cellIndex: cellIndex,
       nestIndex: nestIndex
-    }], tab.title + ' R' + (Math.floor(cellIndex / tab.cols) + 1) +
-      'C' + ((cellIndex % tab.cols) + 1) + ' nest ' + (nestIndex + 1));
+    }], tab.title + ' ' + cellAddressFromIndex(tab, cellIndex) + ' nest ' + (nestIndex + 1));
   }
 
   function ensureNestConfirmedState(cellIndex, nestIndex, wantOn, opts) {
@@ -2407,8 +2429,7 @@
         tabId: tab.id,
         cellIndex: cellIndex,
         nestIndex: nestIndex
-      }], quiet ? null : (tab.title + ' R' + (Math.floor(cellIndex / tab.cols) + 1) +
-        'C' + ((cellIndex % tab.cols) + 1) + ' nest ' + (nestIndex + 1)), { quiet: quiet });
+      }], quiet ? null : (tab.title + ' ' + cellAddressFromIndex(tab, cellIndex) + ' nest ' + (nestIndex + 1)), { quiet: quiet });
       return true;
     }
     const links = linksForNestInScope(tab.id, cellIndex, nestIndex, scope);
@@ -3177,8 +3198,8 @@
     btn.setAttribute('aria-expanded', masterLibFilterMenuOpen ? 'true' : 'false');
     const count = masterLibValueFilter ? masterLibValueFilter.size : 0;
     btn.title = active
-      ? ('Master Column 1 value filter on (' + count + ' selected) — click to change')
-      : 'Filter Master parts by Column 1 values';
+      ? ('Master Column A value filter on (' + count + ' selected) — click to change')
+      : 'Filter Master parts by Column A values';
     btn.setAttribute('aria-label', btn.title);
     const menu = el.masterLibraryItems.querySelector('.master-library-filter-menu');
     if (menu) {
@@ -3207,7 +3228,7 @@
       e.stopPropagation();
       masterLibValueFilter = null;
       renderMasterLibrary();
-      setStatus('Showing all Master Column 1 values', 'ok');
+      setStatus('Showing all Master Column A values', 'ok');
     });
 
     const clearBtn = document.createElement('button');
@@ -3219,7 +3240,7 @@
       e.stopPropagation();
       masterLibValueFilter = new Set();
       renderMasterLibrary();
-      setStatus('Master Column 1 filter cleared (none selected)', 'ok');
+      setStatus('Master Column A filter cleared (none selected)', 'ok');
     });
 
     actions.appendChild(selectAll);
@@ -3260,8 +3281,8 @@
           const n = masterLibValueFilter === null ? values.length : masterLibValueFilter.size;
           setStatus(
             masterLibValueFilter === null
-              ? 'Showing all Master Column 1 values'
-              : ('Showing ' + n + ' Master Column 1 value' + (n === 1 ? '' : 's')),
+              ? 'Showing all Master Column A values'
+              : ('Showing ' + n + ' Master Column A value' + (n === 1 ? '' : 's')),
             'ok'
           );
         });
@@ -3296,9 +3317,9 @@
     renderMasterLibrary();
     setStatus(
       masterLibSortDir === 'desc'
-        ? 'Master insert sorted Z–A by Column 1'
+        ? 'Master insert sorted Z–A by Column A'
         : masterLibSortDir === 'asc'
-          ? 'Master insert sorted A–Z by Column 1'
+          ? 'Master insert sorted A–Z by Column A'
           : 'Master insert sort cleared (Master order)',
       'ok'
     );
@@ -3338,13 +3359,13 @@
     const sortControls = document.createElement('span');
     sortControls.className = 'column-sort-controls';
     sortControls.setAttribute('role', 'group');
-    sortControls.setAttribute('aria-label', 'Sort Master parts by column 1');
+    sortControls.setAttribute('aria-label', 'Sort Master parts by column A');
 
     const sortAsc = document.createElement('button');
     sortAsc.type = 'button';
     sortAsc.className = 'column-sort-btn master-library-sort-asc';
     sortAsc.textContent = 'A–Z';
-    sortAsc.title = 'Sort Master insert by column 1 A–Z (display only)';
+    sortAsc.title = 'Sort Master insert by column A A–Z (display only)';
     sortAsc.setAttribute('aria-label', sortAsc.title);
     sortAsc.addEventListener('click', function (e) {
       e.preventDefault();
@@ -3356,7 +3377,7 @@
     sortDesc.type = 'button';
     sortDesc.className = 'column-sort-btn master-library-sort-desc';
     sortDesc.textContent = 'Z–A';
-    sortDesc.title = 'Sort Master insert by column 1 Z–A (display only)';
+    sortDesc.title = 'Sort Master insert by column A Z–A (display only)';
     sortDesc.setAttribute('aria-label', sortDesc.title);
     sortDesc.addEventListener('click', function (e) {
       e.preventDefault();
@@ -3375,7 +3396,7 @@
     filterBtn.type = 'button';
     filterBtn.className = 'column-sort-btn column-col1-filter-btn master-library-filter-btn';
     filterBtn.textContent = 'Values';
-    filterBtn.title = 'Filter Master parts by Column 1 values';
+    filterBtn.title = 'Filter Master parts by Column A values';
     filterBtn.setAttribute('aria-label', filterBtn.title);
     filterBtn.setAttribute('aria-haspopup', 'true');
     filterBtn.setAttribute('aria-expanded', 'false');
@@ -3385,7 +3406,7 @@
     filterMenu.className = 'column-col1-filter-menu master-library-filter-menu';
     filterMenu.hidden = true;
     filterMenu.setAttribute('role', 'dialog');
-    filterMenu.setAttribute('aria-label', 'Master Column 1 value filter');
+    filterMenu.setAttribute('aria-label', 'Master Column A value filter');
 
     filterBtn.addEventListener('click', function (e) {
       e.preventDefault();
@@ -3436,7 +3457,7 @@
       const empty = document.createElement('span');
       empty.className = 'master-library-empty';
       empty.textContent = masterLibValueFilter !== null
-        ? 'No Master parts match the Column 1 Values filter.'
+        ? 'No Master parts match the Column A Values filter.'
         : 'Add reusable text in the Master part first.';
       el.masterLibraryItems.appendChild(empty);
     } else {
@@ -3558,8 +3579,8 @@
   }
 
   function applyGridColumns(tab) {
-    // Row gutter (40px) + shared content widths from tab.columnWidths.
-    el.cellGrid.style.gridTemplateColumns = '40px ' + contentColumnTemplate(tab, 120);
+    // Row gutter (52px: Excel row # + Combined/move controls) + content widths.
+    el.cellGrid.style.gridTemplateColumns = '52px ' + contentColumnTemplate(tab, 120);
   }
 
   function columnWidthForMeasure(tab, col) {
@@ -3911,8 +3932,8 @@
     btn.setAttribute('aria-expanded', col1FilterMenuOpen ? 'true' : 'false');
     const count = col1ValueFilter ? col1ValueFilter.size : 0;
     btn.title = active
-      ? ('Column 1 value filter on (' + count + ' selected) — click to change')
-      : 'Filter rows by Column 1 values';
+      ? ('Column A value filter on (' + count + ' selected) — click to change')
+      : 'Filter rows by Column A values';
     btn.setAttribute('aria-label', btn.title);
     const menu = el.cellGrid.querySelector('.column-col1-filter-menu');
     if (menu) {
@@ -3945,7 +3966,7 @@
       buildCol1FilterMenu(tab, menu);
       applyRowFilterVisibility();
       syncCol1FilterControls();
-      setStatus('Showing all Column 1 values', 'ok');
+      setStatus('Showing all Column A values', 'ok');
     });
 
     const clearBtn = document.createElement('button');
@@ -3959,7 +3980,7 @@
       buildCol1FilterMenu(tab, menu);
       applyRowFilterVisibility();
       syncCol1FilterControls();
-      setStatus('Column 1 value filter cleared (no rows)', 'ok');
+      setStatus('Column A value filter cleared (no rows)', 'ok');
     });
 
     actions.appendChild(selectAll);
@@ -3969,7 +3990,7 @@
     const list = document.createElement('div');
     list.className = 'column-col1-filter-list';
     list.setAttribute('role', 'group');
-    list.setAttribute('aria-label', 'Column 1 values');
+    list.setAttribute('aria-label', 'Column A values');
 
     if (!values.length) {
       const empty = document.createElement('div');
@@ -4001,8 +4022,8 @@
           const n = col1ValueFilter === null ? values.length : col1ValueFilter.size;
           setStatus(
             col1ValueFilter === null
-              ? 'Showing all Column 1 values'
-              : ('Showing ' + n + ' Column 1 value' + (n === 1 ? '' : 's')),
+              ? 'Showing all Column A values'
+              : ('Showing ' + n + ' Column A value' + (n === 1 ? '' : 's')),
             'ok'
           );
         });
@@ -4051,7 +4072,8 @@
 
       const label = document.createElement('span');
       label.className = 'column-header-label';
-      label.textContent = 'Column ' + (c + 1);
+      label.textContent = columnLetter(c);
+      label.title = 'Column ' + columnLetter(c);
       header.appendChild(label);
 
       if (c === 0) {
@@ -4059,13 +4081,13 @@
         const sortControls = document.createElement('span');
         sortControls.className = 'column-sort-controls';
         sortControls.setAttribute('role', 'group');
-        sortControls.setAttribute('aria-label', 'Sort by column 1');
+        sortControls.setAttribute('aria-label', 'Sort by column A');
 
         const sortAsc = document.createElement('button');
         sortAsc.type = 'button';
         sortAsc.className = 'column-sort-btn';
         sortAsc.textContent = 'A–Z';
-        sortAsc.title = 'Sort rows by column 1 A–Z';
+        sortAsc.title = 'Sort rows by column A A–Z';
         sortAsc.setAttribute('aria-label', sortAsc.title);
         sortAsc.addEventListener('click', function (e) {
           e.preventDefault();
@@ -4077,7 +4099,7 @@
         sortDesc.type = 'button';
         sortDesc.className = 'column-sort-btn';
         sortDesc.textContent = 'Z–A';
-        sortDesc.title = 'Sort rows by column 1 Z–A';
+        sortDesc.title = 'Sort rows by column A Z–A';
         sortDesc.setAttribute('aria-label', sortDesc.title);
         sortDesc.addEventListener('click', function (e) {
           e.preventDefault();
@@ -4096,7 +4118,7 @@
         filterBtn.type = 'button';
         filterBtn.className = 'column-sort-btn column-col1-filter-btn';
         filterBtn.textContent = 'Values';
-        filterBtn.title = 'Filter rows by Column 1 values';
+        filterBtn.title = 'Filter rows by Column A values';
         filterBtn.setAttribute('aria-label', filterBtn.title);
         filterBtn.setAttribute('aria-haspopup', 'true');
         filterBtn.setAttribute('aria-expanded', 'false');
@@ -4106,7 +4128,7 @@
         filterMenu.className = 'column-col1-filter-menu';
         filterMenu.hidden = true;
         filterMenu.setAttribute('role', 'dialog');
-        filterMenu.setAttribute('aria-label', 'Column 1 value filter');
+        filterMenu.setAttribute('aria-label', 'Column A value filter');
 
         filterBtn.addEventListener('click', function (e) {
           e.preventDefault();
@@ -4127,8 +4149,8 @@
       handle.className = 'column-resize-handle';
       handle.setAttribute('role', 'separator');
       handle.setAttribute('aria-orientation', 'vertical');
-      handle.setAttribute('aria-label', 'Resize column ' + (c + 1));
-      handle.title = 'Drag to resize column ' + (c + 1);
+      handle.setAttribute('aria-label', 'Resize column ' + columnLetter(c));
+      handle.title = 'Drag to resize column ' + columnLetter(c);
       handle.tabIndex = 0;
       handle.addEventListener('pointerdown', function (e) {
         beginColumnResize(e, c, handle);
@@ -4146,6 +4168,13 @@
       const rowControls = document.createElement('div');
       rowControls.className = 'row-controls';
       rowControls.dataset.row = String(r);
+
+      const rowNum = document.createElement('span');
+      rowNum.className = 'row-header-label';
+      rowNum.textContent = String(r + 1);
+      rowNum.title = 'Row ' + (r + 1);
+      rowNum.setAttribute('aria-hidden', 'true');
+      rowControls.appendChild(rowNum);
 
       const rowBtn = document.createElement('button');
       rowBtn.type = 'button';
@@ -4215,7 +4244,7 @@
         sleepCb.type = 'checkbox';
         sleepCb.className = 'cell-sleep-input';
         sleepCb.checked = isCellSlept(tab, idx);
-        sleepCb.setAttribute('aria-label', 'Sleep row ' + (r + 1) + ' column ' + (c + 1));
+        sleepCb.setAttribute('aria-label', 'Sleep ' + cellAddress(r, c));
         sleepCb.addEventListener('click', function (ev) {
           ev.stopPropagation();
         });
@@ -4268,7 +4297,7 @@
         nestAddBtn.type = 'button';
         nestAddBtn.className = 'cell-nest-add';
         nestAddBtn.title = 'Add nested cell under this cell';
-        nestAddBtn.setAttribute('aria-label', 'Add nest under row ' + (r + 1) + ' column ' + (c + 1));
+        nestAddBtn.setAttribute('aria-label', 'Add nest under ' + cellAddress(r, c));
         nestAddBtn.innerHTML = '<span class="cell-nest-add-mark" aria-hidden="true">+</span>';
         nestAddBtn.addEventListener('pointerdown', function (ev) {
           ev.stopPropagation();
@@ -4289,12 +4318,12 @@
         if (isCellConfirmed(tab.id, idx)) ta.classList.add('cell-confirmed');
         ta.rows = 2;
         ta.spellcheck = false;
-        ta.placeholder = 'R' + (r + 1) + 'C' + (c + 1);
+        ta.placeholder = cellAddress(r, c);
         ta.value = tab.cells[idx] || '';
         ta.dataset.row = String(r);
         ta.dataset.col = String(c);
         ta.dataset.idx = String(idx);
-        ta.setAttribute('aria-label', 'Row ' + (r + 1) + ' column ' + (c + 1));
+        ta.setAttribute('aria-label', 'Cell ' + cellAddress(r, c));
         ta.addEventListener('input', onCellInput);
         ta.addEventListener('keydown', onCellKeydown);
         ta.addEventListener('pointerdown', onCellPointerDownSelect);
@@ -4424,7 +4453,7 @@
               nestTa.setAttribute(
                 'aria-label',
                 'Nest ' + (nestIndex + 1) + ' page ' + (page + 1) + ' of ' + pageCount +
-                  ' under row ' + (r + 1) + ' column ' + (c + 1)
+                  ' under ' + cellAddress(r, c)
               );
               nestTa.addEventListener('input', onNestInput);
               nestTa.addEventListener('keydown', function (ev) {
@@ -5247,8 +5276,8 @@
           renderMasterLibrary();
           renderCombinedPrompt();
           scheduleSave();
-          const fromLabel = 'R' + (drag.startRow + 1) + 'C' + (drag.startCol + 1);
-          const toLabel = 'R' + (drag.endRow + 1) + 'C' + (drag.endCol + 1);
+          const fromLabel = cellAddress(drag.startRow, drag.startCol);
+          const toLabel = cellAddress(drag.endRow, drag.endCol);
           setStatus(
             targetHadContent
               ? ('Swapped ' + fromLabel + ' \u2194 ' + toLabel)
@@ -5306,7 +5335,7 @@
             const rows = result.bounds.rMax - result.bounds.rMin + 1;
             const cols = result.bounds.cMax - result.bounds.cMin + 1;
             const sizeLabel = rows + '\u00d7' + cols;
-            const toLabel = 'R' + (result.bounds.rMin + 1) + 'C' + (result.bounds.cMin + 1);
+            const toLabel = cellAddress(result.bounds.rMin, result.bounds.cMin);
             setStatus(
               result.swapped
                 ? ('Swapped ' + sizeLabel + ' block \u2194 ' + toLabel)
@@ -5867,8 +5896,8 @@
     const cell = el.cellGrid.querySelector('textarea.cell[data-idx="' + startIdx + '"]');
     if (cell) cell.focus();
     setStatus(
-      'Pasted ' + result.rows + '×' + result.cols + ' cells at R' + (startRow + 1) +
-      'C' + (startCol + 1) + ' (' + tab.cols + '×' + tab.rows + ' grid)',
+      'Pasted ' + result.rows + '×' + result.cols + ' cells at ' + cellAddress(startRow, startCol) +
+      ' (' + tab.cols + '×' + tab.rows + ' grid)',
       'ok'
     );
   }
@@ -6014,7 +6043,7 @@
     renderGrid();
     renderMasterLibrary();
     scheduleSave();
-    setStatus(direction === 'desc' ? 'Sorted by column 1 Z–A' : 'Sorted by column 1 A–Z');
+    setStatus(direction === 'desc' ? 'Sorted by column A Z–A' : 'Sorted by column A A–Z');
   }
 
   /**
