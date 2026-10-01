@@ -4585,17 +4585,17 @@
   /** Match .cell-nest-input min-height. */
   const NEST_INPUT_MIN_H = 36;
   /**
-   * Fallback nest chrome height when off-DOM (6 stacked controls: Combined + pages + gaps + pad).
+   * Fallback nest chrome height when off-DOM (single horizontal control row + pad).
    * Chrome sits BESIDE the nest textarea, so nest row height is max(chrome, textarea).
    */
-  const NEST_CHROME_FALLBACK_H = 104;
+  const NEST_CHROME_FALLBACK_H = 24;
   /** .cell-nest border top+bottom (border-box); must be in stack math or overflow:hidden clips. */
   const NEST_BORDER_Y = 2;
   /**
    * Nest textarea is inset by margin-left 12 + margin-right 4 + nest borders 2 +
-   * chrome column (~25: pad+18px controls+border). Slightly conservative vs live width.
+   * horizontal chrome row (~130: pad + checkbox/◀/n/n/▶/+/× + border). Conservative vs live width.
    */
-  const NEST_WIDTH_INSET = 44;
+  const NEST_WIDTH_INSET = 148;
   const NESTS_TOP_BORDER = 1;
   const NESTS_BOTTOM_PAD = 4;
   const NESTS_GAP = 2;
