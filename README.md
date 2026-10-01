@@ -15,7 +15,7 @@ A simple Electron desktop app for composing prompts from reusable parts.
 - **Sticky Column 1 sort/filter** — grid header row (A–Z / Z–A / Values) stays sticky at the top of the cell grid while scrolling, so those controls remain reachable
 - **Master insert greens** — Master library cells turn green when that Master text is currently represented in Combined (direct Master link or matching confirmed part cell); green clears when unlinked
 - **Row filters** — All / Non-empty / In Combined buttons hide rows that do not match (data stays intact; empty and Combined inclusion filters)
-- **Fit row heights** — one-click toolbar button sizes every row on the active tab to fit its tallest wrapped cell content (all rows, not just selection); heights persist with the tab like column widths
+- **Fit row heights** — one-click toolbar button sizes every row on the active tab to its tallest wrapped content (parent cell + nested cells/pages); uses live wrap width and persists as `rowHeights` like column widths
 - **Column 1 value filter** — Values multi-select on the Column 1 header picks which unique first-column values to show; composes with All / Non-empty / In Combined (data stays intact)
 - **Sort by column 1** — A–Z / Z–A buttons on the Column 1 header reorder all rows by first-column text (case-insensitive); cells, sleep flags, Combined checkboxes, and confirmed-link cell indices stay row-aligned (blank column-1 values sink to the bottom)
 - **Checkbox drag-paint** — click+drag across Combined cell toggles, sleep (Zzz) checkboxes, or row Combined toggles to set many at once to the first control’s new value; Combined, sleep, and row drags never mix
