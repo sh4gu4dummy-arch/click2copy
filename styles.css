@@ -1198,6 +1198,17 @@ body.relocating-cell * {
   padding: 0 8px 8px;
 }
 
+.master-library-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 2px 8px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 6px;
+}
+
 .master-library-grid {
   display: grid;
   gap: 0;

@@ -13,7 +13,8 @@ A simple Electron desktop app for composing prompts from reusable parts.
 - **Cell copy/cut** — with no text selected in a cell, Ctrl/Cmd+C or X copies or cuts the whole cell
 - **Sticky Master insert** — Master parts picker sits above the grid; its collapse header stays sticky while scrolling the Master insert list
 - **Sticky Column 1 sort/filter** — grid header row (A–Z / Z–A / Values) stays sticky at the top of the cell grid while scrolling, so those controls remain reachable
-- **Master insert greens** — Master library cells turn green when that Master text is currently represented in Combined (direct Master link or matching confirmed part cell); green clears when unlinked
+- **Master insert greens** — Master library cells turn green when that Master text is represented in the **current part tab’s Combined** (direct Master link or matching confirmed part cell in that Combined scope)—not across other tabs; greens refresh on tab switch and Combined edits
+- **Master insert Values / A–Z** — same idea as Column 1 controls: **Values** multi-select filters Master insert rows by first-column text; **A–Z** / **Z–A** reorder the insert list for picking (display only; Master grid data unchanged)
 - **Row filters** — All / Non-empty / In Combined buttons hide rows that do not match (data stays intact; empty and Combined inclusion filters)
 - **Fit row heights** — one-click toolbar button sizes every row on the active tab to its tallest wrapped content (parent cell + nested cells/pages); uses live wrap width and persists as `rowHeights` like column widths
 - **Column 1 value filter** — Values multi-select on the Column 1 header picks which unique first-column values to show; composes with All / Non-empty / In Combined (data stays intact)
@@ -85,7 +86,7 @@ Confirmed append links (ranges into the combined prompt tied to source tab/cell)
 ## Usage tips
 
 1. Edit cells in the active tab’s grid.
-2. Use **All** / **Non-empty** / **In Combined** to filter which rows are visible. Use **Values** on the Column 1 header to multi-select which Column 1 values to show (composes with the row filters). Use **A–Z** / **Z–A** on the Column 1 header to sort rows by the first column.
+2. Use **All** / **Non-empty** / **In Combined** to filter which rows are visible. Use **Values** on the Column 1 header to multi-select which Column 1 values to show (composes with the row filters). Use **A–Z** / **Z–A** on the Column 1 header to sort rows by the first column. The Master parts picker has its own **Values** / **A–Z** / **Z–A** (display-only) for finding insertable Master text; its greens follow the active tab’s Combined.
 3. Check the box left of a row (or the Combined box on a cell) to include it in the Combined prompt; uncheck to remove it. Use the Zzz sleep checkbox above a cell’s Combined toggle to exclude that cell from Append all active. Use **+** under the Combined checkbox to add indented nested cells (pages via ◀ ▶).
 4. Or click **Append all active** to include every missing non-empty, non-slept cell.
 5. Use **+ Row** / **+ Column** to expand the grid.
