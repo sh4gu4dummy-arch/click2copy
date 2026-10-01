@@ -9,6 +9,13 @@
 </head>
 <body>
   <div class="app">
+    <div class="update-banner" id="update-banner" hidden role="status" aria-live="polite">
+      <span class="update-banner-text" id="update-banner-text">Update ready — Restart</span>
+      <div class="update-banner-actions">
+        <button type="button" class="btn btn-primary" id="btn-update-restart">Restart</button>
+        <button type="button" class="btn btn-secondary" id="btn-update-dismiss" title="Dismiss for now">Dismiss</button>
+      </div>
+    </div>
     <header class="header">
       <h1>Click2Copy <span class="app-version" id="app-version"></span></h1>
       <p class="subtitle">Build prompts from parts — click to append</p>

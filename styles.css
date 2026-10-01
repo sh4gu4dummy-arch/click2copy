@@ -65,6 +65,39 @@ body {
   font-size: 0.85rem;
 }
 
+
+.update-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-shrink: 0;
+  padding: 8px 12px;
+  background: rgba(59, 130, 246, 0.16);
+  border: 1px solid rgba(59, 130, 246, 0.45);
+  border-radius: var(--radius);
+  color: var(--text);
+}
+
+.update-banner[hidden] {
+  display: none !important;
+}
+
+.update-banner-text {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.9rem;
+  font-weight: 560;
+}
+
+.update-banner-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+
 .separator-section {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));

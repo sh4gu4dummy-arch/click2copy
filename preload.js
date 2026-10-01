@@ -23,5 +23,12 @@ contextBridge.exposeInMainWorld('click2copy', {
     ipcRenderer.on('app:menu-action', listener);
     return () => ipcRenderer.removeListener('app:menu-action', listener);
   },
-  setWindowTitle: (title) => ipcRenderer.send('window:set-title', title)
+  setWindowTitle: (title) => ipcRenderer.send('window:set-title', title),
+  onUpdateReady: (callback) => {
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on('app:update-ready', listener);
+    return () => ipcRenderer.removeListener('app:update-ready', listener);
+  },
+  relaunchApp: () => ipcRenderer.invoke('app:relaunch'),
+  getUpdateInfo: () => ipcRenderer.invoke('app:update-info')
 });

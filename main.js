@@ -554,6 +554,108 @@ if (!hasSingleInstanceLock) {
   });
 }
 
+
+/** App-root source files that mean "code updated" (e.g. after git pull). Not userData/Documents autosaves. */
+const WATCHED_SOURCE_FILES = [
+  'package.json',
+  'main.js',
+  'preload.js',
+  'renderer.js',
+  'index.html',
+  'styles.css'
+];
+const SOURCE_POLL_MS = 1500;
+const SOURCE_DEBOUNCE_MS = 800;
+
+let startupPackageVersion = null;
+let sourceWatchBaseline = new Map();
+let sourceUpdateDebounce = null;
+const sourceWatchers = [];
+
+function readPackageVersionFromDisk() {
+  try {
+    const raw = fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8');
+    const pkg = JSON.parse(raw);
+    return typeof pkg.version === 'string' ? pkg.version : null;
+  } catch (err) {
+    return null;
+  }
+}
+
+function snapshotSourceMtimes() {
+  const map = new Map();
+  for (const name of WATCHED_SOURCE_FILES) {
+    const full = path.join(__dirname, name);
+    try {
+      map.set(name, fs.statSync(full).mtimeMs);
+    } catch (err) {
+      map.set(name, null);
+    }
+  }
+  return map;
+}
+
+function sourceFilesChanged(baseline, current) {
+  for (const name of WATCHED_SOURCE_FILES) {
+    if (baseline.get(name) !== current.get(name)) return true;
+  }
+  return false;
+}
+
+function buildUpdatePayload() {
+  const diskVersion = readPackageVersionFromDisk();
+  const runningVersion = startupPackageVersion || app.getVersion();
+  return {
+    runningVersion,
+    diskVersion,
+    changed: true
+  };
+}
+
+function notifySourceUpdateReady() {
+  const payload = buildUpdatePayload();
+  if (mainWindow && mainWindowLoaded && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('app:update-ready', payload);
+  }
+}
+
+function scheduleSourceUpdateNotify() {
+  if (sourceUpdateDebounce) clearTimeout(sourceUpdateDebounce);
+  sourceUpdateDebounce = setTimeout(() => {
+    sourceUpdateDebounce = null;
+    const current = snapshotSourceMtimes();
+    if (!sourceFilesChanged(sourceWatchBaseline, current)) return;
+    sourceWatchBaseline = current;
+    notifySourceUpdateReady();
+  }, SOURCE_DEBOUNCE_MS);
+}
+
+function startSourceWatcher() {
+  startupPackageVersion = readPackageVersionFromDisk() || app.getVersion();
+  sourceWatchBaseline = snapshotSourceMtimes();
+
+  // Polling is reliable when editors/git replace files (fs.watch can miss renames).
+  const pollId = setInterval(() => {
+    const current = snapshotSourceMtimes();
+    if (sourceFilesChanged(sourceWatchBaseline, current)) {
+      scheduleSourceUpdateNotify();
+    }
+  }, SOURCE_POLL_MS);
+  if (typeof pollId.unref === 'function') pollId.unref();
+
+  for (const name of WATCHED_SOURCE_FILES) {
+    const full = path.join(__dirname, name);
+    try {
+      const watcher = fs.watch(full, { persistent: false }, () => {
+        scheduleSourceUpdateNotify();
+      });
+      sourceWatchers.push(watcher);
+    } catch (err) {
+      // Missing file or unsupported watch; polling still covers updates.
+    }
+  }
+}
+
 function getParentWindow() {
   return mainWindow || BrowserWindow.getFocusedWindow();
 }
@@ -615,6 +717,7 @@ app.whenReady().then(() => {
   if (!hasSingleInstanceLock) return;
   createApplicationMenu();
   createWindow();
+  startSourceWatcher();
   const initialPath = documentPathFromArgs(process.argv);
   if (initialPath) pendingOpenPaths.push(initialPath);
 
@@ -635,6 +738,14 @@ ipcMain.handle('store:load', () => loadData());
 
 ipcMain.handle('store:save', (_event, data) => saveData(data));
 ipcMain.handle('app:version', () => app.getVersion());
+ipcMain.handle('app:relaunch', () => {
+  app.relaunch();
+  app.exit(0);
+});
+ipcMain.handle('app:update-info', () => ({
+  runningVersion: startupPackageVersion || app.getVersion(),
+  diskVersion: readPackageVersionFromDisk()
+}));
 ipcMain.on('window:set-title', (event, title) => {
   const window = BrowserWindow.fromWebContents(event.sender);
   if (window && typeof title === 'string') window.setTitle(`${title} v${app.getVersion()}`);

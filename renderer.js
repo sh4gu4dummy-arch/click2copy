@@ -74,7 +74,11 @@
     btnImport: document.getElementById('btn-import'),
     partSeparator: document.getElementById('part-separator'),
     columnSeparator: document.getElementById('column-separator'),
-    rowSeparator: document.getElementById('row-separator')
+    rowSeparator: document.getElementById('row-separator'),
+    updateBanner: document.getElementById('update-banner'),
+    updateBannerText: document.getElementById('update-banner-text'),
+    btnUpdateRestart: document.getElementById('btn-update-restart'),
+    btnUpdateDismiss: document.getElementById('btn-update-dismiss')
   };
 
   function uid() {
@@ -4792,5 +4796,46 @@
     setStatusPanelOpen(false);
   });
 
+
+  function showUpdateBanner(payload) {
+    if (!el.updateBanner) return;
+    const disk = payload && payload.diskVersion;
+    const running = payload && payload.runningVersion;
+    let text = 'Update ready — Restart';
+    if (disk && running && disk !== running) {
+      text = 'Update ready — v' + disk + ' (running v' + running + ') — Restart';
+    } else if (disk) {
+      text = 'Update ready — v' + disk + ' — Restart';
+    }
+    if (el.updateBannerText) el.updateBannerText.textContent = text;
+    el.updateBanner.hidden = false;
+    pushEvent(text, 'ok');
+  }
+
+  if (window.click2copy && typeof window.click2copy.onUpdateReady === 'function') {
+    window.click2copy.onUpdateReady(function (payload) {
+      showUpdateBanner(payload);
+    });
+  }
+  if (el.btnUpdateRestart) {
+    el.btnUpdateRestart.addEventListener('click', function () {
+      if (!window.click2copy || typeof window.click2copy.relaunchApp !== 'function') {
+        setStatus('Restart unavailable', 'err');
+        return;
+      }
+      setStatus('Restarting…', 'ok');
+      window.click2copy.relaunchApp().catch(function (err) {
+        console.error(err);
+        setStatus('Restart failed', 'err');
+      });
+    });
+  }
+  if (el.btnUpdateDismiss) {
+    el.btnUpdateDismiss.addEventListener('click', function () {
+      if (el.updateBanner) el.updateBanner.hidden = true;
+    });
+  }
+
   init();
+
 })();
