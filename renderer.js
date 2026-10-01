@@ -2860,7 +2860,8 @@
 
   // Click2Copy: selecting/focusing a cell with content writes it to the clipboard.
   // Prefer click/focus (not input/keystrokes while typing). Guard against click+focus double-fire.
-  // Short click = whole-cell select + copy. Hold+drag = relocate/swap one cell.
+  // Short click/focus = leave caret where clicked + auto-copy (no whole-cell select).
+  // Hold+drag = relocate/swap one cell.
   // Immediate click+drag across cells selects a rectangle; mouseup copies TSV (tabs/newlines like sheets).
   let lastAutoCopyKey = '';
   let lastAutoCopyAt = 0;
@@ -2922,7 +2923,7 @@
     copyTextWithStatus(value, 'Copied cell');
   }
 
-  /** Snap selection to the whole cell (spreadsheet feel, not a text caret). */
+  /** Snap selection to the whole cell (used after relocate; clicks leave the caret). */
   function selectWholeCellContents(ta) {
     if (!ta || ta.tagName !== 'TEXTAREA') return;
     try {
@@ -3202,13 +3203,12 @@
       clearCellRangeHighlight();
       suppressCellAutoCopy = false;
       cellRangeDrag = null;
-      // Jittered drag that never left the cell — still snap whole-cell select + copy.
+      // Jittered drag that never left the cell — leave caret + auto-copy.
       const tabStay = activeTab();
       if (tabStay) {
         const stayIdx = drag.startRow * tabStay.cols + drag.startCol;
         const taStay = el.cellGrid.querySelector('textarea.cell[data-idx="' + stayIdx + '"]');
         if (taStay) {
-          selectWholeCellContents(taStay);
           autoCopyCellToClipboard(taStay);
         }
       }
@@ -3252,7 +3252,7 @@
           return;
         }
       }
-      // Hold released on same cell (or failed relocate): snap whole-cell select + copy.
+      // Hold released on same cell (or failed relocate): leave caret + auto-copy.
       suppressCellAutoCopy = false;
       cellRangeDrag = null;
       const tab2 = activeTab();
@@ -3260,14 +3260,13 @@
         const stayIdx = drag.startRow * tab2.cols + drag.startCol;
         const taStay = el.cellGrid.querySelector('textarea.cell[data-idx="' + stayIdx + '"]');
         if (taStay) {
-          selectWholeCellContents(taStay);
           autoCopyCellToClipboard(taStay);
         }
       }
       return;
     }
 
-    // Short click / hold-without-drag: whole-cell select + copy via click/focus handlers.
+    // Short click / hold-without-drag: caret stays where clicked; copy via click/focus handlers.
     clearCellRangeHighlight();
     clearCellRelocateHighlight();
     suppressCellAutoCopy = false;
@@ -3318,7 +3317,7 @@
     rememberFocusedCell(e);
     if (suppressCellAutoCopy) return;
     if (cellRangeDrag && cellRangeDrag.active && cellRangeDrag.mode) return;
-    selectWholeCellContents(e.currentTarget);
+    // Do not selectWholeCellContents — leave caret where the user clicked / Tab landed.
     autoCopyCellToClipboard(e.currentTarget);
   }
 
@@ -3326,12 +3325,7 @@
     rememberFocusedCell(e);
     if (suppressCellAutoCopy) return;
     if (cellRangeDrag && cellRangeDrag.mode) return;
-    // Double-click keeps caret placement for editing; single click snaps whole cell.
-    if (e.detail >= 2) {
-      autoCopyCellToClipboard(e.currentTarget);
-      return;
-    }
-    selectWholeCellContents(e.currentTarget);
+    // Leave caret at click position (or word select on double-click); still auto-copy.
     autoCopyCellToClipboard(e.currentTarget);
   }
 
@@ -3423,8 +3417,8 @@
       // Leave Shift/Ctrl/Alt/Meta+arrow for text selection / OS shortcuts.
       if (e.shiftKey || e.altKey || e.ctrlKey || e.metaKey) return;
       const ta = e.currentTarget;
-      // Whole-cell select, or caret at edge matching direction → move cells.
-      // Mid-text edit (double-click caret) keeps normal caret movement.
+      // Whole-cell select (e.g. after relocate), or caret at edge → move cells.
+      // Mid-text caret (normal click) keeps normal caret movement.
       if (!isWholeCellSelected(ta) && !caretAtArrowBoundary(ta, e.key)) return;
       const next = adjacentCellIndex(idx, tab.cols, tab.rows, e.key);
       if (next < 0) return;
