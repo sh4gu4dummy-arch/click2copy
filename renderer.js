@@ -646,9 +646,11 @@
   // Click/focus Combined copies current text (like cell click-copy). Edit + auto-copy-on-edit kept.
   let lastCombinedActivateCopyKey = '';
   let lastCombinedActivateCopyAt = 0;
+  let combinedActivateSkipCopy = false;
 
-  function copyCombinedOnActivate() {
+  function copyCombinedOnActivate(e) {
     if (!initialized) return;
+    if (combinedActivateSkipCopy || (e && (e.ctrlKey || e.metaKey))) return;
     const text = getCombinedPlainText();
     const value = text == null ? '' : String(text);
     if (!value) return;
@@ -3203,9 +3205,9 @@
       clearCellRangeHighlight();
       suppressCellAutoCopy = false;
       cellRangeDrag = null;
-      // Jittered drag that never left the cell — leave caret + auto-copy.
+      // Jittered drag that never left the cell — leave caret + auto-copy (unless Ctrl/Cmd).
       const tabStay = activeTab();
-      if (tabStay) {
+      if (tabStay && !drag.modKey) {
         const stayIdx = drag.startRow * tabStay.cols + drag.startCol;
         const taStay = el.cellGrid.querySelector('textarea.cell[data-idx="' + stayIdx + '"]');
         if (taStay) {
@@ -3252,11 +3254,12 @@
           return;
         }
       }
-      // Hold released on same cell (or failed relocate): leave caret + auto-copy.
+      // Hold released on same cell (or failed relocate): leave caret + auto-copy (unless Ctrl/Cmd).
+      const skipActivateCopy = !!drag.modKey;
       suppressCellAutoCopy = false;
       cellRangeDrag = null;
       const tab2 = activeTab();
-      if (tab2) {
+      if (tab2 && !skipActivateCopy) {
         const stayIdx = drag.startRow * tab2.cols + drag.startCol;
         const taStay = el.cellGrid.querySelector('textarea.cell[data-idx="' + stayIdx + '"]');
         if (taStay) {
@@ -3296,7 +3299,9 @@
       startX: e.clientX,
       startY: e.clientY,
       pointerId: e.pointerId,
-      captureEl: ta
+      captureEl: ta,
+      // Ctrl/Cmd+click: skip activate auto-copy so clipboard stays for paste overwrite.
+      modKey: !!(e.ctrlKey || e.metaKey)
     };
     cellRangeDrag.holdTimer = window.setTimeout(function () {
       if (!cellRangeDrag || !cellRangeDrag.active || cellRangeDrag.mode) return;
@@ -3316,6 +3321,8 @@
   function onCellFocusSelect(e) {
     rememberFocusedCell(e);
     if (suppressCellAutoCopy) return;
+    // Ctrl/Cmd+click: skip activate auto-copy (focus may lack modifier flags).
+    if (e.ctrlKey || e.metaKey || (cellRangeDrag && cellRangeDrag.modKey)) return;
     if (cellRangeDrag && cellRangeDrag.active && cellRangeDrag.mode) return;
     // Do not selectWholeCellContents — leave caret where the user clicked / Tab landed.
     autoCopyCellToClipboard(e.currentTarget);
@@ -3324,6 +3331,7 @@
   function onCellClickSelect(e) {
     rememberFocusedCell(e);
     if (suppressCellAutoCopy) return;
+    if (e.ctrlKey || e.metaKey || (cellRangeDrag && cellRangeDrag.modKey)) return;
     if (cellRangeDrag && cellRangeDrag.mode) return;
     // Leave caret at click position (or word select on double-click); still auto-copy.
     autoCopyCellToClipboard(e.currentTarget);
@@ -4220,11 +4228,22 @@
     });
   }
 
-  el.combined.addEventListener('focus', function () {
-    copyCombinedOnActivate();
+  el.combined.addEventListener('pointerdown', function (e) {
+    // Focus often lacks modifier flags; remember Ctrl/Cmd from the press that activates Combined.
+    combinedActivateSkipCopy = !!(e.ctrlKey || e.metaKey);
   });
-  el.combined.addEventListener('click', function () {
-    copyCombinedOnActivate();
+  el.combined.addEventListener('focus', function (e) {
+    copyCombinedOnActivate(e);
+  });
+  el.combined.addEventListener('click', function (e) {
+    copyCombinedOnActivate(e);
+    combinedActivateSkipCopy = false;
+  });
+  el.combined.addEventListener('pointerup', function () {
+    window.setTimeout(function () { combinedActivateSkipCopy = false; }, 0);
+  });
+  el.combined.addEventListener('pointercancel', function () {
+    combinedActivateSkipCopy = false;
   });
 
   el.combined.addEventListener('input', function () {
