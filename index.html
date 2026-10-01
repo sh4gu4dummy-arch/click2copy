@@ -33,8 +33,13 @@
     </section>
 
     <section class="part-section">
-      <div class="section-label-row">
-        <label class="section-label" id="part-label">Part content</label>
+      <div class="part-search-bar" id="part-search-bar" role="search" aria-label="Find, replace, and part filters">
+        <input type="search" id="part-find-input" class="part-search-input" placeholder="Find in this part…" spellcheck="false" aria-label="Find in current part" />
+        <input type="search" id="part-replace-input" class="part-search-input" placeholder="Replace with…" spellcheck="false" aria-label="Replace with" />
+        <button type="button" class="btn btn-secondary" id="btn-find" title="Find next match in this part (Ctrl+F)">Find</button>
+        <button type="button" class="btn btn-secondary" id="btn-find-all" title="Highlight all matches in this part">Find All</button>
+        <button type="button" class="btn btn-secondary" id="btn-replace" title="Replace current match (Shift+click = replace all)">Replace</button>
+        <span class="part-search-status" id="part-search-status" aria-live="polite"></span>
         <div class="part-actions">
           <div class="row-filter-buttons" role="group" aria-label="Row filters">
             <button type="button" class="btn btn-secondary row-filter-btn is-active" id="btn-filter-all" data-filter="all" title="Show all rows">All</button>
@@ -44,14 +49,6 @@
           <button type="button" class="btn btn-secondary" id="btn-fit-rows" title="Size every row to fit its tallest cell content (wrap)">Fit row heights</button>
           <button type="button" class="btn btn-danger" id="btn-delete-tab" title="Delete active tab">Delete</button>
         </div>
-      </div>
-      <div class="part-search-bar" id="part-search-bar" role="search" aria-label="Search current part">
-        <input type="search" id="part-find-input" class="part-search-input" placeholder="Find in this part…" spellcheck="false" aria-label="Find in current part" />
-        <input type="search" id="part-replace-input" class="part-search-input" placeholder="Replace with…" spellcheck="false" aria-label="Replace with" />
-        <button type="button" class="btn btn-secondary" id="btn-find" title="Find next match in this part (Ctrl+F)">Find</button>
-        <button type="button" class="btn btn-secondary" id="btn-find-all" title="Highlight all matches in this part">Find All</button>
-        <button type="button" class="btn btn-secondary" id="btn-replace" title="Replace current match (Shift+click = replace all)">Replace</button>
-        <span class="part-search-status" id="part-search-status" aria-live="polite"></span>
       </div>
       <div class="tools-panel" id="tools-panel" hidden>
         <p class="tools-panel-hint" id="tools-panel-hint">Grid tools for the active part tab</p>
@@ -80,7 +77,7 @@
         <div class="master-library-items" id="master-library-items"></div>
       </details>
       <div class="cell-grid-wrap">
-        <div class="cell-grid" id="cell-grid" role="grid" aria-labelledby="part-label"></div>
+        <div class="cell-grid" id="cell-grid" role="grid" aria-label="Part content"></div>
       </div>
       <div class="actions-row">
         <button type="button" class="btn btn-primary" id="btn-append" title="Append every non-empty cell not yet in Combined">Append all active</button>

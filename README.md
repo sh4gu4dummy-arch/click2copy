@@ -5,8 +5,8 @@ A simple Electron desktop app for composing prompts from reusable parts.
 ## Features
 
 - **Editable tabs** — add, rename (double-click or Tools → Rename), and delete tabs
-- **Tools tab** — shared UI tab that parks little-used controls (**+ Row**, **+ Column**, **Rename**, and **Part / Column / Row separators**) so the main part toolbar stays uncluttered; actions still apply to the active part tab (highlighted while Tools is open)
-- **Find / Replace** — search bar on the current part tab: **Find**, **Find All**, and **Replace** (Shift+Replace = replace all) over cells and nest pages; Ctrl/Cmd+F focuses Find
+- **Tools tab** — shared UI tab that parks little-used controls (**+ Row**, **+ Column**, **Rename**, and **Part / Column / Row separators**) so the Find/filter row stays uncluttered; actions still apply to the active part tab (highlighted while Tools is open)
+- **Find / Replace + part controls** — one compact row on the current part tab: **Find**, **Find All**, **Replace** (Shift+Replace = replace all) plus **All / Non-empty / In Combined**, **Fit row heights**, and **Delete** (wraps on narrow widths); Ctrl/Cmd+F focuses Find. The old “Part name (cols×rows)” caption above the grid is gone (tab title is enough).
 - **Cell grid** — each tab is a grid of independently editable cells (default 3 columns × 8 rows)
 - **Excel-style cell names** — columns labeled **A, B, C…**, rows **1, 2, 3…**; empty-cell placeholders and status/aria chrome use addresses like **A1** / **B2**
 - **+ Row / + Column** — in the **Tools** tab; grow the active part’s grid; new cells start empty
@@ -18,8 +18,8 @@ A simple Electron desktop app for composing prompts from reusable parts.
 - **Sticky Column A sort/filter** — grid header row (A–Z / Z–A / Values) stays sticky at the top of the cell grid while scrolling, so those controls remain reachable
 - **Master insert greens** — Master library cells turn green when that Master text is represented in the **current part tab’s Combined** (direct Master link or matching confirmed part cell in that Combined scope)—not across other tabs; greens refresh on tab switch and Combined edits
 - **Master insert Values / A–Z** — same idea as Column A controls: **Values** multi-select filters Master insert rows by first-column text; **A–Z** / **Z–A** reorder the insert list for picking (display only; Master grid data unchanged). Selection and sort are **per part tab** — each tab remembers its own prefs, and switching tabs restores that tab’s filter/sort
-- **Row filters** — All / Non-empty / In Combined buttons hide rows that do not match (data stays intact; empty and Combined inclusion filters)
-- **Fit row heights** — one-click toolbar button sizes **each row** to the height of its tallest cell (wrapped parent text + nested cells/pages, not equalize-all-rows); measures at live wrap width (border-box, nest chrome beside textarea, tallest nest page), pins wrap height so `overflow:hidden` does not clip, persists as `rowHeights` like column widths; after Fit, typing in a cell/nest live-refits that row only
+- **Row filters** — All / Non-empty / In Combined (same row as Find/Replace) hide rows that do not match (data stays intact; empty and Combined inclusion filters)
+- **Fit row heights** — one-click control on the Find/Replace row sizes **each row** to the height of its tallest cell (wrapped parent text + nested cells/pages, not equalize-all-rows); measures at live wrap width (border-box, nest chrome beside textarea, tallest nest page), pins wrap height so `overflow:hidden` does not clip, persists as `rowHeights` like column widths; after Fit, typing in a cell/nest live-refits that row only
 - **Column A value filter** — Values multi-select on the Column A header picks which unique first-column values to show; composes with All / Non-empty / In Combined (data stays intact)
 - **Sort by column A** — A–Z / Z–A buttons on the Column A header reorder all rows by first-column text (case-insensitive); cells, Combined checkboxes, and confirmed-link cell indices stay row-aligned (blank column-A values sink to the bottom)
 - **Checkbox drag-paint** — click+drag across Combined cell toggles or row Combined toggles to set many at once to the first control’s new value; Combined and row drags never mix

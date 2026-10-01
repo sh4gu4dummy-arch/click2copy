@@ -40,14 +40,18 @@ body {
   display: flex;
   flex-direction: column;
   height: 100vh;
-  padding: 16px 20px 12px;
-  gap: 8px;
+  padding: 10px 16px 8px;
+  gap: 6px;
   width: 100%;
+}
+
+.header {
+  flex-shrink: 0;
 }
 
 .header h1 {
   margin: 0;
-  font-size: 1.35rem;
+  font-size: 1.2rem;
   font-weight: 600;
   letter-spacing: -0.02em;
 }
@@ -60,9 +64,9 @@ body {
 }
 
 .subtitle {
-  margin: 2px 0 0;
+  margin: 0;
   color: var(--muted);
-  font-size: 0.85rem;
+  font-size: 0.78rem;
 }
 
 
@@ -113,8 +117,8 @@ body {
   gap: 8px;
   flex-shrink: 0;
   border-bottom: 1px solid var(--border);
-  padding-bottom: 8px;
-  min-height: 48px;
+  padding-bottom: 4px;
+  min-height: 36px;
 }
 
 .documents-label {
@@ -132,7 +136,7 @@ body {
   gap: 2px;
   flex: 1;
   min-width: 0;
-  min-height: 36px;
+  min-height: 30px;
   overflow-x: auto;
   border-bottom: 1px solid var(--border);
 }
@@ -266,7 +270,7 @@ body {
   border: 1px solid var(--border);
   background: var(--surface);
   color: var(--muted);
-  padding: 7px 14px;
+  padding: 5px 12px;
   border-radius: var(--radius);
   cursor: pointer;
   font: inherit;
@@ -357,7 +361,7 @@ body {
   align-items: center;
   gap: 6px;
   flex-shrink: 0;
-  padding: 6px 0 2px;
+  padding: 0;
 }
 
 .part-search-input {
@@ -406,7 +410,6 @@ body {
 .part-section.is-tools-view .cell-grid-wrap,
 .part-section.is-tools-view .master-library,
 .part-section.is-tools-view .actions-row,
-.part-section.is-tools-view .part-actions,
 .part-section.is-tools-view .part-search-bar {
   display: none;
 }
@@ -432,7 +435,7 @@ body {
 .combined-section {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
   min-height: 0;
 }
 
@@ -486,7 +489,7 @@ body.resizing-sections * {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
+  gap: 6px;
   flex-shrink: 0;
 }
 
@@ -529,7 +532,7 @@ body.resizing-sections * {
 .row-filter-buttons {
   display: inline-flex;
   gap: 0;
-  margin-right: 4px;
+  margin-right: 0;
   border: 1px solid var(--border);
   border-radius: var(--radius);
   overflow: hidden;
@@ -540,8 +543,8 @@ body.resizing-sections * {
   border: 0 !important;
   border-right: 1px solid var(--border) !important;
   margin: 0;
-  padding-left: 10px;
-  padding-right: 10px;
+  padding-left: 8px;
+  padding-right: 8px;
 }
 
 .row-filter-btn:last-child {
@@ -558,7 +561,14 @@ body.resizing-sections * {
   display: none;
 }
 
-.part-actions,
+.part-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  align-items: center;
+  margin-left: auto;
+}
+
 .combined-actions {
   display: flex;
   gap: 6px;

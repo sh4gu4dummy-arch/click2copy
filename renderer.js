@@ -97,7 +97,6 @@
     partSection: document.querySelector('.part-section'),
     toolsPanel: document.getElementById('tools-panel'),
     toolsPanelHint: document.getElementById('tools-panel-hint'),
-    partLabel: document.getElementById('part-label'),
     combined: document.getElementById('combined-prompt'),
     globalCombined: document.getElementById('global-combined'),
     matchSourceOrder: document.getElementById('match-source-order'),
@@ -3187,14 +3186,6 @@
     el.tabBar.appendChild(el.btnAdd);
 
     const tab = activeTab();
-    const target = toolsTargetTab();
-    if (toolsTabActive && target) {
-      el.partLabel.textContent = 'Tools → ' + target.title + ' (' + target.cols + '×' + target.rows + ')';
-    } else {
-      el.partLabel.textContent = tab
-        ? tab.title + ' (' + tab.cols + '×' + tab.rows + ')'
-        : 'Part content';
-    }
     el.btnDelete.disabled = !tab || isMasterTab(tab) || partTabs().length <= 1 || toolsTabActive;
     el.masterLibrary.hidden = toolsTabActive || isMasterTab(tab);
     updateToolsChrome();
