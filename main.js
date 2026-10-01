@@ -70,6 +70,7 @@ const DEFAULT_DATA = {
   activeTabId: 'tab-1',
   combinedPrompt: '',
   globalCombined: true,
+  matchSourceOrder: false,
   partPrompts: {},
   separators: { ...DEFAULT_SEPARATORS },
   confirmedLinks: []
@@ -339,6 +340,7 @@ function normalizeData(parsed) {
     activeTabId,
     combinedPrompt: typeof parsed.combinedPrompt === 'string' ? parsed.combinedPrompt : '',
     globalCombined: typeof parsed.globalCombined === 'boolean' ? parsed.globalCombined : true,
+    matchSourceOrder: typeof parsed.matchSourceOrder === 'boolean' ? parsed.matchSourceOrder : false,
     partPrompts: parsed.partPrompts && typeof parsed.partPrompts === 'object' && !Array.isArray(parsed.partPrompts)
       ? Object.fromEntries(Object.entries(parsed.partPrompts)
         .filter(([, prompt]) => typeof prompt === 'string'))

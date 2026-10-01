@@ -20,6 +20,7 @@
     activeTabId: null,
     combinedPrompt: '',
     globalCombined: true,
+    matchSourceOrder: false,
     partPrompts: {},
     separators: {
       part: DEFAULT_SEPARATORS.part,
@@ -59,6 +60,7 @@
     partLabel: document.getElementById('part-label'),
     combined: document.getElementById('combined-prompt'),
     globalCombined: document.getElementById('global-combined'),
+    matchSourceOrder: document.getElementById('match-source-order'),
     status: document.getElementById('status'),
     statusRow: document.querySelector('.status-row'),
     statusPanel: document.getElementById('status-panel'),
@@ -215,6 +217,7 @@
       activeTabId: 'tab-1',
       combinedPrompt: '',
       globalCombined: true,
+      matchSourceOrder: false,
       partPrompts: {},
       separators: Object.assign({}, DEFAULT_SEPARATORS),
       confirmedLinks: []
@@ -371,6 +374,7 @@
       activeTabId: state.activeTabId,
       combinedPrompt: state.combinedPrompt,
       globalCombined: state.globalCombined,
+      matchSourceOrder: state.matchSourceOrder,
       partPrompts: Object.assign({}, state.partPrompts),
       separators: state.separators,
       confirmedLinks: state.confirmedLinks.map(function (link) {
@@ -406,6 +410,7 @@
       activeTabId: data.activeTabId || null,
       combinedPrompt: typeof data.combinedPrompt === 'string' ? data.combinedPrompt : '',
       globalCombined: typeof data.globalCombined === 'boolean' ? data.globalCombined : true,
+      matchSourceOrder: typeof data.matchSourceOrder === 'boolean' ? data.matchSourceOrder : false,
       partPrompts: data.partPrompts && typeof data.partPrompts === 'object' ? data.partPrompts : {},
       separators: data.separators || DEFAULT_SEPARATORS,
       confirmedLinks: Array.isArray(data.confirmedLinks) ? data.confirmedLinks : []
@@ -621,6 +626,7 @@
       { label: 'Column separator', value: JSON.stringify(state.separators.column) },
       { label: 'Row separator', value: JSON.stringify(state.separators.row) },
       { label: 'Global combined', value: state.globalCombined ? 'yes' : 'no' },
+      { label: 'Match source order', value: state.matchSourceOrder ? 'yes' : 'no' },
       { label: 'Confirmed links', value: String(state.confirmedLinks.length) },
       { label: 'Open documents', value: String(state.documents.length) },
       { label: 'Event log size', value: String(eventLog.length) }
@@ -2117,6 +2123,109 @@
     return removed;
   }
 
+  function tabSourceOrderIndex(tabId) {
+    const idx = state.tabs.findIndex(function (tab) { return tab.id === tabId; });
+    return idx < 0 ? 9999 : idx;
+  }
+
+  /** Sort key: tab bar order → cellIndex (row-major) → parent before nests → nestIndex. */
+  function compareLinksBySourceOrder(a, b) {
+    const ta = tabSourceOrderIndex(a.tabId);
+    const tb = tabSourceOrderIndex(b.tabId);
+    if (ta !== tb) return ta - tb;
+    if (a.cellIndex !== b.cellIndex) return a.cellIndex - b.cellIndex;
+    const na = linkNestIndex(a);
+    const nb = linkNestIndex(b);
+    if (na === null && nb === null) return 0;
+    if (na === null) return -1;
+    if (nb === null) return 1;
+    return na - nb;
+  }
+
+  function separatorBetweenSourceLinks(prev, next) {
+    const partSep = separatorValue(state.separators.part);
+    const colSep = separatorValue(state.separators.column);
+    const rowSep = separatorValue(state.separators.row);
+    if (prev.tabId !== next.tabId) return partSep;
+    const tab = state.tabs.find(function (t) { return t.id === next.tabId; });
+    const cols = tab && tab.cols > 0 ? tab.cols : 1;
+    if (prev.cellIndex === next.cellIndex) return rowSep;
+    const prevRow = Math.floor(prev.cellIndex / cols);
+    const nextRow = Math.floor(next.cellIndex / cols);
+    if (prevRow === nextRow) return colSep;
+    return rowSep;
+  }
+
+  /**
+   * When Match source order is ON, rebuild Combined confirmed segments in
+   * grid/tab source order (row-major). Preserves plain text before the first
+   * and after the last confirmed segment; replaces the middle.
+   */
+  function reorderCombinedToSourceOrder(scope) {
+    if (!state.matchSourceOrder) return false;
+    const target = scope || currentPromptScope();
+    const links = state.confirmedLinks.filter(function (link) {
+      return link.scope === target;
+    });
+    if (links.length === 0) return false;
+
+    const ordered = links.slice().sort(compareLinksBySourceOrder);
+    let middle = '';
+    const updated = [];
+    for (let i = 0; i < ordered.length; i++) {
+      const link = ordered[i];
+      if (i > 0) middle += separatorBetweenSourceLinks(ordered[i - 1], link);
+      const start = middle.length;
+      middle += link.text || '';
+      const end = middle.length;
+      const next = {
+        id: link.id,
+        tabId: link.tabId,
+        cellIndex: link.cellIndex,
+        text: link.text,
+        start: start,
+        end: end,
+        scope: target
+      };
+      if (Number.isInteger(link.nestIndex) && link.nestIndex >= 0) {
+        next.nestIndex = link.nestIndex;
+      }
+      updated.push(next);
+    }
+
+    const byStart = links.slice().sort(function (a, b) { return a.start - b.start; });
+    const current = getPromptText(target);
+    const prefix = byStart.length ? current.slice(0, byStart[0].start) : '';
+    const suffix = byStart.length ? current.slice(byStart[byStart.length - 1].end) : '';
+    const shift = prefix.length;
+    for (let i = 0; i < updated.length; i++) {
+      updated[i].start += shift;
+      updated[i].end += shift;
+    }
+    const nextText = prefix + middle + suffix;
+
+    let unchanged = nextText === current && updated.length === byStart.length;
+    if (unchanged) {
+      for (let i = 0; i < updated.length; i++) {
+        if (updated[i].id !== byStart[i].id ||
+            updated[i].start !== byStart[i].start ||
+            updated[i].end !== byStart[i].end) {
+          unchanged = false;
+          break;
+        }
+      }
+    }
+    if (unchanged) return false;
+
+    state.confirmedLinks = state.confirmedLinks.filter(function (link) {
+      return link.scope !== target;
+    }).concat(updated);
+    setPromptText(target, nextText);
+    const caret = shift + middle.length;
+    lastCombinedCaret = { start: caret, end: caret, scope: target };
+    return true;
+  }
+
   /**
    * Remove confirmed link ranges from the prompt text, dropping matching
    * column/row separators between removed pieces and a leading part separator.
@@ -2196,6 +2305,7 @@
   }
 
   function refreshAfterConfirmedChange() {
+    reorderCombinedToSourceOrder(currentPromptScope());
     renderCombinedPrompt();
     applyConfirmedCellHighlights();
     renderMasterLibrary();
@@ -2424,6 +2534,12 @@
       scope: scope
     };
 
+    let addedConfirmed = false;
+    for (let i = 0; i < toAdd.length; i++) {
+      if (toAdd[i].type === 'confirmed') { addedConfirmed = true; break; }
+    }
+    if (addedConfirmed) reorderCombinedToSourceOrder(scope);
+
     if (quiet) {
       scheduleSave();
       return;
@@ -2510,6 +2626,7 @@
 
     el.combined.classList.toggle('is-empty', !text);
     el.globalCombined.checked = state.globalCombined;
+    if (el.matchSourceOrder) el.matchSourceOrder.checked = !!state.matchSourceOrder;
     applyConfirmedCellHighlights();
   }
 
@@ -2566,6 +2683,7 @@
     }
     state.combinedPrompt = typeof data.combinedPrompt === 'string' ? data.combinedPrompt : '';
     state.globalCombined = typeof data.globalCombined === 'boolean' ? data.globalCombined : true;
+    state.matchSourceOrder = typeof data.matchSourceOrder === 'boolean' ? data.matchSourceOrder : false;
     state.partPrompts = data.partPrompts && typeof data.partPrompts === 'object'
       ? Object.keys(data.partPrompts).reduce(function (prompts, id) {
         if (typeof data.partPrompts[id] === 'string') prompts[id] = data.partPrompts[id];
@@ -6389,6 +6507,26 @@
     renderMasterLibrary();
     scheduleSave();
   });
+
+  if (el.matchSourceOrder) {
+    el.matchSourceOrder.addEventListener('change', function () {
+      pushHistory();
+      state.matchSourceOrder = !!el.matchSourceOrder.checked;
+      if (state.matchSourceOrder) {
+        reorderCombinedToSourceOrder(currentPromptScope());
+      }
+      renderCombinedPrompt();
+      applyConfirmedCellHighlights();
+      renderMasterLibrary();
+      scheduleSave();
+      setStatus(
+        state.matchSourceOrder
+          ? 'Match source order on — Combined segments follow grid order'
+          : 'Match source order off — Combined uses caret/append order',
+        'ok'
+      );
+    });
+  }
 
   async function init() {
     try {
