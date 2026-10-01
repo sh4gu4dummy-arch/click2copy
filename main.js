@@ -29,25 +29,7 @@ function emptyCells(cols, rows) {
   return Array(cols * rows).fill('');
 }
 
-function emptySleptCells(cols, rows) {
-  return Array(cols * rows).fill(false);
-}
 
-function normalizeSleptCells(slept, length) {
-  const needed = length > 0 ? length : 0;
-  let out;
-  if (Array.isArray(slept)) {
-    out = slept.map((v) => !!v);
-  } else {
-    out = Array(needed).fill(false);
-  }
-  if (out.length < needed) {
-    out = out.concat(Array(needed - out.length).fill(false));
-  } else if (out.length > needed) {
-    out = out.slice(0, needed);
-  }
-  return out;
-}
 
 function makeDefaultTab(id, title) {
   return {
@@ -55,8 +37,7 @@ function makeDefaultTab(id, title) {
     title,
     cols: DEFAULT_COLS,
     rows: DEFAULT_ROWS,
-    cells: emptyCells(DEFAULT_COLS, DEFAULT_ROWS),
-    sleptCells: emptySleptCells(DEFAULT_COLS, DEFAULT_ROWS)
+    cells: emptyCells(DEFAULT_COLS, DEFAULT_ROWS)
   };
 }
 
@@ -229,8 +210,7 @@ function normalizeTab(t) {
       title: t.title,
       cols,
       rows,
-      cells,
-      sleptCells: emptySleptCells(cols, rows)
+      cells
     };
     if (columnWidths) normalized.columnWidths = columnWidths;
     return normalized;
@@ -265,8 +245,8 @@ function normalizeTab(t) {
   }
 
   const columnWidths = normalizeColumnWidths(t.columnWidths, cols);
-  const sleptCells = normalizeSleptCells(t.sleptCells, needed);
-  const normalized = { id: t.id, title: t.title, cols, rows, cells, sleptCells };
+  // sleptCells from older docs are ignored (sleep UI dropped).
+  const normalized = { id: t.id, title: t.title, cols, rows, cells };
   if (columnWidths) normalized.columnWidths = columnWidths;
   return normalized;
 }

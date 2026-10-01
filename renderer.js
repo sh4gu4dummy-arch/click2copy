@@ -125,9 +125,6 @@
     return Array(cols * rows).fill('');
   }
 
-  function emptySleptCells(cols, rows) {
-    return Array(cols * rows).fill(false);
-  }
 
   /** Parallel to cells: each entry is an array of nest objects { pages, page }. */
   function emptyNestedCells(cols, rows) {
@@ -204,21 +201,6 @@
   }
 
   /** Boolean array parallel to cells; missing/short arrays pad with false. */
-  function normalizeSleptCells(slept, length) {
-    const needed = length > 0 ? length : 0;
-    let out;
-    if (Array.isArray(slept)) {
-      out = slept.map(function (v) { return !!v; });
-    } else {
-      out = Array(needed).fill(false);
-    }
-    if (out.length < needed) {
-      out = out.concat(Array(needed - out.length).fill(false));
-    } else if (out.length > needed) {
-      out = out.slice(0, needed);
-    }
-    return out;
-  }
 
   function makeTab(id, title) {
     return {
@@ -227,7 +209,6 @@
       cols: DEFAULT_COLS,
       rows: DEFAULT_ROWS,
       cells: emptyCells(DEFAULT_COLS, DEFAULT_ROWS),
-      sleptCells: emptySleptCells(DEFAULT_COLS, DEFAULT_ROWS),
       nestedCells: emptyNestedCells(DEFAULT_COLS, DEFAULT_ROWS)
     };
   }
@@ -324,7 +305,6 @@
         cols: DEFAULT_COLS,
         rows: DEFAULT_ROWS,
         cells: cells,
-        sleptCells: emptySleptCells(DEFAULT_COLS, DEFAULT_ROWS),
         nestedCells: emptyNestedCells(DEFAULT_COLS, DEFAULT_ROWS)
       };
     }
@@ -350,7 +330,7 @@
 
     const columnWidths = normalizeColumnWidths(t.columnWidths, cols);
     const rowHeights = normalizeRowHeights(t.rowHeights, rows);
-    const sleptCells = normalizeSleptCells(t.sleptCells, needed);
+    // sleptCells from older docs are ignored (sleep UI dropped).
     const nestedCells = normalizeNestedCells(t.nestedCells, needed);
     const normalized = {
       id: t.id,
@@ -358,7 +338,6 @@
       cols: cols,
       rows: rows,
       cells: cells,
-      sleptCells: sleptCells,
       nestedCells: nestedCells
     };
     if (columnWidths) normalized.columnWidths = columnWidths;
@@ -1232,57 +1211,12 @@
     });
   }
 
-  function ensureSleptCells(tab) {
-    if (!tab) return;
-    tab.sleptCells = normalizeSleptCells(tab.sleptCells, tab.cols * tab.rows);
-  }
 
-  function isCellSlept(tab, cellIndex) {
-    if (!tab || cellIndex < 0) return false;
-    ensureSleptCells(tab);
-    return !!tab.sleptCells[cellIndex];
-  }
 
-  function setCellSlept(tab, cellIndex, slept) {
-    if (!tab || cellIndex < 0 || cellIndex >= tab.cells.length) return;
-    ensureSleptCells(tab);
-    tab.sleptCells[cellIndex] = !!slept;
-  }
 
-  function swapSleptCellIndices(tab, indexA, indexB) {
-    if (!tab || indexA === indexB) return;
-    ensureSleptCells(tab);
-    if (indexA < 0 || indexB < 0 || indexA >= tab.sleptCells.length || indexB >= tab.sleptCells.length) return;
-    const tmp = tab.sleptCells[indexA];
-    tab.sleptCells[indexA] = tab.sleptCells[indexB];
-    tab.sleptCells[indexB] = tmp;
-  }
 
-  function remapSleptAfterColumnAdd(tab, oldCols, newCols) {
-    const oldSlept = Array.isArray(tab.sleptCells) ? tab.sleptCells : [];
-    const next = emptySleptCells(newCols, tab.rows);
-    for (let r = 0; r < tab.rows; r++) {
-      for (let c = 0; c < oldCols; c++) {
-        const oldIdx = r * oldCols + c;
-        next[r * newCols + c] = !!(oldIdx < oldSlept.length && oldSlept[oldIdx]);
-      }
-    }
-    tab.sleptCells = next;
-  }
 
-  function copySleptRow(tab, fromRow, toRow) {
-    ensureSleptCells(tab);
-    for (let col = 0; col < tab.cols; col++) {
-      tab.sleptCells[toRow * tab.cols + col] = tab.sleptCells[fromRow * tab.cols + col];
-    }
-  }
 
-  function clearSleptRow(tab, rowIndex) {
-    ensureSleptCells(tab);
-    for (let col = 0; col < tab.cols; col++) {
-      tab.sleptCells[rowIndex * tab.cols + col] = false;
-    }
-  }
 
   function ensureNestedCells(tab) {
     if (!tab) return;
@@ -1334,8 +1268,6 @@
     if (!tab || cellIndex < 0 || cellIndex >= tab.cells.length) return pieces;
     const scope = (opts && opts.scope) || currentPromptScope();
     const skipConfirmed = !!(opts && opts.skipConfirmed);
-    const skipSlept = !!(opts && opts.skipSlept);
-    if (skipSlept && isCellSlept(tab, cellIndex)) return pieces;
     const rowSep = separatorValue(state.separators.row);
 
     const parent = cellParentText(tab, cellIndex);
@@ -1580,21 +1512,9 @@
     setNestPage(cellIndex, nestIndex, next);
   }
 
-  function toggleCellSleep(cellIndex, slept) {
-    const tab = activeTab();
-    if (!tab || cellIndex < 0 || cellIndex >= tab.cells.length) return;
-    pushHistory();
-    setCellSlept(tab, cellIndex, slept);
-    const wrap = el.cellGrid.querySelector('.cell-wrap[data-row="' + Math.floor(cellIndex / tab.cols) + '"][data-col="' + (cellIndex % tab.cols) + '"]');
-    if (wrap) wrap.classList.toggle('is-slept', !!slept);
-    scheduleSave();
-    const row = Math.floor(cellIndex / tab.cols) + 1;
-    const col = (cellIndex % tab.cols) + 1;
-    setStatus(slept ? ('Slept ' + cellAddressFromIndex(tab, cellIndex)) : ('Woke ' + cellAddressFromIndex(tab, cellIndex)));
-  }
 
   /**
-   * Click+drag paint for Combined / sleep / row checkboxes.
+   * Click+drag paint for Combined / nest / row checkboxes.
    * Kinds never mix: a drag started on Combined only paints Combined, etc.
    * First control sets the target value; later controls of the same kind match it.
    */
@@ -1654,26 +1574,6 @@
     return true;
   }
 
-  function ensureCellSleepState(cellIndex, wantSlept, opts) {
-    const quiet = !!(opts && opts.quiet);
-    const tab = activeTab();
-    if (!tab || cellIndex < 0 || cellIndex >= tab.cells.length) return false;
-    if (!!isCellSlept(tab, cellIndex) === !!wantSlept) return false;
-    setCellSlept(tab, cellIndex, wantSlept);
-    const wrap = el.cellGrid.querySelector(
-      '.cell-wrap[data-row="' + Math.floor(cellIndex / tab.cols) + '"][data-col="' + (cellIndex % tab.cols) + '"]'
-    );
-    if (wrap) wrap.classList.toggle('is-slept', !!wantSlept);
-    const input = wrap ? wrap.querySelector('.cell-sleep-input') : null;
-    if (input) input.checked = !!wantSlept;
-    if (!quiet) {
-      scheduleSave();
-      const row = Math.floor(cellIndex / tab.cols) + 1;
-      const col = (cellIndex % tab.cols) + 1;
-      setStatus(wantSlept ? ('Slept ' + cellAddressFromIndex(tab, cellIndex)) : ('Woke ' + cellAddressFromIndex(tab, cellIndex)));
-    }
-    return true;
-  }
 
   function applyCheckboxDragKey(kind, key) {
     if (!checkboxDrag || checkboxDrag.kind !== kind) return;
@@ -1689,7 +1589,6 @@
         ensureNestConfirmedState(cellIndex, nestIndex, want, { quiet: true });
       }
     } else if (kind === 'row') ensureRowIncludedState(key, want, { quiet: true });
-    else if (kind === 'sleep') ensureCellSleepState(key, want, { quiet: true });
     if (kind === 'combined' || kind === 'nest' || kind === 'row') applyAppendCheckedState();
   }
 
@@ -1717,18 +1616,6 @@
       const row = parseInt(btn.dataset.row, 10);
       if (Number.isNaN(row)) return null;
       return { kind: 'row', key: row };
-    }
-    if (checkboxDrag.kind === 'sleep') {
-      const input = node.closest('.cell-sleep-input') ||
-        (node.closest('.cell-sleep') && node.closest('.cell-sleep').querySelector('.cell-sleep-input'));
-      if (!input || !el.cellGrid.contains(input)) return null;
-      const wrap = input.closest('.cell-wrap');
-      if (!wrap) return null;
-      const row = parseInt(wrap.dataset.row, 10);
-      const col = parseInt(wrap.dataset.col, 10);
-      const tab = activeTab();
-      if (!tab || Number.isNaN(row) || Number.isNaN(col)) return null;
-      return { kind: 'sleep', key: row * tab.cols + col };
     }
     return null;
   }
@@ -1778,7 +1665,6 @@
         ensureNestConfirmedState(cellIndex, nestIndex, value, { quiet: true });
       }
     } else if (kind === 'row') ensureRowIncludedState(key, value, { quiet: true });
-    else if (kind === 'sleep') ensureCellSleepState(key, value, { quiet: true });
     if (kind === 'combined' || kind === 'nest' || kind === 'row') applyAppendCheckedState();
   }
 
@@ -4232,45 +4118,8 @@
         wrap.dataset.row = String(r);
         wrap.dataset.col = String(c);
         if (isCellConfirmed(tab.id, idx)) wrap.classList.add('cell-confirmed');
-        if (isCellSlept(tab, idx)) wrap.classList.add('is-slept');
-
         const gutter = document.createElement('div');
         gutter.className = 'cell-gutter';
-
-        const sleepLabel = document.createElement('label');
-        sleepLabel.className = 'cell-sleep';
-        sleepLabel.title = 'Sleep cell — exclude from Append all active';
-        const sleepCb = document.createElement('input');
-        sleepCb.type = 'checkbox';
-        sleepCb.className = 'cell-sleep-input';
-        sleepCb.checked = isCellSlept(tab, idx);
-        sleepCb.setAttribute('aria-label', 'Sleep ' + cellAddress(r, c));
-        sleepCb.addEventListener('click', function (ev) {
-          ev.stopPropagation();
-        });
-        sleepCb.addEventListener('pointerdown', function (ev) {
-          if (ev.button != null && ev.button !== 0) return;
-          ev.stopPropagation();
-          const wantSlept = !sleepCb.checked;
-          beginCheckboxDrag('sleep', idx, wantSlept, ev);
-          // Prevent the native click toggle; drag paint owns the value.
-          ev.preventDefault();
-        });
-        sleepCb.addEventListener('change', function (ev) {
-          // Ignored during/after pointerdown paint; keep as keyboard fallback.
-          if (checkboxDrag) {
-            ev.preventDefault();
-            return;
-          }
-          toggleCellSleep(idx, sleepCb.checked);
-        });
-        const sleepZzz = document.createElement('span');
-        sleepZzz.className = 'cell-sleep-zzz';
-        sleepZzz.setAttribute('aria-hidden', 'true');
-        sleepZzz.textContent = 'Zzz';
-        sleepLabel.appendChild(sleepCb);
-        sleepLabel.appendChild(sleepZzz);
-        gutter.appendChild(sleepLabel);
 
         const cellBtn = document.createElement('button');
         cellBtn.type = 'button';
@@ -4869,7 +4718,7 @@
   }
 
   /**
-   * Swap two cells' text, sleep flags, and Combined-link indices.
+   * Swap two cells' text and Combined-link indices.
    * Empty target ⇒ move; both filled ⇒ swap. Combined segments stay valid.
    */
   function relocateOrSwapCells(tab, fromIdx, toIdx) {
@@ -4878,12 +4727,10 @@
       return false;
     }
     pushHistory();
-    ensureSleptCells(tab);
     ensureNestedCells(tab);
     const tmp = tab.cells[fromIdx];
     tab.cells[fromIdx] = tab.cells[toIdx];
     tab.cells[toIdx] = tmp;
-    swapSleptCellIndices(tab, fromIdx, toIdx);
     swapNestedCellIndices(tab, fromIdx, toIdx);
     swapConfirmedCellIndices(tab.id, fromIdx, toIdx);
     return true;
@@ -4892,7 +4739,7 @@
   /**
    * Move/swap a rectangular cell block so its top-left lands at destRMin/destCMin.
    * Non-overlapping + dest has content ⇒ rectangle swap; otherwise move (overwrite dest,
-   * clear vacated source). Sleep flags and Combined-link indices follow content.
+   * clear vacated source). Combined-link indices follow content.
    * Returns { swapped, bounds } or null on failure.
    */
   function relocateOrSwapCellBlock(tab, srcBounds, destRMin, destCMin) {
@@ -4919,13 +4766,10 @@
       destCMin + nCols - 1 < srcBounds.cMin
     );
 
-    ensureSleptCells(tab);
     ensureNestedCells(tab);
     const srcCells = srcIndices.map(function (i) { return tab.cells[i]; });
-    const srcSlept = srcIndices.map(function (i) { return !!tab.sleptCells[i]; });
     const srcNested = srcIndices.map(function (i) { return normalizeNestList(tab.nestedCells[i]); });
     const dstCells = dstIndices.map(function (i) { return tab.cells[i]; });
-    const dstSlept = dstIndices.map(function (i) { return !!tab.sleptCells[i]; });
     const dstNested = dstIndices.map(function (i) { return normalizeNestList(tab.nestedCells[i]); });
 
     let destHadContent = false;
@@ -4946,10 +4790,8 @@
     if (!overlap && destHadContent) {
       for (let i = 0; i < srcIndices.length; i++) {
         tab.cells[dstIndices[i]] = srcCells[i];
-        tab.sleptCells[dstIndices[i]] = srcSlept[i];
         tab.nestedCells[dstIndices[i]] = srcNested[i];
         tab.cells[srcIndices[i]] = dstCells[i];
-        tab.sleptCells[srcIndices[i]] = dstSlept[i];
         tab.nestedCells[srcIndices[i]] = dstNested[i];
         indexMap[srcIndices[i]] = dstIndices[i];
         indexMap[dstIndices[i]] = srcIndices[i];
@@ -4962,12 +4804,10 @@
       }
       for (let i = 0; i < srcIndices.length; i++) {
         tab.cells[srcIndices[i]] = '';
-        tab.sleptCells[srcIndices[i]] = false;
         tab.nestedCells[srcIndices[i]] = [];
       }
       for (let i = 0; i < srcIndices.length; i++) {
         tab.cells[dstIndices[i]] = srcCells[i];
-        tab.sleptCells[dstIndices[i]] = srcSlept[i];
         tab.nestedCells[dstIndices[i]] = srcNested[i];
         indexMap[srcIndices[i]] = dstIndices[i];
       }
@@ -5383,7 +5223,7 @@
     const row = parseInt(ta.dataset.row, 10);
     const col = parseInt(ta.dataset.col, 10);
     if (Number.isNaN(row) || Number.isNaN(col)) return;
-    // Re-click / fresh drag; do not disturb Combined/sleep (those are outside the textarea).
+    // Re-click / fresh drag; do not disturb Combined toggles (those are outside the textarea).
     if (cellRangeDrag && cellRangeDrag.active) {
       finishCellRangeListeners();
     }
@@ -5560,7 +5400,7 @@
       return;
     }
 
-    // Keep Tab/Shift+Tab inside the cell grid (skip sleep / Combined controls).
+    // Keep Tab/Shift+Tab inside the cell grid (skip Combined controls).
     e.preventDefault();
     if (stickyCellRange) clearStickyCellRange();
 
@@ -5814,7 +5654,6 @@
   }
 
   function ensureTabSize(tab, rows, cols) {
-    ensureSleptCells(tab);
     ensureNestedCells(tab);
     while (tab.cols < cols) {
       const oldCols = tab.cols;
@@ -5831,7 +5670,6 @@
       }
       tab.cols += 1;
       tab.cells = newCells;
-      remapSleptAfterColumnAdd(tab, oldCols, tab.cols);
       remapNestedAfterColumnAdd(tab, oldCols, tab.cols);
       remapConfirmedAfterColumnAdd(tab.id, oldCols, tab.cols);
     }
@@ -5839,7 +5677,6 @@
       ensureNestedCells(tab);
       for (let c = 0; c < tab.cols; c++) {
         tab.cells.push('');
-        tab.sleptCells.push(false);
         tab.nestedCells.push([]);
       }
       tab.rows += 1;
@@ -5950,11 +5787,9 @@
     const tab = activeTab();
     if (!tab) return;
     pushHistory();
-    ensureSleptCells(tab);
     ensureNestedCells(tab);
     for (let c = 0; c < tab.cols; c++) {
       tab.cells.push('');
-      tab.sleptCells.push(false);
       tab.nestedCells.push([]);
     }
     tab.rows += 1;
@@ -5986,7 +5821,6 @@
     if (direction !== 'asc' && direction !== 'desc') return;
 
     pushHistory();
-    ensureSleptCells(tab);
     ensureNestedCells(tab);
 
     const cols = tab.cols;
@@ -6007,14 +5841,12 @@
     });
 
     const newCells = [];
-    const newSlept = [];
     const newNested = [];
     for (let i = 0; i < order.length; i++) {
       const src = order[i];
       for (let c = 0; c < cols; c++) {
         const idx = src * cols + c;
         newCells.push(tab.cells[idx] || '');
-        newSlept.push(!!tab.sleptCells[idx]);
         newNested.push(normalizeNestList(tab.nestedCells[idx]));
       }
     }
@@ -6025,7 +5857,6 @@
     }
 
     tab.cells = newCells;
-    tab.sleptCells = newSlept;
     tab.nestedCells = newNested;
     if (Array.isArray(tab.rowHeights) && tab.rowHeights.length === rows) {
       tab.rowHeights = order.map(function (src) { return tab.rowHeights[src]; });
@@ -6051,7 +5882,7 @@
    * ↓: move this row down one; push every row below further down (grow grid by 1);
    *    leave an empty row behind — never overwrite.
    * ↑: move this row up one via extract+insert so neighbors shift without clobbering.
-   * Sleep, nested, Combined link indices, and rowHeights stay aligned.
+   * Nested, Combined link indices, and rowHeights stay aligned.
    */
   function moveRow(rowIndex, direction) {
     const tab = activeTab();
@@ -6060,7 +5891,6 @@
     if (rowIndex < 0 || rowIndex >= tab.rows || destination < 0) return;
 
     pushHistory();
-    ensureSleptCells(tab);
     ensureNestedCells(tab);
 
     const cols = tab.cols;
@@ -6074,14 +5904,12 @@
       order.splice(destination, 0, rowIndex);
 
       const newCells = [];
-      const newSlept = [];
       const newNested = [];
       for (let i = 0; i < order.length; i++) {
         const src = order[i];
         for (let c = 0; c < cols; c++) {
           const idx = src * cols + c;
           newCells.push(tab.cells[idx] || '');
-          newSlept.push(!!tab.sleptCells[idx]);
           newNested.push(normalizeNestList(tab.nestedCells[idx]));
         }
       }
@@ -6092,7 +5920,6 @@
       }
 
       tab.cells = newCells;
-      tab.sleptCells = newSlept;
       tab.nestedCells = newNested;
       if (Array.isArray(tab.rowHeights) && tab.rowHeights.length === rows) {
         tab.rowHeights = order.map(function (src) { return tab.rowHeights[src]; });
@@ -6101,7 +5928,6 @@
     } else {
       // ↓ Grow by one, push everything below further down, move this row into the gap.
       tab.cells.push.apply(tab.cells, emptyCells(cols, 1));
-      tab.sleptCells.push.apply(tab.sleptCells, emptySleptCells(cols, 1));
       tab.nestedCells.push.apply(tab.nestedCells, emptyNestedCells(cols, 1));
       tab.rows += 1;
       ensureRowHeightsLength(tab);
@@ -6111,7 +5937,6 @@
         for (let col = 0; col < cols; col++) {
           tab.cells[row * cols + col] = tab.cells[(row - 1) * cols + col];
         }
-        copySleptRow(tab, row - 1, row);
         copyNestedRow(tab, row - 1, row);
         if (Array.isArray(tab.rowHeights) && tab.rowHeights.length === tab.rows) {
           tab.rowHeights[row] = tab.rowHeights[row - 1];
@@ -6122,8 +5947,6 @@
         tab.cells[(rowIndex + 1) * cols + col] = tab.cells[rowIndex * cols + col];
         tab.cells[rowIndex * cols + col] = '';
       }
-      copySleptRow(tab, rowIndex, rowIndex + 1);
-      clearSleptRow(tab, rowIndex);
       copyNestedRow(tab, rowIndex, rowIndex + 1);
       clearNestedRow(tab, rowIndex);
       if (Array.isArray(tab.rowHeights) && tab.rowHeights.length === tab.rows) {
@@ -6146,7 +5969,6 @@
     const tab = activeTab();
     if (!tab) return;
     pushHistory();
-    ensureSleptCells(tab);
     ensureNestedCells(tab);
     const oldCols = tab.cols;
     const newCells = [];
@@ -6162,7 +5984,6 @@
     }
     tab.cols += 1;
     tab.cells = newCells;
-    remapSleptAfterColumnAdd(tab, oldCols, tab.cols);
     remapNestedAfterColumnAdd(tab, oldCols, tab.cols);
     remapConfirmedAfterColumnAdd(tab.id, oldCols, tab.cols);
     renderTabs();
@@ -6186,8 +6007,7 @@
       const idx = rowIndex * tab.cols + c;
       const cellPieces = cellConfirmedPieces(tab, idx, {
         scope: scope,
-        skipConfirmed: true,
-        skipSlept: true
+        skipConfirmed: true
       });
       if (!cellPieces.length) continue;
       if (pieces.length) pieces.push({ type: 'plain', text: colSep });

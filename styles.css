@@ -771,13 +771,6 @@ body.relocating-cell * {
   box-shadow: inset 0 0 0 2px rgba(16, 185, 129, 0.95);
 }
 
-.cell-wrap.is-slept {
-  opacity: 0.55;
-}
-
-.cell-wrap.is-slept .cell {
-  color: var(--muted);
-}
 
 .cell-gutter {
   display: flex;
@@ -787,83 +780,6 @@ body.relocating-cell * {
   background: var(--surface-2);
 }
 
-.cell-sleep {
-  position: relative;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex: 0 0 22px;
-  height: 22px;
-  margin: 0;
-  border-bottom: 1px solid var(--border);
-  background: rgba(139, 155, 180, 0.1);
-  color: var(--muted);
-  cursor: pointer;
-  transition: background 0.12s, color 0.12s;
-}
-
-.cell-sleep:hover {
-  background: rgba(139, 155, 180, 0.22);
-  color: #c5d0e2;
-}
-
-.cell-sleep-input {
-  position: absolute;
-  inset: 0;
-  z-index: 1;
-  width: 100%;
-  height: 100%;
-  margin: 0;
-  padding: 0;
-  opacity: 0;
-  cursor: pointer;
-}
-
-.cell-sleep-zzz {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 16px;
-  height: 16px;
-  border: 2px solid currentColor;
-  border-radius: 3px;
-  background: transparent;
-  box-sizing: border-box;
-  font-size: 7px;
-  font-weight: 800;
-  letter-spacing: -0.06em;
-  line-height: 1;
-  user-select: none;
-  pointer-events: none;
-}
-
-.cell-sleep-input:focus-visible + .cell-sleep-zzz {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
-}
-
-.cell-sleep-input:checked + .cell-sleep-zzz {
-  background: #5b6b86;
-  border-color: #9aabc4;
-  color: #f0f4fa;
-  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.2);
-}
-
-.cell-sleep:has(.cell-sleep-input:checked) {
-  background: rgba(91, 107, 134, 0.35);
-  color: #d7e0ee;
-}
-
-.cell-sleep:has(.cell-sleep-input:checked):hover {
-  background: #5b6b86;
-  color: #fff;
-}
-
-.cell-sleep:has(.cell-sleep-input:checked):hover .cell-sleep-zzz {
-  background: #fff;
-  border-color: #fff;
-  color: #3d4a5c;
-}
 
 .cell {
   resize: vertical;
@@ -1666,7 +1582,6 @@ body.painting-checkboxes {
   cursor: default;
 }
 body.painting-checkboxes .cell-append,
-body.painting-checkboxes .row-append,
-body.painting-checkboxes .cell-sleep {
+body.painting-checkboxes .row-append {
   cursor: default;
 }
