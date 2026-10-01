@@ -1625,6 +1625,10 @@
     const tab = activeTab();
     if (!tab || !el.cellGrid || row < 0 || row >= tab.rows) return;
     const wraps = el.cellGrid.querySelectorAll('.cell-wrap[data-row="' + row + '"]');
+    // Clear pinned heights first so empty/short rows can shrink, not only grow.
+    for (let i = 0; i < wraps.length; i++) clearPinnedHeightsForFitMeasure(wraps[i]);
+    const controls = el.cellGrid.querySelector('.row-controls[data-row="' + row + '"]');
+    if (controls) clearPinnedHeightsForFitMeasure(controls);
     for (let i = 0; i < wraps.length; i++) prepareWrapWidthsForFitMeasure(wraps[i]);
     let maxH = MIN_ROW_HEIGHT;
     for (let i = 0; i < wraps.length; i++) {
@@ -1632,13 +1636,13 @@
       if (stackH > maxH) maxH = stackH;
     }
     applyHeightToGridRow(row, maxH);
-    // Grow once more after apply so overflow:hidden wrap widths are final.
-    let maxH2 = maxH;
+    // Second pass after apply (wrap widths final); may grow OR shrink slightly.
+    let maxH2 = MIN_ROW_HEIGHT;
     for (let i = 0; i < wraps.length; i++) {
       const stackH = measureCellStackHeight(wraps[i], tab);
       if (stackH > maxH2) maxH2 = stackH;
     }
-    if (maxH2 > maxH) {
+    if (maxH2 !== maxH) {
       maxH = maxH2;
       applyHeightToGridRow(row, maxH);
     }
@@ -4294,11 +4298,56 @@
     const h = Math.max(1, heightPx);
     ta.style.height = h + 'px';
     ta.style.minHeight = h + 'px';
-    ta.style.maxHeight = 'none';
+    ta.style.maxHeight = h + 'px';
     // Prevent flex shrink from fighting pinned heights inside .cell-stack.
     ta.style.flex = '0 0 auto';
     // Avoid a residual scrollbar re-narrowing wrap width after fit.
     ta.style.overflowY = 'hidden';
+  }
+
+  /**
+   * Drop previously pinned wrap/textarea/nest heights so Fit can SHRINK tall
+   * empty/short rows. Old rowHeights / manual resize:vertical pins must not
+   * floor the next measure/apply.
+   */
+  function clearPinnedHeightsForFitMeasure(scopeEl) {
+    const root = scopeEl || el.cellGrid;
+    if (!root) return;
+    function clearBox(node) {
+      if (!node || !node.style) return;
+      node.style.minHeight = '';
+      node.style.height = '';
+      node.style.maxHeight = '';
+    }
+    // Include root when scope is a single wrap / row-controls / nest.
+    if (root.classList) {
+      if (root.classList.contains('cell-wrap') || root.classList.contains('row-controls') ||
+          root.classList.contains('cell-nest')) {
+        clearBox(root);
+      }
+    }
+    const wraps = root.querySelectorAll('.cell-wrap');
+    for (let i = 0; i < wraps.length; i++) clearBox(wraps[i]);
+    const textareas = root.querySelectorAll('textarea.cell, textarea.cell-nest-input');
+    for (let i = 0; i < textareas.length; i++) {
+      const ta = textareas[i];
+      ta.style.height = '';
+      ta.style.minHeight = '';
+      ta.style.maxHeight = '';
+      ta.style.flex = '';
+      ta.style.overflowY = 'hidden';
+    }
+    if (root.matches && root.matches('textarea.cell, textarea.cell-nest-input')) {
+      root.style.height = '';
+      root.style.minHeight = '';
+      root.style.maxHeight = '';
+      root.style.flex = '';
+      root.style.overflowY = 'hidden';
+    }
+    const nests = root.querySelectorAll('.cell-nest');
+    for (let i = 0; i < nests.length; i++) clearBox(nests[i]);
+    const controls = root.querySelectorAll('.row-controls');
+    for (let i = 0; i < controls.length; i++) clearBox(controls[i]);
   }
 
   function applyHeightToGridRow(row, heightPx) {
@@ -4368,15 +4417,22 @@
     refitRowHeightAt(row);
   }
 
-  /** One-click: size every row to its tallest cell content on the active tab grid. */
+  /**
+   * One-click: size every row to its tallest cell content on the active tab grid.
+   * Shrinks tall empty/short rows as well as growing clipped ones — replaces any
+   * prior persisted rowHeights / manual resize pins (not grow-only).
+   */
   function autoFitAllRowHeights() {
     const tab = activeTab();
     if (!tab || !el.cellGrid) return;
     pushHistory();
+    // Drop old pinned heights so measure/apply can shrink empty rows.
+    clearPinnedHeightsForFitMeasure(el.cellGrid);
     // Match post-fit wrap widths before measuring (no scrollbar gutter).
     prepareWrapWidthsForFitMeasure(el.cellGrid);
     const heights = [];
     for (let r = 0; r < tab.rows; r++) {
+      // Floor is chrome min only — never the previous tall rowHeights[r].
       let maxH = MIN_ROW_HEIGHT;
       const wraps = el.cellGrid.querySelectorAll('.cell-wrap[data-row="' + r + '"]');
       for (let i = 0; i < wraps.length; i++) {
@@ -4386,20 +4442,21 @@
       heights.push(maxH);
       applyHeightToGridRow(r, maxH);
     }
-    // Second pass: after heights + overflow:hidden are applied, grow any still-short rows.
+    // Second pass: re-measure at final wrap widths; allow shrink OR grow.
     prepareWrapWidthsForFitMeasure(el.cellGrid);
     for (let r = 0; r < tab.rows; r++) {
-      let maxH = heights[r];
+      let maxH = MIN_ROW_HEIGHT;
       const wraps = el.cellGrid.querySelectorAll('.cell-wrap[data-row="' + r + '"]');
       for (let i = 0; i < wraps.length; i++) {
         const stackH = measureCellStackHeight(wraps[i], tab);
         if (stackH > maxH) maxH = stackH;
       }
-      if (maxH > heights[r]) {
+      if (maxH !== heights[r]) {
         heights[r] = maxH;
         applyHeightToGridRow(r, maxH);
       }
     }
+    // Full replace so tall persisted heights cannot stick around.
     tab.rowHeights = heights;
     scheduleSave();
     setStatus('Auto-fitted row heights (' + tab.rows + ' rows)', 'ok');
