@@ -1410,6 +1410,62 @@
     }
   }
 
+  /**
+   * Resolve cellIndex for nest + from the clicked control's cell-wrap (row/col),
+   * then data-idx, then closure fallback. Avoids wrong-cell attaches when Fit
+   * row heights stretched the gutter and shoved + toward the next row visually.
+   */
+  function cellIndexFromNestAddEvent(ev, fallbackIdx) {
+    const tab = activeTab();
+    const btn = ev && ev.currentTarget;
+    if (btn && typeof btn.closest === 'function') {
+      const wrap = btn.closest('.cell-wrap');
+      if (wrap && tab) {
+        const row = parseInt(wrap.dataset.row, 10);
+        const col = parseInt(wrap.dataset.col, 10);
+        if (!Number.isNaN(row) && !Number.isNaN(col) &&
+            row >= 0 && col >= 0 && row < tab.rows && col < tab.cols) {
+          return row * tab.cols + col;
+        }
+        const ta = wrap.querySelector('textarea.cell');
+        if (ta) {
+          const fromTa = parseInt(ta.dataset.idx, 10);
+          if (!Number.isNaN(fromTa) && fromTa >= 0) return fromTa;
+        }
+      }
+    }
+    if (btn && btn.dataset) {
+      const fromBtn = parseInt(btn.dataset.idx, 10);
+      if (!Number.isNaN(fromBtn) && fromBtn >= 0) return fromBtn;
+      if (tab) {
+        const row = parseInt(btn.dataset.row, 10);
+        const col = parseInt(btn.dataset.col, 10);
+        if (!Number.isNaN(row) && !Number.isNaN(col) &&
+            row >= 0 && col >= 0 && row < tab.rows && col < tab.cols) {
+          return row * tab.cols + col;
+        }
+      }
+    }
+    return Number.isInteger(fallbackIdx) ? fallbackIdx : -1;
+  }
+
+  /** Re-measure and persist one row after nest add/remove so nests stay in-cell. */
+  function refitRowHeightAt(row) {
+    const tab = activeTab();
+    if (!tab || !el.cellGrid || row < 0 || row >= tab.rows) return;
+    let maxH = MIN_ROW_HEIGHT;
+    const wraps = el.cellGrid.querySelectorAll('.cell-wrap[data-row="' + row + '"]');
+    for (let i = 0; i < wraps.length; i++) {
+      const stackH = measureCellStackHeight(wraps[i], tab);
+      if (stackH > maxH) maxH = stackH;
+    }
+    applyHeightToGridRow(row, maxH);
+    if (Array.isArray(tab.rowHeights)) {
+      ensureRowHeightsLength(tab);
+      tab.rowHeights[row] = maxH;
+    }
+  }
+
   function addNestedCell(cellIndex) {
     const tab = activeTab();
     if (!tab || cellIndex < 0 || cellIndex >= tab.cells.length) return;
@@ -1417,14 +1473,15 @@
     ensureNestedCells(tab);
     tab.nestedCells[cellIndex] = tab.nestedCells[cellIndex].concat([makeEmptyNest()]);
     const nestIndex = tab.nestedCells[cellIndex].length - 1;
+    const row = Math.floor(cellIndex / tab.cols);
     renderGrid();
+    // Persisted rowHeights from before the nest would clip / spill; grow this row.
+    refitRowHeightAt(row);
     scheduleSave();
     const nestTa = el.cellGrid.querySelector(
       'textarea.cell-nest-input[data-idx="' + cellIndex + '"][data-nest="' + nestIndex + '"]'
     );
     if (nestTa) nestTa.focus();
-    const row = Math.floor(cellIndex / tab.cols) + 1;
-    const col = (cellIndex % tab.cols) + 1;
     setStatus('Added nest under ' + cellAddressFromIndex(tab, cellIndex));
   }
 
@@ -1466,13 +1523,13 @@
     remapNestLinksAfterRemove(tab.id, cellIndex, nestIndex);
     nests.splice(nestIndex, 1);
     revalidateLinksForCell(tab.id, cellIndex, { silent: true });
+    const row = Math.floor(cellIndex / tab.cols);
     renderGrid();
+    refitRowHeightAt(row);
     renderCombinedPrompt();
     applyConfirmedCellHighlights();
     applyAppendCheckedState();
     scheduleSave();
-    const row = Math.floor(cellIndex / tab.cols) + 1;
-    const col = (cellIndex % tab.cols) + 1;
     setStatus('Removed nest from ' + cellAddressFromIndex(tab, cellIndex));
   }
 
@@ -4249,16 +4306,22 @@
         const nestAddBtn = document.createElement('button');
         nestAddBtn.type = 'button';
         nestAddBtn.className = 'cell-nest-add';
+        nestAddBtn.dataset.idx = String(idx);
+        nestAddBtn.dataset.row = String(r);
+        nestAddBtn.dataset.col = String(c);
         nestAddBtn.title = 'Add nested cell under this cell';
         nestAddBtn.setAttribute('aria-label', 'Add nest under ' + cellAddress(r, c));
         nestAddBtn.innerHTML = '<span class="cell-nest-add-mark" aria-hidden="true">+</span>';
         nestAddBtn.addEventListener('pointerdown', function (ev) {
+          ev.preventDefault();
           ev.stopPropagation();
         });
         nestAddBtn.addEventListener('click', function (ev) {
           ev.preventDefault();
           ev.stopPropagation();
-          addNestedCell(idx);
+          const targetIdx = cellIndexFromNestAddEvent(ev, idx);
+          if (targetIdx < 0) return;
+          addNestedCell(targetIdx);
         });
         gutter.appendChild(nestAddBtn);
         wrap.appendChild(gutter);

@@ -753,6 +753,8 @@ body.resizing-columns * {
   border-right: 1px solid var(--border);
   border-bottom: 1px solid var(--border);
   background: var(--bg);
+  /* When rowHeights pin wrap height, keep nests from spilling into the next row. */
+  overflow: hidden;
 }
 
 .cell-wrap.cell-confirmed {
@@ -869,12 +871,16 @@ body.relocating-cell * {
   box-shadow: inset 0 0 0 1px var(--accent);
 }
 
+/* Pin Combined checkbox at top of gutter (do not flex-grow).
+   After Fit row heights, flex:1 used to stretch Combined and shove the nest +
+   to the bottom of tall cells — clicks then hit the wrong parent. */
 .cell-append {
   appearance: none;
   margin: 0;
   padding: 0;
-  flex: 1;
-  min-height: 0;
+  flex: 0 0 22px;
+  height: 22px;
+  min-height: 22px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -884,6 +890,14 @@ body.relocating-cell * {
   color: var(--muted);
   cursor: pointer;
   transition: background 0.12s, color 0.12s;
+}
+
+/* Absorb leftover gutter height below Combined + nest + (non-interactive). */
+.cell-gutter::after {
+  content: '';
+  flex: 1 1 auto;
+  min-height: 0;
+  pointer-events: none;
 }
 
 .cell-append:hover {
@@ -924,6 +938,13 @@ body.relocating-cell * {
 .cell-append.is-checked:hover .cell-append-mark {
   background: #fff;
   border-color: #fff;
+}
+
+.cell-nest-chrome .cell-append {
+  flex: 0 0 18px;
+  width: 18px;
+  height: 18px;
+  min-height: 18px;
 }
 
 .cell-nest-add {
