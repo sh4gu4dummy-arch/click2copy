@@ -69,6 +69,9 @@
   let masterLibFilterMenuOpen = false;
   /** UI-only Master insert display sort: null | 'asc' | 'desc' (does not mutate Master) */
   let masterLibSortDir = null;
+  /** UI-only Tools tab — not stored in document tabs; acts on lastPartTabId */
+  let toolsTabActive = false;
+  let lastPartTabId = null;
   const pendingDocumentPaths = [];
   const EVENT_LOG_LIMIT = 40;
   const eventLog = [];
@@ -83,6 +86,9 @@
     combinedSection: document.querySelector('.combined-section'),
     masterLibrary: document.getElementById('master-library'),
     masterLibraryItems: document.getElementById('master-library-items'),
+    partSection: document.querySelector('.part-section'),
+    toolsPanel: document.getElementById('tools-panel'),
+    toolsPanelHint: document.getElementById('tools-panel-hint'),
     partLabel: document.getElementById('part-label'),
     combined: document.getElementById('combined-prompt'),
     globalCombined: document.getElementById('global-combined'),
@@ -357,6 +363,76 @@
 
   function partTabs() {
     return state.tabs.filter(function (tab) { return !isMasterTab(tab); });
+  }
+
+  function resolveLastPartTabId() {
+    if (lastPartTabId && state.tabs.some(function (tab) {
+      return tab.id === lastPartTabId && !isMasterTab(tab);
+    })) {
+      return lastPartTabId;
+    }
+    const current = activeTab();
+    if (current && !isMasterTab(current)) {
+      lastPartTabId = current.id;
+      return lastPartTabId;
+    }
+    const parts = partTabs();
+    lastPartTabId = parts.length ? parts[0].id : null;
+    return lastPartTabId;
+  }
+
+  /** Tab that Tools (+ Row / + Column / Rename) and grid edits should target. */
+  function toolsTargetTab() {
+    if (!toolsTabActive) return activeTab();
+    const id = resolveLastPartTabId();
+    return state.tabs.find(function (tab) { return tab.id === id; }) || null;
+  }
+
+  function updateToolsChrome() {
+    if (el.partSection) {
+      el.partSection.classList.toggle('is-tools-view', toolsTabActive);
+    }
+    if (el.toolsPanel) {
+      el.toolsPanel.hidden = !toolsTabActive;
+    }
+    const target = toolsTargetTab();
+    if (el.toolsPanelHint) {
+      el.toolsPanelHint.textContent = target
+        ? ('Grid tools for active part: ' + target.title + ' (' + target.cols + '×' + target.rows + ')')
+        : 'Grid tools — select a part tab first';
+    }
+    if (el.btnAddRow) el.btnAddRow.disabled = !target;
+    if (el.btnAddCol) el.btnAddCol.disabled = !target;
+    if (el.btnRename) el.btnRename.disabled = !target || isMasterTab(target);
+  }
+
+  function selectToolsTab() {
+    resolveLastPartTabId();
+    if (!lastPartTabId) {
+      setStatus('Add a part tab before opening Tools', 'err');
+      return;
+    }
+    const switchedPart = state.activeTabId !== lastPartTabId;
+    if (toolsTabActive && !switchedPart) return;
+    // Keep document activeTabId on the part Tools will mutate (not Master).
+    if (switchedPart) state.activeTabId = lastPartTabId;
+    toolsTabActive = true;
+    focusedCell = null;
+    clearStickyCellRange();
+    closeMasterLibFilterMenu();
+    masterLibFilterMenuOpen = false;
+    renderTabs();
+    if (switchedPart) {
+      renderGrid();
+      renderMasterLibrary();
+      renderCombinedPrompt();
+      if (initialized) autoCopyCombinedToClipboard();
+      scheduleSave();
+    } else {
+      updateToolsChrome();
+    }
+    const target = toolsTargetTab();
+    setStatus('Tools — acting on ' + (target ? target.title : 'part'));
   }
 
   function defaultActiveTabId(tabs) {
@@ -2582,12 +2658,17 @@
       tabs.unshift(master);
     }
     state.tabs = tabs;
+    toolsTabActive = false;
     state.activeTabId = data.activeTabId || defaultActiveTabId(tabs);
     if (!state.tabs.some(function (t) {
       return t.id === state.activeTabId;
     })) {
       state.activeTabId = defaultActiveTabId(tabs) || tabs[0].id;
     }
+    const active = state.tabs.find(function (t) { return t.id === state.activeTabId; });
+    lastPartTabId = active && !isMasterTab(active)
+      ? active.id
+      : (partTabs()[0] ? partTabs()[0].id : null);
     state.combinedPrompt = typeof data.combinedPrompt === 'string' ? data.combinedPrompt : '';
     state.globalCombined = typeof data.globalCombined === 'boolean' ? data.globalCombined : true;
     state.matchSourceOrder = typeof data.matchSourceOrder === 'boolean' ? data.matchSourceOrder : false;
@@ -2933,16 +3014,19 @@
 
   function renderTabs() {
     el.tabBar.innerHTML = '';
+    const targetPartId = toolsTabActive ? resolveLastPartTabId() : null;
     state.tabs.forEach(function (tab) {
       const btn = document.createElement('button');
       btn.type = 'button';
-      btn.className = 'tab' + (tab.id === state.activeTabId ? ' active' : '');
+      const isActive = !toolsTabActive && tab.id === state.activeTabId;
+      btn.className = 'tab' + (isActive ? ' active' : '');
       btn.textContent = tab.title;
       btn.setAttribute('role', 'tab');
-      btn.setAttribute('aria-selected', tab.id === state.activeTabId ? 'true' : 'false');
+      btn.setAttribute('aria-selected', isActive ? 'true' : 'false');
       btn.dataset.id = tab.id;
       btn.draggable = !isMasterTab(tab);
       if (isMasterTab(tab)) btn.classList.add('master-tab');
+      if (toolsTabActive && tab.id === targetPartId) btn.classList.add('tools-target');
       btn.title = isMasterTab(tab)
         ? 'Master parts — edit reusable text here'
         : tab.title + ' (drag to reorder; double-click to rename)';
@@ -2998,16 +3082,36 @@
       el.tabBar.appendChild(btn);
     });
 
+    // Shared Tools tab (UI-only) — parks + Row / + Column / Rename; acts on active part.
+    const toolsBtn = document.createElement('button');
+    toolsBtn.type = 'button';
+    toolsBtn.className = 'tab tools-tab' + (toolsTabActive ? ' active' : '');
+    toolsBtn.textContent = 'Tools';
+    toolsBtn.setAttribute('role', 'tab');
+    toolsBtn.setAttribute('aria-selected', toolsTabActive ? 'true' : 'false');
+    toolsBtn.dataset.id = '__tools__';
+    toolsBtn.draggable = false;
+    toolsBtn.title = 'Shared tools — + Row, + Column, Rename for the active part tab';
+    toolsBtn.addEventListener('click', function () {
+      selectToolsTab();
+    });
+    el.tabBar.appendChild(toolsBtn);
+
     // Keep the add-part control in the tab strip, immediately after the last part tab.
     el.tabBar.appendChild(el.btnAdd);
 
     const tab = activeTab();
-    el.partLabel.textContent = tab
-      ? tab.title + ' (' + tab.cols + '×' + tab.rows + ')'
-      : 'Part content';
-    el.btnDelete.disabled = isMasterTab(tab) || partTabs().length <= 1;
-    el.btnRename.disabled = isMasterTab(tab);
-    el.masterLibrary.hidden = isMasterTab(tab);
+    const target = toolsTargetTab();
+    if (toolsTabActive && target) {
+      el.partLabel.textContent = 'Tools → ' + target.title + ' (' + target.cols + '×' + target.rows + ')';
+    } else {
+      el.partLabel.textContent = tab
+        ? tab.title + ' (' + tab.cols + '×' + tab.rows + ')'
+        : 'Part content';
+    }
+    el.btnDelete.disabled = !tab || isMasterTab(tab) || partTabs().length <= 1 || toolsTabActive;
+    el.masterLibrary.hidden = toolsTabActive || isMasterTab(tab);
+    updateToolsChrome();
   }
 
   function masterRowHasContent(master, row) {
@@ -5425,12 +5529,15 @@
   }
 
   function selectTab(id) {
-    if (id === state.activeTabId) return;
     const tab = state.tabs.find(function (t) {
       return t.id === id;
     });
     if (!tab) return;
+    const sameTab = id === state.activeTabId;
+    if (sameTab && !toolsTabActive) return;
+    toolsTabActive = false;
     state.activeTabId = id;
+    if (!isMasterTab(tab)) lastPartTabId = id;
     focusedCell = null;
     clearStickyCellRange();
     closeMasterLibFilterMenu();
@@ -5440,7 +5547,7 @@
     renderMasterLibrary();
     renderCombinedPrompt();
     // Same Combined clipboard behavior as Combined edit/activate for the tab landed on.
-    if (initialized) autoCopyCombinedToClipboard();
+    if (initialized && !sameTab) autoCopyCombinedToClipboard();
     scheduleSave();
   }
 
@@ -5466,6 +5573,8 @@
       if (commit && next && next !== tab.title) {
         if (next.toLowerCase() === 'master') {
           setStatus('Only the Master library tab may be named Master', 'err');
+        } else if (next.toLowerCase() === 'tools') {
+          setStatus('Tools is reserved for the shared tools tab', 'err');
         } else {
           pushHistory();
           tab.title = next;
@@ -5493,7 +5602,9 @@
     pushHistory();
     const tab = makeTab(uid(), nextPartTitle());
     state.tabs.push(tab);
+    toolsTabActive = false;
     state.activeTabId = tab.id;
+    lastPartTabId = tab.id;
     renderTabs();
     renderGrid();
     renderMasterLibrary();
@@ -5502,10 +5613,10 @@
   }
 
   function renameActiveTab() {
-    const tab = activeTab();
+    const tab = toolsTargetTab();
     if (!tab || isMasterTab(tab)) return;
-    const btn = el.tabBar.querySelector('.tab.active');
-    if (btn) {
+    const btn = el.tabBar.querySelector('.tab[data-id="' + tab.id + '"]');
+    if (btn && !btn.classList.contains('tools-tab')) {
       startInlineRename(btn, tab);
       return;
     }
@@ -5515,6 +5626,10 @@
     if (!trimmed) return;
     if (trimmed.toLowerCase() === 'master') {
       setStatus('Only the Master library tab may be named Master', 'err');
+      return;
+    }
+    if (trimmed.toLowerCase() === 'tools') {
+      setStatus('Tools is reserved for the shared tools tab', 'err');
       return;
     }
     pushHistory();
@@ -5552,6 +5667,14 @@
     if (state.activeTabId === id) {
       const next = state.tabs[Math.min(idx, state.tabs.length - 1)];
       state.activeTabId = next.id;
+    }
+    if (lastPartTabId === id) {
+      const active = state.tabs.find(function (t) { return t.id === state.activeTabId; });
+      lastPartTabId = active && !isMasterTab(active)
+        ? active.id
+        : (partTabs()[0] ? partTabs()[0].id : null);
+      if (toolsTabActive && !lastPartTabId) toolsTabActive = false;
+      else if (toolsTabActive && lastPartTabId) state.activeTabId = lastPartTabId;
     }
     renderTabs();
     renderGrid();
@@ -5784,7 +5907,7 @@
   }
 
   function addRow() {
-    const tab = activeTab();
+    const tab = toolsTargetTab();
     if (!tab) return;
     pushHistory();
     ensureNestedCells(tab);
@@ -5798,7 +5921,7 @@
     renderGrid();
     renderMasterLibrary();
     scheduleSave();
-    setStatus('Row added (' + tab.cols + '×' + tab.rows + ')');
+    setStatus('Row added to ' + tab.title + ' (' + tab.cols + '×' + tab.rows + ')');
   }
 
   function rowIsEmpty(tab, rowIndex) {
@@ -5966,7 +6089,7 @@
   }
 
   function addColumn() {
-    const tab = activeTab();
+    const tab = toolsTargetTab();
     if (!tab) return;
     pushHistory();
     ensureNestedCells(tab);
@@ -5990,7 +6113,7 @@
     renderGrid();
     renderMasterLibrary();
     scheduleSave();
-    setStatus('Column added (' + tab.cols + '×' + tab.rows + ')');
+    setStatus('Column added to ' + tab.title + ' (' + tab.cols + '×' + tab.rows + ')');
   }
 
   function rowCellIndices(tab, rowIndex) {

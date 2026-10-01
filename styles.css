@@ -311,6 +311,52 @@ body {
   font-weight: 700;
 }
 
+.tab.tools-tab {
+  border-style: dashed;
+  font-weight: 700;
+}
+
+.tab.tools-target:not(.active) {
+  box-shadow: inset 0 0 0 1px var(--accent);
+  color: var(--text);
+}
+
+.tools-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  flex: 1 1 auto;
+  min-height: 120px;
+}
+
+.tools-panel[hidden] {
+  display: none;
+}
+
+.tools-panel-hint {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.tools-panel-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.part-section.is-tools-view .cell-grid-wrap,
+.part-section.is-tools-view .master-library,
+.part-section.is-tools-view .actions-row,
+.part-section.is-tools-view .part-actions {
+  display: none;
+}
+
+
 .tab.editing {
   padding: 0;
   max-width: 200px;
