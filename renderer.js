@@ -2066,7 +2066,7 @@
 
 
   /**
-   * Click+drag paint for Combined / nest / row checkboxes.
+   * Click+drag paint for Combined / nest checkboxes.
    * Kinds never mix: a drag started on Combined only paints Combined, etc.
    * First control sets the target value; later controls of the same kind match it.
    */
@@ -2106,27 +2106,6 @@
     return true;
   }
 
-  function ensureRowIncludedState(rowIndex, wantOn, opts) {
-    const quiet = !!(opts && opts.quiet);
-    const tab = activeTab();
-    if (!tab || rowIndex < 0 || rowIndex >= tab.rows) return false;
-    const scope = currentPromptScope();
-    const isOn = isRowIncluded(tab, rowIndex);
-    if (isOn === !!wantOn) return false;
-    if (wantOn) {
-      const pieces = rowConfirmedPieces(tab, rowIndex);
-      if (!pieces.length) return false;
-      appendPieces(pieces, quiet ? null : (tab.title + ' row ' + (rowIndex + 1)), { quiet: quiet });
-      return true;
-    }
-    const links = linksForCellsInScope(tab.id, rowCellIndices(tab, rowIndex), scope);
-    if (!links.length) return false;
-    removeLinksFromCombined(links);
-    if (!quiet) refreshAfterConfirmedChange();
-    return true;
-  }
-
-
   function applyCheckboxDragKey(kind, key) {
     if (!checkboxDrag || checkboxDrag.kind !== kind) return;
     if (checkboxDrag.visited[key]) return;
@@ -2140,8 +2119,8 @@
       if (!Number.isNaN(cellIndex) && !Number.isNaN(nestIndex)) {
         ensureNestConfirmedState(cellIndex, nestIndex, want, { quiet: true });
       }
-    } else if (kind === 'row') ensureRowIncludedState(key, want, { quiet: true });
-    if (kind === 'combined' || kind === 'nest' || kind === 'row') applyAppendCheckedState();
+    }
+    applyAppendCheckedState();
   }
 
   function checkboxDragHit(clientX, clientY) {
@@ -2162,13 +2141,6 @@
       if (Number.isNaN(idx) || Number.isNaN(nest)) return null;
       return { kind: 'nest', key: idx + ':' + nest };
     }
-    if (checkboxDrag.kind === 'row') {
-      const btn = node.closest('.row-append');
-      if (!btn || !el.cellGrid.contains(btn)) return null;
-      const row = parseInt(btn.dataset.row, 10);
-      if (Number.isNaN(row)) return null;
-      return { kind: 'row', key: row };
-    }
     return null;
   }
 
@@ -2188,7 +2160,7 @@
     checkboxDrag = null;
     historySuspended = false;
     endCheckboxDragListeners();
-    if (kind === 'combined' || kind === 'nest' || kind === 'row') refreshAfterConfirmedChange();
+    if (kind === 'combined' || kind === 'nest') refreshAfterConfirmedChange();
     else scheduleSave();
   }
 
@@ -2216,8 +2188,8 @@
       if (!Number.isNaN(cellIndex) && !Number.isNaN(nestIndex)) {
         ensureNestConfirmedState(cellIndex, nestIndex, value, { quiet: true });
       }
-    } else if (kind === 'row') ensureRowIncludedState(key, value, { quiet: true });
-    if (kind === 'combined' || kind === 'nest' || kind === 'row') applyAppendCheckedState();
+    }
+    applyAppendCheckedState();
   }
 
   function applyAppendCheckedState() {
@@ -2225,34 +2197,7 @@
     if (!tab) return;
     const scope = currentPromptScope();
 
-    const rowButtons = el.cellGrid.querySelectorAll('.row-append');
-    for (let i = 0; i < rowButtons.length; i++) {
-      const btn = rowButtons[i];
-      const row = parseInt(btn.dataset.row, 10);
-      if (Number.isNaN(row)) continue;
-      const on = isRowIncluded(tab, row);
-      btn.classList.toggle('is-checked', on);
-      btn.setAttribute('aria-pressed', on ? 'true' : 'false');
-      btn.title = on
-        ? 'Remove row ' + (row + 1) + ' from combined prompt'
-        : 'Add row ' + (row + 1) + ' to combined prompt';
-      btn.setAttribute('aria-label', btn.title);
-      // Keep In Combined filter in sync when checkbox state changes.
-      const hidden = !rowMatchesFilter(tab, row);
-      const controls = btn.closest('.row-controls');
-      if (controls) controls.classList.toggle('is-row-filtered', hidden);
-      const wraps = el.cellGrid.querySelectorAll('.cell-wrap[data-row="' + row + '"]');
-      // Fallback: mark by dataset on wrap if present; else scan cells.
-      if (wraps.length) {
-        for (let w = 0; w < wraps.length; w++) wraps[w].classList.toggle('is-row-filtered', hidden);
-      } else {
-        const cells = el.cellGrid.querySelectorAll('.cell[data-row="' + row + '"]');
-        for (let c = 0; c < cells.length; c++) {
-          const wrap = cells[c].closest ? cells[c].closest('.cell-wrap') : null;
-          if (wrap) wrap.classList.toggle('is-row-filtered', hidden);
-        }
-      }
-    }
+    applyRowFilterVisibility();
 
     const cellButtons = el.cellGrid.querySelectorAll('.cell-append:not(.cell-nest-append)');
     for (let i = 0; i < cellButtons.length; i++) {
@@ -4510,7 +4455,7 @@
   }
 
   function applyGridColumns(tab) {
-    // Row gutter (52px: Excel row # + Combined/move controls) + content widths.
+    // Row gutter (52px: Excel row # + move controls) + content widths.
     el.cellGrid.style.gridTemplateColumns = '52px ' + contentColumnTemplate(tab, 120);
   }
 
@@ -4911,14 +4856,13 @@
   function applyRowFilterVisibility() {
     const tab = activeTab();
     if (!tab || !el.cellGrid) return;
-    const rowButtons = el.cellGrid.querySelectorAll('.row-append');
-    for (let i = 0; i < rowButtons.length; i++) {
-      const btn = rowButtons[i];
-      const row = parseInt(btn.dataset.row, 10);
+    const rowControls = el.cellGrid.querySelectorAll('.row-controls');
+    for (let i = 0; i < rowControls.length; i++) {
+      const controls = rowControls[i];
+      const row = parseInt(controls.dataset.row, 10);
       if (Number.isNaN(row)) continue;
       const hidden = !rowMatchesFilter(tab, row);
-      const controls = btn.closest('.row-controls');
-      if (controls) controls.classList.toggle('is-row-filtered', hidden);
+      controls.classList.toggle('is-row-filtered', hidden);
       const wraps = el.cellGrid.querySelectorAll('.cell-wrap[data-row="' + row + '"]');
       for (let w = 0; w < wraps.length; w++) wraps[w].classList.toggle('is-row-filtered', hidden);
     }
@@ -5240,26 +5184,6 @@
       rowNum.title = 'Row ' + (r + 1);
       rowNum.setAttribute('aria-hidden', 'true');
       rowControls.appendChild(rowNum);
-
-      const rowBtn = document.createElement('button');
-      rowBtn.type = 'button';
-      rowBtn.className = 'row-append';
-      rowBtn.dataset.row = String(r);
-      rowBtn.setAttribute('aria-pressed', 'false');
-      rowBtn.innerHTML = '<span class="row-append-mark" aria-hidden="true"></span>';
-      rowBtn.addEventListener('pointerdown', function (ev) {
-        if (ev.button != null && ev.button !== 0) return;
-        ev.preventDefault();
-        ev.stopPropagation();
-        const wantOn = !isRowIncluded(tab, r);
-        beginCheckboxDrag('row', r, wantOn, ev);
-      });
-      rowBtn.addEventListener('click', function (ev) {
-        // Handled on pointerdown for click+drag paint; suppress leftover click.
-        ev.preventDefault();
-        ev.stopPropagation();
-      });
-      rowControls.appendChild(rowBtn);
 
       const moveControls = document.createElement('span');
       moveControls.className = 'row-move-controls';
@@ -7398,12 +7322,6 @@
     setStatus('Column added to ' + tab.title + ' (' + tab.cols + '×' + tab.rows + ')');
   }
 
-  function rowCellIndices(tab, rowIndex) {
-    const indices = [];
-    for (let c = 0; c < tab.cols; c++) indices.push(rowIndex * tab.cols + c);
-    return indices;
-  }
-
   function rowConfirmedPiecesMissing(tab, rowIndex) {
     const scope = currentPromptScope();
     const pieces = [];
@@ -7419,33 +7337,6 @@
       for (let i = 0; i < cellPieces.length; i++) pieces.push(cellPieces[i]);
     }
     return pieces;
-  }
-
-  function toggleRow(rowIndex) {
-    const tab = activeTab();
-    if (!tab) return;
-    if (rowIndex < 0 || rowIndex >= tab.rows) return;
-    const scope = currentPromptScope();
-
-    if (isRowIncluded(tab, rowIndex)) {
-      const links = linksForCellsInScope(tab.id, rowCellIndices(tab, rowIndex), scope);
-      if (!links.length) {
-        applyAppendCheckedState();
-        return;
-      }
-      pushHistory();
-      removeLinksFromCombined(links);
-      refreshAfterConfirmedChange();
-      setStatus('Removed "' + tab.title + ' row ' + (rowIndex + 1) + '"', 'ok');
-      return;
-    }
-
-    const pieces = rowConfirmedPieces(tab, rowIndex);
-    appendPieces(pieces, tab.title + ' row ' + (rowIndex + 1));
-  }
-
-  function appendRow(rowIndex) {
-    toggleRow(rowIndex);
   }
 
   function appendAll() {

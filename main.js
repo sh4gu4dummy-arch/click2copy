@@ -19,6 +19,10 @@ const DOCUMENTS_BACKUP_FOLDER = 'Click2Copy';
 const DEFAULT_COLS = 3;
 const DEFAULT_ROWS = 8;
 const MIN_COLUMN_WIDTH = 100;
+const MIN_ROW_HEIGHT = 44;
+const TAB_ICON_IDS = ['text', 'video', 'img', 'sparkle', 'tag', 'folder', 'layers', 'hash'];
+const DEFAULT_PART_ICON = 'text';
+const DEFAULT_MASTER_ICON = 'layers';
 const DEFAULT_SEPARATORS = {
   part: '\\n\\n',
   column: ' | ',
@@ -170,6 +174,83 @@ function writeUntitledRecoverableBackups(documents, activeDocumentId) {
   return { ok: true, paths, locations: getAutosaveLocations() };
 }
 
+function isTabIconId(id) {
+  return typeof id === 'string' && TAB_ICON_IDS.indexOf(id) !== -1;
+}
+
+function defaultIconForTab(tab) {
+  if (tab && (tab.id === 'master' || (tab.title && tab.title.trim().toLowerCase() === 'master'))) {
+    return DEFAULT_MASTER_ICON;
+  }
+  return DEFAULT_PART_ICON;
+}
+
+function emptyNestedCells(length) {
+  return Array(Math.max(0, length)).fill(null).map(() => []);
+}
+
+function makeEmptyNest() {
+  return { pages: [''], page: 0 };
+}
+
+function normalizeNest(item) {
+  if (typeof item === 'string') return { pages: [item], page: 0 };
+  if (!item || typeof item !== 'object') return makeEmptyNest();
+  let pages;
+  if (Array.isArray(item.pages) && item.pages.length) {
+    pages = item.pages.map((page) => (typeof page === 'string' ? page : ''));
+  } else if (typeof item.text === 'string') {
+    pages = [item.text];
+  } else {
+    pages = [''];
+  }
+  let page = Number.isInteger(item.page) ? item.page : 0;
+  if (page < 0) page = 0;
+  if (page >= pages.length) page = pages.length - 1;
+  return { pages, page };
+}
+
+function normalizeNestedCells(nested, length) {
+  const needed = Math.max(0, length);
+  let out = Array.isArray(nested) ? nested.map((list) =>
+    Array.isArray(list) ? list.map(normalizeNest) : []
+  ) : emptyNestedCells(needed);
+  if (out.length < needed) {
+    while (out.length < needed) out.push([]);
+  } else if (out.length > needed) {
+    out = out.slice(0, needed);
+  }
+  return out;
+}
+
+function normalizeCellLock(item) {
+  if (!item || typeof item !== 'object' || item.masterOrigin !== true) return null;
+  const out = { masterOrigin: true, locked: item.locked === false ? false : true };
+  const masterCellIndex = toNonNegInt(item.masterCellIndex);
+  if (masterCellIndex !== null) out.masterCellIndex = masterCellIndex;
+  return out;
+}
+
+function normalizeCellLocks(locks, length) {
+  const needed = Math.max(0, length);
+  let out = Array.isArray(locks) ? locks.map(normalizeCellLock) : emptyNestedCells(needed).map(() => null);
+  if (out.length < needed) {
+    while (out.length < needed) out.push(null);
+  } else if (out.length > needed) {
+    out = out.slice(0, needed);
+  }
+  return out;
+}
+
+function normalizeRowHeights(heights, rows) {
+  if (!Array.isArray(heights) || heights.length !== rows) return null;
+  const normalized = heights.map((height) => {
+    const value = Number(height);
+    return Number.isFinite(value) && value >= MIN_ROW_HEIGHT ? value : null;
+  });
+  return normalized.every((height) => height !== null) ? normalized : null;
+}
+
 function normalizeColumnWidths(widths, cols) {
   if (!Array.isArray(widths) || widths.length !== cols) return null;
   const normalized = widths.map((width) => {
@@ -210,8 +291,11 @@ function normalizeTab(t) {
       title: t.title,
       cols,
       rows,
-      cells
+      cells,
+      nestedCells: emptyNestedCells(cols * rows),
+      cellLocks: emptyNestedCells(cols * rows).map(() => null)
     };
+    normalized.icon = isTabIconId(t.icon) ? t.icon : defaultIconForTab(normalized);
     if (columnWidths) normalized.columnWidths = columnWidths;
     return normalized;
   }
@@ -245,9 +329,20 @@ function normalizeTab(t) {
   }
 
   const columnWidths = normalizeColumnWidths(t.columnWidths, cols);
+  const rowHeights = normalizeRowHeights(t.rowHeights, rows);
   // sleptCells from older docs are ignored (sleep UI dropped).
-  const normalized = { id: t.id, title: t.title, cols, rows, cells };
+  const normalized = {
+    id: t.id,
+    title: t.title,
+    cols,
+    rows,
+    cells,
+    nestedCells: normalizeNestedCells(t.nestedCells, needed),
+    cellLocks: normalizeCellLocks(t.cellLocks, needed)
+  };
+  normalized.icon = isTabIconId(t.icon) ? t.icon : defaultIconForTab(normalized);
   if (columnWidths) normalized.columnWidths = columnWidths;
+  if (rowHeights) normalized.rowHeights = rowHeights;
   return normalized;
 }
 
@@ -277,7 +372,7 @@ function normalizeConfirmedLinks(raw) {
     const end = toNonNegInt(item.end);
     if (cellIndex === null || start === null || end === null || end < start) continue;
     const scope = typeof item.scope === 'string' && item.scope ? item.scope : 'global';
-    links.push({
+    const link = {
       id: item.id,
       tabId: item.tabId,
       cellIndex,
@@ -285,7 +380,17 @@ function normalizeConfirmedLinks(raw) {
       start,
       end,
       scope
-    });
+    };
+    const nestIndex = toNonNegInt(item.nestIndex);
+    if (nestIndex !== null) link.nestIndex = nestIndex;
+    if (item.masterOrigin === true) link.masterOrigin = true;
+    if (item.masterOrigin === false) link.masterOrigin = false;
+    if (item.locked === true) link.locked = true;
+    if (item.locked === false) link.locked = false;
+    const masterCellIndex = toNonNegInt(item.masterCellIndex);
+    if (masterCellIndex !== null) link.masterCellIndex = masterCellIndex;
+    if (link.masterOrigin === true && item.locked === undefined) link.locked = true;
+    links.push(link);
   }
   return links;
 }

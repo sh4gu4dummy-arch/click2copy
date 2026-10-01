@@ -1922,7 +1922,7 @@ body.relocating-cell * {
   font-style: italic;
 }
 
-/* Append and reorder controls share the narrow row-header column.
+/* Reorder controls share the narrow row-header column.
    Excel-style row numbers sit in .row-header-label (1, 2, 3…). */
 .row-controls {
   display: flex;
@@ -1939,8 +1939,8 @@ body.relocating-cell * {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  flex: 0 0 18px;
-  width: 18px;
+  flex: 1 1 auto;
+  width: auto;
   min-width: 18px;
   padding: 0 1px;
   color: var(--muted);
@@ -1951,24 +1951,6 @@ body.relocating-cell * {
   user-select: none;
   border-right: 1px solid var(--border);
   background: var(--surface-2);
-}
-
-.row-append {
-  appearance: none;
-  flex: 1;
-  min-width: 0;
-  height: 100%;
-  margin: 0;
-  padding: 0;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-  color: var(--muted);
-  cursor: pointer;
-  transition: background 0.12s, border-color 0.12s, color 0.12s;
 }
 
 .row-move-controls {
@@ -2000,87 +1982,11 @@ body.relocating-cell * {
   cursor: not-allowed;
 }
 
-/* Same Global Combined treatment as .cell-append-mark (filled teal + black check). */
-.row-append:hover {
-  background: transparent;
-  color: var(--accent);
-}
-
-.row-append:active {
-  background: transparent;
-}
-
-.row-append-mark {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 16px;
-  height: 16px;
-  border: 1.5px solid rgba(148, 163, 184, 0.75);
-  border-radius: 3px;
-  background: transparent;
-  box-sizing: border-box;
-  position: relative;
-  color: transparent;
-}
-
-.row-append-mark::after {
-  content: '';
-  display: block;
-  width: 4px;
-  height: 8px;
-  margin-top: -1px;
-  border: solid transparent;
-  border-width: 0 2px 2px 0;
-  transform: rotate(45deg);
-  box-sizing: border-box;
-  opacity: 0;
-}
-
-.row-append:hover .row-append-mark {
-  border-color: var(--accent);
-  background: transparent;
-}
-
-.row-append.is-checked {
-  background: transparent;
-  color: var(--accent);
-}
-
-.row-append.is-checked .row-append-mark {
-  background: var(--accent);
-  border-color: var(--accent);
-  box-shadow: none;
-  color: #000;
-}
-
-.row-append.is-checked .row-append-mark::after {
-  border-color: #000;
-  opacity: 1;
-}
-
-.row-append.is-checked:hover {
-  background: transparent;
-  color: var(--accent-hover);
-}
-
-.row-append.is-checked:hover .row-append-mark {
-  background: var(--accent-hover);
-  border-color: var(--accent-hover);
-  filter: none;
-}
-
-.row-append.is-checked:hover .row-append-mark::after {
-  border-color: #000;
-  opacity: 1;
-}
-
 body.painting-checkboxes {
   user-select: none;
   cursor: default;
 }
-body.painting-checkboxes .cell-append,
-body.painting-checkboxes .row-append {
+body.painting-checkboxes .cell-append {
   cursor: default;
 }
 
