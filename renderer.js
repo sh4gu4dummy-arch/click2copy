@@ -5,8 +5,8 @@
   const DEFAULT_ROWS = 8;
   const DEFAULT_COLUMN_WIDTH = 160;
   const MIN_COLUMN_WIDTH = 100;
-  /** Match --cell-min-h; used for auto-fit row heights. */
-  const MIN_ROW_HEIGHT = 64;
+  /** Match --cell-min-h; floor for Fit (checkbox + nest + ~40px). Was 64 — left huge dead space on short rows. */
+  const MIN_ROW_HEIGHT = 44;
   const DEFAULT_SEPARATORS = {
     part: '\\n\\n',
     column: ' | ',
