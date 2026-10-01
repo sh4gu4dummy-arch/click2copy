@@ -962,23 +962,13 @@
     });
   }
 
-  function swapConfirmedRowIndices(tabId, cols, rowA, rowB) {
+  /** After inserting an empty row at fromRow, bump Combined links on that row and below. */
+  function shiftConfirmedRowsFrom(tabId, cols, fromRow) {
     state.confirmedLinks.forEach(function (link) {
       if (link.tabId !== tabId) return;
       const row = Math.floor(link.cellIndex / cols);
       const col = link.cellIndex % cols;
-      if (row === rowA) link.cellIndex = rowB * cols + col;
-      else if (row === rowB) link.cellIndex = rowA * cols + col;
-    });
-  }
-
-  function shiftConfirmedRowsDown(tabId, cols, fromRow, emptyRow) {
-    // moveRow-down shifts occupied rows [fromRow, emptyRow) down by one.
-    state.confirmedLinks.forEach(function (link) {
-      if (link.tabId !== tabId) return;
-      const row = Math.floor(link.cellIndex / cols);
-      const col = link.cellIndex % cols;
-      if (row >= fromRow && row < emptyRow) {
+      if (row >= fromRow) {
         link.cellIndex = (row + 1) * cols + col;
       }
     });
@@ -1020,31 +1010,6 @@
       }
     }
     tab.sleptCells = next;
-  }
-
-  function swapSleptRowIndices(tab, rowA, rowB) {
-    ensureSleptCells(tab);
-    for (let col = 0; col < tab.cols; col++) {
-      const a = rowA * tab.cols + col;
-      const b = rowB * tab.cols + col;
-      const tmp = tab.sleptCells[a];
-      tab.sleptCells[a] = tab.sleptCells[b];
-      tab.sleptCells[b] = tmp;
-    }
-  }
-
-  function shiftSleptRowsDown(tab, fromRow, emptyRow) {
-    ensureSleptCells(tab);
-    for (let row = emptyRow; row > fromRow + 1; row--) {
-      for (let col = 0; col < tab.cols; col++) {
-        tab.sleptCells[row * tab.cols + col] = tab.sleptCells[(row - 1) * tab.cols + col];
-      }
-    }
-    const moving = tab.sleptCells.slice(fromRow * tab.cols, (fromRow + 1) * tab.cols);
-    for (let col = 0; col < tab.cols; col++) {
-      tab.sleptCells[(fromRow + 1) * tab.cols + col] = moving[col];
-      tab.sleptCells[fromRow * tab.cols + col] = false;
-    }
   }
 
   function ensureNestedCells(tab) {
@@ -1109,31 +1074,6 @@
       }
     }
     tab.nestedCells = next;
-  }
-
-  function swapNestedRowIndices(tab, rowA, rowB) {
-    ensureNestedCells(tab);
-    for (let col = 0; col < tab.cols; col++) {
-      const a = rowA * tab.cols + col;
-      const b = rowB * tab.cols + col;
-      const tmp = tab.nestedCells[a];
-      tab.nestedCells[a] = tab.nestedCells[b];
-      tab.nestedCells[b] = tmp;
-    }
-  }
-
-  function shiftNestedRowsDown(tab, fromRow, emptyRow) {
-    ensureNestedCells(tab);
-    for (let row = emptyRow; row > fromRow + 1; row--) {
-      for (let col = 0; col < tab.cols; col++) {
-        tab.nestedCells[row * tab.cols + col] = tab.nestedCells[(row - 1) * tab.cols + col];
-      }
-    }
-    const moving = tab.nestedCells.slice(fromRow * tab.cols, (fromRow + 1) * tab.cols);
-    for (let col = 0; col < tab.cols; col++) {
-      tab.nestedCells[(fromRow + 1) * tab.cols + col] = moving[col];
-      tab.nestedCells[fromRow * tab.cols + col] = [];
-    }
   }
 
   function addNestedCell(cellIndex) {
@@ -3088,11 +3028,10 @@
       moveUp.type = 'button';
       moveUp.className = 'row-move';
       moveUp.textContent = '↑';
-      moveUp.title = 'Move row ' + (r + 1) + ' up';
+      moveUp.title = 'Insert empty row above row ' + (r + 1);
       moveUp.setAttribute('aria-label', moveUp.title);
-      moveUp.disabled = r === 0;
       moveUp.addEventListener('click', function () {
-        moveRow(r, -1);
+        insertEmptyRowAt(r);
       });
       moveControls.appendChild(moveUp);
 
@@ -3100,10 +3039,10 @@
       moveDown.type = 'button';
       moveDown.className = 'row-move';
       moveDown.textContent = '↓';
-      moveDown.title = 'Move row ' + (r + 1) + ' down';
+      moveDown.title = 'Insert empty row below row ' + (r + 1);
       moveDown.setAttribute('aria-label', moveDown.title);
       moveDown.addEventListener('click', function () {
-        moveRow(r, 1);
+        insertEmptyRowAt(r + 1);
       });
       moveControls.appendChild(moveDown);
 
@@ -4885,75 +4824,42 @@
     setStatus(direction === 'desc' ? 'Sorted by column 1 Z–A' : 'Sorted by column 1 A–Z');
   }
 
-  function moveRow(rowIndex, direction) {
+  /**
+   * Insert one empty row at insertAt (0..rows). Existing rows at insertAt and
+   * below shift down. Sleep, nested, Combined link indices, and rowHeights stay aligned.
+   * Column widths are unchanged.
+   */
+  function insertEmptyRowAt(insertAt) {
     const tab = activeTab();
-    if (!tab || (direction !== -1 && direction !== 1)) return;
-    const destination = rowIndex + direction;
-    if (rowIndex < 0 || rowIndex >= tab.rows || destination < 0) return;
+    if (!tab) return;
+    if (insertAt < 0 || insertAt > tab.rows) return;
 
     pushHistory();
     ensureSleptCells(tab);
     ensureNestedCells(tab);
-    if (direction < 0) {
-      for (let col = 0; col < tab.cols; col++) {
-        const sourceIndex = rowIndex * tab.cols + col;
-        const destinationIndex = destination * tab.cols + col;
-        const cell = tab.cells[destinationIndex];
-        tab.cells[destinationIndex] = tab.cells[sourceIndex];
-        tab.cells[sourceIndex] = cell;
-      }
-      swapSleptRowIndices(tab, rowIndex, destination);
-      swapNestedRowIndices(tab, rowIndex, destination);
-      swapConfirmedRowIndices(tab.id, tab.cols, rowIndex, destination);
-      if (Array.isArray(tab.rowHeights) && tab.rowHeights.length === tab.rows) {
-        const tmpH = tab.rowHeights[rowIndex];
-        tab.rowHeights[rowIndex] = tab.rowHeights[destination];
-        tab.rowHeights[destination] = tmpH;
-      }
-    } else {
-      let emptyRow = rowIndex + 1;
-      while (emptyRow < tab.rows && !rowIsEmpty(tab, emptyRow)) emptyRow++;
 
-      if (emptyRow === tab.rows) {
-        tab.cells.push.apply(tab.cells, emptyCells(tab.cols, 1));
-        tab.sleptCells.push.apply(tab.sleptCells, emptySleptCells(tab.cols, 1));
-        tab.nestedCells.push.apply(tab.nestedCells, emptyNestedCells(tab.cols, 1));
-        tab.rows++;
-        ensureRowHeightsLength(tab);
-        emptyRow = tab.rows - 1;
-      }
+    const cols = tab.cols;
+    const at = insertAt * cols;
+    const prevRows = tab.rows;
 
-      const movingCells = tab.cells.slice(rowIndex * tab.cols, (rowIndex + 1) * tab.cols);
-      const movingNested = tab.nestedCells.slice(rowIndex * tab.cols, (rowIndex + 1) * tab.cols);
-      const movingHeight = Array.isArray(tab.rowHeights) && tab.rowHeights.length === tab.rows
-        ? tab.rowHeights[rowIndex]
-        : null;
-      for (let row = emptyRow; row > rowIndex + 1; row--) {
-        for (let col = 0; col < tab.cols; col++) {
-          tab.cells[row * tab.cols + col] = tab.cells[(row - 1) * tab.cols + col];
-          tab.nestedCells[row * tab.cols + col] = tab.nestedCells[(row - 1) * tab.cols + col];
-        }
-        if (movingHeight != null) tab.rowHeights[row] = tab.rowHeights[row - 1];
-      }
-      for (let col = 0; col < tab.cols; col++) {
-        tab.cells[(rowIndex + 1) * tab.cols + col] = movingCells[col];
-        tab.cells[rowIndex * tab.cols + col] = '';
-        tab.nestedCells[(rowIndex + 1) * tab.cols + col] = movingNested[col];
-        tab.nestedCells[rowIndex * tab.cols + col] = [];
-      }
-      if (movingHeight != null) {
-        tab.rowHeights[rowIndex + 1] = movingHeight;
-        tab.rowHeights[rowIndex] = MIN_ROW_HEIGHT;
-      }
-      shiftSleptRowsDown(tab, rowIndex, emptyRow);
-      shiftNestedRowsDown(tab, rowIndex, emptyRow);
-      shiftConfirmedRowsDown(tab.id, tab.cols, rowIndex, emptyRow);
+    tab.cells = tab.cells.slice(0, at).concat(emptyCells(cols, 1), tab.cells.slice(at));
+    tab.sleptCells = tab.sleptCells.slice(0, at).concat(emptySleptCells(cols, 1), tab.sleptCells.slice(at));
+    tab.nestedCells = tab.nestedCells.slice(0, at).concat(emptyNestedCells(cols, 1), tab.nestedCells.slice(at));
+    tab.rows = prevRows + 1;
+
+    if (Array.isArray(tab.rowHeights)) {
+      while (tab.rowHeights.length < prevRows) tab.rowHeights.push(MIN_ROW_HEIGHT);
+      tab.rowHeights = tab.rowHeights.slice(0, prevRows);
+      tab.rowHeights.splice(insertAt, 0, MIN_ROW_HEIGHT);
     }
+
+    shiftConfirmedRowsFrom(tab.id, cols, insertAt);
 
     renderTabs();
     renderGrid();
+    renderMasterLibrary();
     scheduleSave();
-    setStatus(direction < 0 ? 'Row moved up' : 'Row moved down');
+    setStatus('Empty row inserted at row ' + (insertAt + 1) + ' (' + tab.cols + '×' + tab.rows + ')');
   }
 
   function addColumn() {
