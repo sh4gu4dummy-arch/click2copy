@@ -29,6 +29,7 @@ A simple Electron desktop app for composing prompts from reusable parts.
 - **Confirmed append highlighting** — appended cell text is marked green in both the source cell and the Combined prompt (editable “premade” segments). Editing a Combined segment so it no longer matches its linked cell clears green on both sides
 - **Combined prompt** — editable pane with **Copy** to clipboard and **Clear**
 - **Status / under-the-hood log** — click the status line for a full-width-friendly event panel; long log lines wrap so the window does not need stretching
+- **Window orientation** — remembers the BrowserWindow position/size (including half-screen snap/dock) plus maximized/fullscreen across restarts via `userData/window-state.json`; restores on launch and skips off-screen coordinates if the display layout changed
 - **Persistence / autosave** — edits debounce (~250ms) and autosave open documents. Session state lives in Electron `userData` (`click2copy-session.json`). Untitled docs also mirror readable `latest-autosave.c2copy` + `latest-autosave.json` into `userData/backups/` **and** `Documents/Click2Copy/` so you can open or recover them if the app breaks. After **Save As**, autosave writes to that named `.c2copy` path (not a surprise alternate file).
 - **Export / Import** — backup and restore all tabs + combined prompt as JSON (survives app updates; userData is outside the repo). Legacy backups with a single `content` string per tab are migrated into cell `[0]` of a 3×8 grid. You can also File → Open the recoverable `latest-autosave.c2copy` from the backup folders.
 - **Self-refresh after pull** — watches app source files under the install folder (`package.json`, `main.js`, `preload.js`, `renderer.js`, `index.html`, `styles.css`). After an external `git pull` (or any disk change to those files), a light **Update ready — Restart** banner appears; Restart calls Electron `app.relaunch()` + quit. User-data / Documents autosaves are not watched.
@@ -57,7 +58,7 @@ This launches Electron with the Click2Copy window.
 
 | File | Role |
 |------|------|
-| `main.js` | Electron main process (window + JSON persistence) |
+| `main.js` | Electron main process (window state + JSON persistence) |
 | `preload.js` | Secure bridge for load/save IPC |
 | `index.html` | UI structure |
 | `styles.css` | Dark, practical styling |

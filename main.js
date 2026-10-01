@@ -1,9 +1,14 @@
-const { app, BrowserWindow, ipcMain, dialog, Menu } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, Menu, screen } = require('electron');
 const path = require('path');
 const fs = require('fs');
 
 const STORE_FILE = 'click2copy-data.json';
 const SESSION_FILE = 'click2copy-session.json';
+const WINDOW_STATE_FILE = 'window-state.json';
+const DEFAULT_WINDOW_WIDTH = 1440;
+const DEFAULT_WINDOW_HEIGHT = 720;
+const MIN_WINDOW_WIDTH = 960;
+const MIN_WINDOW_HEIGHT = 520;
 const DOCUMENT_EXTENSION = 'c2copy';
 const DOCUMENT_FORMAT = 'click2copy-document';
 const DOCUMENT_VERSION = 1;
@@ -656,23 +661,168 @@ function startSourceWatcher() {
   }
 }
 
+
+function windowStatePath() {
+  return path.join(app.getPath('userData'), WINDOW_STATE_FILE);
+}
+
+function defaultWindowState() {
+  return {
+    width: DEFAULT_WINDOW_WIDTH,
+    height: DEFAULT_WINDOW_HEIGHT,
+    isMaximized: false,
+    isFullScreen: false
+  };
+}
+
+function readStoredWindowState() {
+  try {
+    const raw = fs.readFileSync(windowStatePath(), 'utf8');
+    const data = JSON.parse(raw);
+    if (!data || typeof data !== 'object') return null;
+    return data;
+  } catch (err) {
+    return null;
+  }
+}
+
+function boundsOverlapDisplay(bounds, display) {
+  const area = display.workArea || display.bounds;
+  const right = bounds.x + bounds.width;
+  const bottom = bounds.y + bounds.height;
+  const areaRight = area.x + area.width;
+  const areaBottom = area.y + area.height;
+  return !(right <= area.x || bounds.x >= areaRight || bottom <= area.y || bounds.y >= areaBottom);
+}
+
+function sanitizeWindowState(raw) {
+  const fallback = defaultWindowState();
+  if (!raw || typeof raw !== 'object') return fallback;
+
+  const width = Number.isFinite(raw.width)
+    ? Math.max(MIN_WINDOW_WIDTH, Math.round(raw.width))
+    : fallback.width;
+  const height = Number.isFinite(raw.height)
+    ? Math.max(MIN_WINDOW_HEIGHT, Math.round(raw.height))
+    : fallback.height;
+
+  const state = {
+    width,
+    height,
+    isMaximized: !!raw.isMaximized,
+    isFullScreen: !!raw.isFullScreen
+  };
+
+  const hasPos = Number.isFinite(raw.x) && Number.isFinite(raw.y);
+  if (hasPos) {
+    state.x = Math.round(raw.x);
+    state.y = Math.round(raw.y);
+    try {
+      const displays = screen.getAllDisplays();
+      const visible = displays.some((d) => boundsOverlapDisplay(state, d));
+      if (!visible) {
+        delete state.x;
+        delete state.y;
+      }
+    } catch (err) {
+      delete state.x;
+      delete state.y;
+    }
+  }
+
+  return state;
+}
+
+function loadWindowState() {
+  return sanitizeWindowState(readStoredWindowState());
+}
+
+function captureWindowState(win) {
+  if (!win || win.isDestroyed()) return null;
+  const isMaximized = win.isMaximized();
+  const isFullScreen = win.isFullScreen();
+  // Prefer normal (restored) bounds when maximized/fullscreen so snap/half-screen size returns correctly.
+  const bounds =
+    typeof win.getNormalBounds === 'function' && (isMaximized || isFullScreen)
+      ? win.getNormalBounds()
+      : win.getBounds();
+  return {
+    x: bounds.x,
+    y: bounds.y,
+    width: bounds.width,
+    height: bounds.height,
+    isMaximized,
+    isFullScreen
+  };
+}
+
+function saveWindowState(win) {
+  const state = captureWindowState(win);
+  if (!state) return;
+  try {
+    fs.writeFileSync(windowStatePath(), JSON.stringify(state, null, 2), 'utf8');
+  } catch (err) {
+    console.error('Failed to save window state:', err);
+  }
+}
+
+function trackWindowState(win) {
+  let saveTimer = null;
+  const scheduleSave = () => {
+    if (saveTimer) clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => {
+      saveTimer = null;
+      saveWindowState(win);
+    }, 200);
+  };
+
+  win.on('resize', scheduleSave);
+  win.on('move', scheduleSave);
+  win.on('maximize', scheduleSave);
+  win.on('unmaximize', scheduleSave);
+  win.on('enter-full-screen', scheduleSave);
+  win.on('leave-full-screen', scheduleSave);
+  win.on('close', () => {
+    if (saveTimer) {
+      clearTimeout(saveTimer);
+      saveTimer = null;
+    }
+    saveWindowState(win);
+  });
+}
+
 function getParentWindow() {
   return mainWindow || BrowserWindow.getFocusedWindow();
 }
 
 function createWindow() {
-  mainWindow = new BrowserWindow({
-    width: 1440,
-    height: 720,
-    minWidth: 960,
-    minHeight: 520,
+  const windowState = loadWindowState();
+  const options = {
+    width: windowState.width,
+    height: windowState.height,
+    minWidth: MIN_WINDOW_WIDTH,
+    minHeight: MIN_WINDOW_HEIGHT,
     title: `Click2Copy v${app.getVersion()}`,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false
     }
-  });
+  };
+  if (Number.isFinite(windowState.x) && Number.isFinite(windowState.y)) {
+    options.x = windowState.x;
+    options.y = windowState.y;
+  }
+
+  mainWindow = new BrowserWindow(options);
+
+  if (windowState.isFullScreen) {
+    mainWindow.setFullScreen(true);
+  } else if (windowState.isMaximized) {
+    mainWindow.maximize();
+  }
+
+  trackWindowState(mainWindow);
 
   mainWindow.loadFile('index.html');
   mainWindow.webContents.once('did-finish-load', () => {
