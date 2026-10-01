@@ -64,11 +64,14 @@
   /** UI-only Column A value filter: null = all values; Set of trimmed strings ('' = blank) */
   let col1ValueFilter = null;
   let col1FilterMenuOpen = false;
-  /** UI-only Master insert picker: null = all col1 values; Set of trimmed strings */
-  let masterLibValueFilter = null;
+  /** UI-only Master insert filter menu open (ephemeral; not per-tab) */
   let masterLibFilterMenuOpen = false;
-  /** UI-only Master insert display sort: null | 'asc' | 'desc' (does not mutate Master) */
-  let masterLibSortDir = null;
+  /**
+   * Per-part-tab Master insert prefs (UI-only, not persisted).
+   * Keyed by part tab id → { valueFilter: null|Set, sortDir: null|'asc'|'desc' }.
+   * Switching part tabs restores that tab's Values selection and A–Z sort.
+   */
+  const masterLibPrefsByPartId = Object.create(null);
   /** UI-only Tools tab — not stored in document tabs; acts on lastPartTabId */
   let toolsTabActive = false;
   let lastPartTabId = null;
@@ -2696,6 +2699,7 @@
 
   function applyData(data) {
     focusedCell = null;
+    clearMasterLibPrefs();
     const tabs = [];
     for (let i = 0; i < data.tabs.length; i++) {
       const n = normalizeTab(data.tabs[i]);
@@ -3180,6 +3184,34 @@
     return false;
   }
 
+
+  function masterLibPrefsPartId() {
+    const tab = activeTab();
+    if (tab && !isMasterTab(tab)) return tab.id;
+    return lastPartTabId;
+  }
+
+  function getMasterLibPrefs(partId) {
+    const id = partId || masterLibPrefsPartId();
+    if (!id) return { valueFilter: null, sortDir: null };
+    let prefs = masterLibPrefsByPartId[id];
+    if (!prefs) {
+      prefs = { valueFilter: null, sortDir: null };
+      masterLibPrefsByPartId[id] = prefs;
+    }
+    return prefs;
+  }
+
+  function clearMasterLibPrefs() {
+    Object.keys(masterLibPrefsByPartId).forEach(function (key) {
+      delete masterLibPrefsByPartId[key];
+    });
+  }
+
+  function clearMasterLibPrefsForPart(partId) {
+    if (partId) delete masterLibPrefsByPartId[partId];
+  }
+
   function uniqueMasterLibCol1Values(master) {
     const seen = Object.create(null);
     const values = [];
@@ -3201,8 +3233,9 @@
   }
 
   function isMasterLibValueSelected(value) {
-    if (masterLibValueFilter === null) return true;
-    return masterLibValueFilter.has(value);
+    const filter = getMasterLibPrefs().valueFilter;
+    if (filter === null) return true;
+    return filter.has(value);
   }
 
   function setMasterLibValueFilterSelection(selectedValues, allValues) {
@@ -3223,7 +3256,7 @@
         }
       }
     }
-    masterLibValueFilter = allOn ? null : new Set(selected);
+    getMasterLibPrefs().valueFilter = allOn ? null : new Set(selected);
     renderMasterLibrary();
   }
 
@@ -3239,11 +3272,12 @@
   function syncMasterLibFilterControls() {
     const btn = el.masterLibraryItems && el.masterLibraryItems.querySelector('.master-library-filter-btn');
     if (!btn) return;
-    const active = masterLibValueFilter !== null;
+    const prefs = getMasterLibPrefs();
+    const active = prefs.valueFilter !== null;
     btn.classList.toggle('is-active', active);
     btn.setAttribute('aria-pressed', active ? 'true' : 'false');
     btn.setAttribute('aria-expanded', masterLibFilterMenuOpen ? 'true' : 'false');
-    const count = masterLibValueFilter ? masterLibValueFilter.size : 0;
+    const count = prefs.valueFilter ? prefs.valueFilter.size : 0;
     btn.title = active
       ? ('Master Column A value filter on (' + count + ' selected) — click to change')
       : 'Filter Master parts by Column A values';
@@ -3255,8 +3289,8 @@
     }
     const asc = el.masterLibraryItems.querySelector('.master-library-sort-asc');
     const desc = el.masterLibraryItems.querySelector('.master-library-sort-desc');
-    if (asc) asc.classList.toggle('is-active', masterLibSortDir === 'asc');
-    if (desc) desc.classList.toggle('is-active', masterLibSortDir === 'desc');
+    if (asc) asc.classList.toggle('is-active', prefs.sortDir === 'asc');
+    if (desc) desc.classList.toggle('is-active', prefs.sortDir === 'desc');
   }
 
   function buildMasterLibFilterMenu(master, menu) {
@@ -3273,7 +3307,7 @@
     selectAll.addEventListener('click', function (e) {
       e.preventDefault();
       e.stopPropagation();
-      masterLibValueFilter = null;
+      getMasterLibPrefs().valueFilter = null;
       renderMasterLibrary();
       setStatus('Showing all Master Column A values', 'ok');
     });
@@ -3285,7 +3319,7 @@
     clearBtn.addEventListener('click', function (e) {
       e.preventDefault();
       e.stopPropagation();
-      masterLibValueFilter = new Set();
+      getMasterLibPrefs().valueFilter = new Set();
       renderMasterLibrary();
       setStatus('Master Column A filter cleared (none selected)', 'ok');
     });
@@ -3325,9 +3359,10 @@
           }
           masterLibFilterMenuOpen = true;
           setMasterLibValueFilterSelection(selected, values);
-          const n = masterLibValueFilter === null ? values.length : masterLibValueFilter.size;
+          const filter = getMasterLibPrefs().valueFilter;
+          const n = filter === null ? values.length : filter.size;
           setStatus(
-            masterLibValueFilter === null
+            filter === null
               ? 'Showing all Master Column A values'
               : ('Showing ' + n + ' Master Column A value' + (n === 1 ? '' : 's')),
             'ok'
@@ -3359,13 +3394,14 @@
 
   function setMasterLibSortDir(dir) {
     if (dir !== 'asc' && dir !== 'desc') return;
-    masterLibSortDir = masterLibSortDir === dir ? null : dir;
+    const prefs = getMasterLibPrefs();
+    prefs.sortDir = prefs.sortDir === dir ? null : dir;
     masterLibFilterMenuOpen = false;
     renderMasterLibrary();
     setStatus(
-      masterLibSortDir === 'desc'
+      prefs.sortDir === 'desc'
         ? 'Master insert sorted Z–A by Column A'
-        : masterLibSortDir === 'asc'
+        : prefs.sortDir === 'asc'
           ? 'Master insert sorted A–Z by Column A'
           : 'Master insert sort cleared (Master order)',
       'ok'
@@ -3474,15 +3510,16 @@
       if (masterRowHasContent(master, row)) rows.push(row);
     }
 
-    if (masterLibValueFilter !== null) {
+    const prefs = getMasterLibPrefs(current.id);
+    if (prefs.valueFilter !== null) {
       rows = rows.filter(function (row) {
         const v = (master.cells[row * master.cols] || '').trim();
-        return masterLibValueFilter.has(v);
+        return prefs.valueFilter.has(v);
       });
     }
 
-    if (masterLibSortDir === 'asc' || masterLibSortDir === 'desc') {
-      const dir = masterLibSortDir;
+    if (prefs.sortDir === 'asc' || prefs.sortDir === 'desc') {
+      const dir = prefs.sortDir;
       rows = rows.slice().sort(function (a, b) {
         const va = (master.cells[a * master.cols] || '').trim();
         const vb = (master.cells[b * master.cols] || '').trim();
@@ -3503,7 +3540,7 @@
     if (!rows.length) {
       const empty = document.createElement('span');
       empty.className = 'master-library-empty';
-      empty.textContent = masterLibValueFilter !== null
+      empty.textContent = prefs.valueFilter !== null
         ? 'No Master parts match the Column A Values filter.'
         : 'Add reusable text in the Master part first.';
       el.masterLibraryItems.appendChild(empty);
@@ -5727,6 +5764,7 @@
     state.tabs.splice(idx, 1);
     delete state.partPrompts[id];
     dropLinksForTab(id);
+    clearMasterLibPrefsForPart(id);
     if (state.activeTabId === id) {
       const next = state.tabs[Math.min(idx, state.tabs.length - 1)];
       state.activeTabId = next.id;
