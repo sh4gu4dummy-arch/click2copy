@@ -4402,17 +4402,25 @@
     setCellMasterLock(tab, index, masterIdx);
     focusedCell = { tabId: tab.id, index: index };
     revalidateLinksForCell(tab.id, index, { silent: true });
+    // Auto-check Combined for the inserted cell (no-op if already included).
+    historySuspended = true;
+    try {
+      ensureCellConfirmedState(index, true, { quiet: true });
+    } finally {
+      historySuspended = false;
+    }
     renderTabs();
     renderGrid();
     renderCombinedPrompt();
+    applyConfirmedCellHighlights();
     renderMasterLibrary();
     scheduleSave();
     const cell = el.cellGrid.querySelector('textarea.cell[data-idx="' + index + '"]');
     if (cell) cell.focus();
     setStatus(
       usedFirstCellFallback
-        ? 'Added Master text to ' + tab.title + ' (replaced the first cell; locked until double-click unlock)'
-        : 'Added Master text to ' + tab.title + ' (locked until double-click unlock)',
+        ? 'Added Master text to ' + tab.title + ' (replaced the first cell; Combined checked; locked until double-click unlock)'
+        : 'Added Master text to ' + tab.title + ' (Combined checked; locked until double-click unlock)',
       'ok'
     );
   }
