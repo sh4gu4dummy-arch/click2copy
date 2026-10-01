@@ -125,6 +125,19 @@
     </section>
   </div>
 
+
+  <div id="master-segment-dialog" class="modal-overlay" hidden role="dialog" aria-modal="true" aria-labelledby="master-segment-dialog-title">
+    <div class="modal-card">
+      <h2 id="master-segment-dialog-title" class="modal-title">Master segment edited</h2>
+      <p class="modal-body">Overwrite the Master library (and other tabs using that Master text), keep this as local Combined text only, or cancel and discard the edit?</p>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-primary" id="btn-master-overwrite">Overwrite Master</button>
+        <button type="button" class="btn btn-secondary" id="btn-master-keep-local">Keep as local only</button>
+        <button type="button" class="btn btn-secondary" id="btn-master-cancel-edit">Cancel</button>
+      </div>
+    </div>
+  </div>
+
   <script src="renderer.js"></script>
 </body>
 </html>

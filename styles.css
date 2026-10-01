@@ -13,6 +13,9 @@
   --confirmed-bg: rgba(34, 197, 94, 0.18);
   --confirmed-bg-strong: rgba(34, 197, 94, 0.28);
   --confirmed-border: rgba(34, 197, 94, 0.45);
+  --master-edit: #f59e0b;
+  --master-edit-bg: rgba(245, 158, 11, 0.22);
+  --master-edit-border: rgba(245, 158, 11, 0.85);
   --radius: 8px;
   --font: "Segoe UI", system-ui, -apple-system, sans-serif;
   --cell-min-h: 64px;
@@ -1230,6 +1233,62 @@ body.relocating-cell * {
   margin: 0 1px;
   -webkit-box-decoration-break: clone;
   box-decoration-break: clone;
+}
+
+.confirmed-segment.master-segment-locked {
+  border: 2px solid var(--confirmed);
+  box-shadow: inset 0 0 0 1px rgba(34, 197, 94, 0.2), 0 0 0 1px rgba(34, 197, 94, 0.35);
+  cursor: default;
+}
+
+.confirmed-segment.master-segment-editing {
+  background: var(--master-edit-bg);
+  border: 2px solid var(--master-edit-border);
+  box-shadow: inset 0 0 0 1px rgba(245, 158, 11, 0.25), 0 0 0 1px rgba(245, 158, 11, 0.4);
+  outline: none;
+}
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(0, 0, 0, 0.55);
+}
+
+.modal-overlay[hidden] {
+  display: none !important;
+}
+
+.modal-card {
+  width: min(440px, 100%);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.45);
+  padding: 18px 18px 16px;
+}
+
+.modal-title {
+  margin: 0 0 8px;
+  font-size: 1.05rem;
+  font-weight: 650;
+}
+
+.modal-body {
+  margin: 0 0 16px;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.modal-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
 }
 
 .master-library-cell.cell-confirmed {
