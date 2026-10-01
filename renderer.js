@@ -1468,13 +1468,24 @@
   function refitRowHeightAt(row) {
     const tab = activeTab();
     if (!tab || !el.cellGrid || row < 0 || row >= tab.rows) return;
-    let maxH = MIN_ROW_HEIGHT;
     const wraps = el.cellGrid.querySelectorAll('.cell-wrap[data-row="' + row + '"]');
+    for (let i = 0; i < wraps.length; i++) prepareWrapWidthsForFitMeasure(wraps[i]);
+    let maxH = MIN_ROW_HEIGHT;
     for (let i = 0; i < wraps.length; i++) {
       const stackH = measureCellStackHeight(wraps[i], tab);
       if (stackH > maxH) maxH = stackH;
     }
     applyHeightToGridRow(row, maxH);
+    // Grow once more after apply so overflow:hidden wrap widths are final.
+    let maxH2 = maxH;
+    for (let i = 0; i < wraps.length; i++) {
+      const stackH = measureCellStackHeight(wraps[i], tab);
+      if (stackH > maxH2) maxH2 = stackH;
+    }
+    if (maxH2 > maxH) {
+      maxH = maxH2;
+      applyHeightToGridRow(row, maxH);
+    }
     if (Array.isArray(tab.rowHeights)) {
       ensureRowHeightsLength(tab);
       tab.rowHeights[row] = maxH;
@@ -1576,6 +1587,7 @@
     nest.pages[page] = e.target.value;
     liveSyncConfirmedLinksForCell(tab.id, idx, nestIdx);
     refreshNestConfirmedUi(idx, nestIdx, e.target);
+    maybeLiveRefitRowFromInput(Math.floor(idx / tab.cols));
     scheduleSave();
   }
 
@@ -1613,6 +1625,7 @@
     nest.pages.push('');
     nest.page = nest.pages.length - 1;
     renderGrid();
+    refitRowHeightAt(Math.floor(cellIndex / tab.cols));
     scheduleSave();
     const nestTa = el.cellGrid.querySelector(
       'textarea.cell-nest-input[data-idx="' + cellIndex + '"][data-nest="' + nestIndex + '"]'
@@ -3687,6 +3700,8 @@
 
   /** Match .cell-wrap gutter column (26px). */
   const CELL_WRAP_GUTTER_W = 26;
+  /** Match .cell-wrap border-right (border-box shrinks the textarea track). */
+  const CELL_WRAP_BORDER_X = 1;
   /** Match .cell-nest-input min-height. */
   const NEST_INPUT_MIN_H = 36;
   /**
@@ -3694,33 +3709,59 @@
    * Chrome sits BESIDE the nest textarea, so nest row height is max(chrome, textarea).
    */
   const NEST_CHROME_FALLBACK_H = 104;
+  /** .cell-nest border top+bottom (border-box); must be in stack math or overflow:hidden clips. */
+  const NEST_BORDER_Y = 2;
+  /**
+   * Nest textarea is inset by margin-left 12 + margin-right 4 + nest borders 2 +
+   * chrome column (~25: pad+18px controls+border). Slightly conservative vs live width.
+   */
+  const NEST_WIDTH_INSET = 44;
   const NESTS_TOP_BORDER = 1;
   const NESTS_BOTTOM_PAD = 4;
   const NESTS_GAP = 2;
+  /** Subpixel / rounding pad so fitted rows do not clip the last line. */
+  const FIT_HEIGHT_PAD = 2;
+
   /**
-   * Width used for wrap measure. Prefer offsetWidth / border-box width: Fit applies
-   * overflow-y:hidden so text wraps at the full cell width (not clientWidth narrowed
-   * by a scrollbar/resize gutter). Using clientWidth here would over-size rows;
-   * using full width without clearing overflow would under-size and clip.
+   * Width used for wrap measure. Prefer live border-box width after overflow-y:hidden
+   * (Fit clears scrollbars so text wraps at the full cell width). clientWidth while a
+   * scrollbar is visible would over-size; a too-wide fallback under-sizes and clips.
    */
   function textareaWrapWidth(ta, fallbackWidth) {
     if (ta) {
       const ow = ta.offsetWidth || (ta.getBoundingClientRect && ta.getBoundingClientRect().width) || 0;
-      if (ow > 0) return ow;
+      if (ow > 0) return Math.floor(ow);
     }
-    return Math.max(40, fallbackWidth || DEFAULT_COLUMN_WIDTH);
+    return Math.max(40, Math.floor(fallbackWidth || DEFAULT_COLUMN_WIDTH));
   }
 
   function columnCellWrapWidth(tab, col) {
     const colW = columnWidthForMeasure(tab, col);
-    // Full textarea border-box width inside cell-wrap (gutter only; overflow hidden on fit).
-    return Math.max(40, colW - CELL_WRAP_GUTTER_W);
+    // Textarea track inside cell-wrap: column width − gutter − wrap border-right.
+    return Math.max(40, colW - CELL_WRAP_GUTTER_W - CELL_WRAP_BORDER_X);
+  }
+
+  function nestTextareaFallbackWidth(parentWrapW) {
+    return Math.max(40, parentWrapW - NEST_WIDTH_INSET);
+  }
+
+  /**
+   * Before measuring, hide overflow on live textareas so offsetWidth matches the
+   * post-fit wrap width (no scrollbar gutter). Does not change heights yet.
+   */
+  function prepareWrapWidthsForFitMeasure(scopeEl) {
+    const root = scopeEl || el.cellGrid;
+    if (!root) return;
+    const nodes = root.querySelectorAll('textarea.cell, textarea.cell-nest-input');
+    for (let i = 0; i < nodes.length; i++) {
+      nodes[i].style.overflowY = 'hidden';
+    }
   }
 
   /**
    * Measure wrapped content height for a cell/nest textarea (or raw text).
    * Off-DOM clone so filtered (display:none) rows still measure; width must be the
-   * wrap/client width (same font/padding via className).
+   * border-box wrap width (same font/padding via className).
    */
   function measureTextareaContentHeight(ta, className, widthPx, options) {
     options = options || {};
@@ -3728,7 +3769,8 @@
     const text = options.text != null
       ? String(options.text)
       : (ta && ta.value != null ? String(ta.value) : '');
-    if (!(widthPx > 0)) return minH;
+    const width = Math.floor(widthPx);
+    if (!(width > 0)) return minH;
     const helper = document.createElement('textarea');
     helper.className = className || 'cell';
     helper.setAttribute('aria-hidden', 'true');
@@ -3736,11 +3778,27 @@
     helper.rows = 1;
     helper.value = text;
     helper.style.cssText =
-      'position:absolute;left:-99999px;top:0;height:0;min-height:0;' +
-      'overflow:hidden;visibility:hidden;resize:none;box-sizing:border-box;';
-    helper.style.width = widthPx + 'px';
+      'position:absolute;left:-99999px;top:0;height:0;min-height:0;max-height:none;' +
+      'overflow:hidden;visibility:hidden;resize:none;box-sizing:border-box;' +
+      'flex:none;white-space:pre-wrap;overflow-wrap:break-word;';
+    helper.style.width = width + 'px';
+    // Mirror live padding/font when available so class-only measure cannot drift.
+    if (ta && window.getComputedStyle) {
+      try {
+        const cs = window.getComputedStyle(ta);
+        if (cs) {
+          helper.style.font = cs.font;
+          helper.style.letterSpacing = cs.letterSpacing;
+          helper.style.padding = cs.padding;
+          helper.style.border = cs.border;
+          helper.style.lineHeight = cs.lineHeight;
+          helper.style.boxSizing = cs.boxSizing || 'border-box';
+        }
+      } catch (err) { /* ignore */ }
+    }
     document.body.appendChild(helper);
-    const needed = Math.max(minH, helper.scrollHeight);
+    // Force layout; height:0 + scrollHeight is the standard wrap measure.
+    const needed = Math.max(minH, Math.ceil(helper.scrollHeight) + FIT_HEIGHT_PAD);
     document.body.removeChild(helper);
     return needed;
   }
@@ -3757,7 +3815,7 @@
     const chrome = nestEl.querySelector('.cell-nest-chrome');
     if (chrome) {
       const h = chrome.getBoundingClientRect().height || chrome.offsetHeight;
-      if (h > 0) return h;
+      if (h > 0) return Math.ceil(h);
     }
     return NEST_CHROME_FALLBACK_H;
   }
@@ -3788,9 +3846,16 @@
     return maxH;
   }
 
+  /** Outer nest row height: max(chrome, tallest page) + top/bottom border (border-box). */
+  function measureNestOuterHeight(nestEl, nestModel, nestWidth) {
+    const chromeH = nestChromeHeight(nestEl);
+    const pageH = measureNestTallestPageHeight(nestEl, nestModel, nestWidth);
+    return Math.max(chromeH, pageH) + NEST_BORDER_Y;
+  }
+
   /**
    * Parent content height + nest block (chrome beside textarea → max, not sum;
-   * includes nests container border/padding/gaps; tallest nest page).
+   * includes nests container border/padding/gaps, per-nest borders, tallest page).
    */
   function measureCellStackHeight(wrap, tab) {
     if (!wrap) return MIN_ROW_HEIGHT;
@@ -3813,12 +3878,8 @@
       const nestEl = nestNodes[i];
       const nestTa = nestEl.querySelector('textarea.cell-nest-input');
       const parentWrapW = textareaWrapWidth(ta, columnCellWrapWidth(tab, col));
-      // Nest margins (12+4) + chrome column (~24) + borders shrink nest textarea.
-      const nestFallback = Math.max(40, parentWrapW - 40);
-      const nestWidth = textareaWrapWidth(nestTa, nestFallback);
-      const chromeH = nestChromeHeight(nestEl);
-      const pageH = measureNestTallestPageHeight(nestEl, nestModels[i], nestWidth);
-      nestsBlock += Math.max(chromeH, pageH);
+      const nestWidth = textareaWrapWidth(nestTa, nestTextareaFallbackWidth(parentWrapW));
+      nestsBlock += measureNestOuterHeight(nestEl, nestModels[i], nestWidth);
     }
     return total + nestsBlock;
   }
@@ -3828,6 +3889,9 @@
     const h = Math.max(1, heightPx);
     ta.style.height = h + 'px';
     ta.style.minHeight = h + 'px';
+    ta.style.maxHeight = 'none';
+    // Prevent flex shrink from fighting pinned heights inside .cell-stack.
+    ta.style.flex = '0 0 auto';
     // Avoid a residual scrollbar re-narrowing wrap width after fit.
     ta.style.overflowY = 'hidden';
   }
@@ -3841,6 +3905,7 @@
       const wrap = wraps[w];
       wrap.style.minHeight = h + 'px';
       wrap.style.height = h + 'px';
+      wrap.style.maxHeight = h + 'px';
       const ta = wrap.querySelector('textarea.cell');
       const nestNodes = wrap.querySelectorAll('.cell-nest');
       const cellIdx = ta ? parseInt(ta.dataset.idx, 10) : -1;
@@ -3851,12 +3916,15 @@
         const nestEl = nestNodes[n];
         const nt = nestEl.querySelector('textarea.cell-nest-input');
         const parentWrapW = textareaWrapWidth(ta, columnCellWrapWidth(tab, col));
-        const nestWidth = textareaWrapWidth(nt, Math.max(40, parentWrapW - 40));
+        const nestWidth = textareaWrapWidth(nt, nestTextareaFallbackWidth(parentWrapW));
         const chromeH = nestChromeHeight(nestEl);
         const pageH = measureNestTallestPageHeight(nestEl, nestModels[n], nestWidth);
-        const nestRowH = Math.max(chromeH, pageH);
+        const nestInnerH = Math.max(chromeH, pageH);
+        const nestOuterH = nestInnerH + NEST_BORDER_Y;
         if (nt) setTextareaFittedHeight(nt, pageH);
-        nestEl.style.minHeight = nestRowH + 'px';
+        nestEl.style.minHeight = nestOuterH + 'px';
+        nestEl.style.height = nestOuterH + 'px';
+        nestEl.style.maxHeight = nestOuterH + 'px';
       }
 
       if (ta) {
@@ -3878,9 +3946,21 @@
   function applyPersistedRowHeights(tab) {
     const heights = normalizeRowHeights(tab && tab.rowHeights, tab && tab.rows);
     if (!heights) return;
+    prepareWrapWidthsForFitMeasure(el.cellGrid);
     for (let r = 0; r < heights.length; r++) {
       applyHeightToGridRow(r, heights[r]);
     }
+  }
+
+  /**
+   * Re-measure one row and persist when Fit has been used (rowHeights set).
+   * Safe/cheap live path after typing so content does not clip again.
+   */
+  function maybeLiveRefitRowFromInput(row) {
+    const tab = activeTab();
+    if (!tab || !Array.isArray(tab.rowHeights)) return;
+    if (row < 0 || row >= tab.rows) return;
+    refitRowHeightAt(row);
   }
 
   /** One-click: size every row to its tallest cell content on the active tab grid. */
@@ -3888,6 +3968,8 @@
     const tab = activeTab();
     if (!tab || !el.cellGrid) return;
     pushHistory();
+    // Match post-fit wrap widths before measuring (no scrollbar gutter).
+    prepareWrapWidthsForFitMeasure(el.cellGrid);
     const heights = [];
     for (let r = 0; r < tab.rows; r++) {
       let maxH = MIN_ROW_HEIGHT;
@@ -3896,10 +3978,22 @@
         const stackH = measureCellStackHeight(wraps[i], tab);
         if (stackH > maxH) maxH = stackH;
       }
-      // Also measure from model when a row has no DOM wraps (should not happen) or
-      // filtered wraps still present — querySelectorAll includes display:none.
       heights.push(maxH);
       applyHeightToGridRow(r, maxH);
+    }
+    // Second pass: after heights + overflow:hidden are applied, grow any still-short rows.
+    prepareWrapWidthsForFitMeasure(el.cellGrid);
+    for (let r = 0; r < tab.rows; r++) {
+      let maxH = heights[r];
+      const wraps = el.cellGrid.querySelectorAll('.cell-wrap[data-row="' + r + '"]');
+      for (let i = 0; i < wraps.length; i++) {
+        const stackH = measureCellStackHeight(wraps[i], tab);
+        if (stackH > maxH) maxH = stackH;
+      }
+      if (maxH > heights[r]) {
+        heights[r] = maxH;
+        applyHeightToGridRow(r, maxH);
+      }
     }
     tab.rowHeights = heights;
     scheduleSave();
@@ -5533,6 +5627,8 @@
     if (wrap) wrap.classList.toggle('cell-confirmed', confirmed);
     applyAppendCheckedState();
     if (isMasterTab(tab)) renderMasterLibrary();
+    const row = Math.floor(idx / tab.cols);
+    maybeLiveRefitRowFromInput(row);
     scheduleSave();
   }
 

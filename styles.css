@@ -808,7 +808,8 @@ body.resizing-columns * {
   border-right: 1px solid var(--border);
   border-bottom: 1px solid var(--border);
   background: var(--bg);
-  /* When rowHeights pin wrap height, keep nests from spilling into the next row. */
+  /* When rowHeights pin wrap height, keep nests from spilling into the next row.
+     Fit must size height to the full stack or this clips parent/nest content. */
   overflow: hidden;
 }
 
@@ -1038,6 +1039,12 @@ body.relocating-cell * {
   min-width: 0;
   min-height: 0;
   height: 100%;
+}
+
+/* Fitted heights set flex:0 0 auto inline; keep default stack children from shrinking. */
+.cell-stack > .cell,
+.cell-stack .cell-nest-input {
+  flex-shrink: 0;
 }
 
 .cell-nests {
