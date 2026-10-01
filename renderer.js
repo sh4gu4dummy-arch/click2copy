@@ -6103,7 +6103,13 @@
       }
     }
 
-    if (!cellRangeDrag.mode && moved) {
+    // Stay in native text-select (I-beam) while the pointer remains in the
+    // starting cell. Multi-cell range / sticky block-relocate only begin once
+    // the drag actually crosses into another cell — that is what was hijacking
+    // in-cell character selection and flipping the cursor via body classes.
+    const leftStartCell =
+      row !== cellRangeDrag.startRow || col !== cellRangeDrag.startCol;
+    if (!cellRangeDrag.mode && moved && leftStartCell) {
       if (cellRangeDrag.fromStickyBlock) beginBlockRelocateDrag();
       else beginMultiCellRangeDrag();
     }
