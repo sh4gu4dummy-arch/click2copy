@@ -374,7 +374,7 @@
       partPrompts: Object.assign({}, state.partPrompts),
       separators: state.separators,
       confirmedLinks: state.confirmedLinks.map(function (link) {
-        return {
+        const out = {
           id: link.id,
           tabId: link.tabId,
           cellIndex: link.cellIndex,
@@ -383,6 +383,10 @@
           end: link.end,
           scope: link.scope
         };
+        if (Number.isInteger(link.nestIndex) && link.nestIndex >= 0) {
+          out.nestIndex = link.nestIndex;
+        }
+        return out;
       })
     };
   }
@@ -965,7 +969,8 @@
       const end = toNonNegInt(item.end);
       if (cellIndex === null || start === null || end === null || end < start) continue;
       const scope = typeof item.scope === 'string' && item.scope ? item.scope : 'global';
-      links.push({
+      const nestIndex = toNonNegInt(item.nestIndex);
+      const link = {
         id: item.id,
         tabId: item.tabId,
         cellIndex: cellIndex,
@@ -973,7 +978,9 @@
         start: start,
         end: end,
         scope: scope
-      });
+      };
+      if (nestIndex !== null) link.nestIndex = nestIndex;
+      links.push(link);
     }
     return links;
   }
@@ -1020,14 +1027,36 @@
       .sort(function (a, b) { return a.start - b.start; });
   }
 
+  /** nestIndex on a link: integer >= 0 means nest; otherwise parent cell. */
+  function linkNestIndex(link) {
+    if (!link) return null;
+    return Number.isInteger(link.nestIndex) && link.nestIndex >= 0 ? link.nestIndex : null;
+  }
+
   function sourceCellText(tabId, cellIndex) {
     const tab = state.tabs.find(function (t) { return t.id === tabId; });
     if (!tab || cellIndex < 0 || cellIndex >= tab.cells.length) return null;
-    return cellCombinedText(tab, cellIndex);
+    return cellParentText(tab, cellIndex);
+  }
+
+  function sourceNestText(tabId, cellIndex, nestIndex) {
+    const tab = state.tabs.find(function (t) { return t.id === tabId; });
+    if (!tab || cellIndex < 0 || cellIndex >= tab.cells.length) return null;
+    if (!Number.isInteger(nestIndex) || nestIndex < 0) return null;
+    const nests = getCellNests(tab, cellIndex);
+    if (nestIndex >= nests.length) return null;
+    return nestExportText(nests[nestIndex]);
+  }
+
+  function sourceLinkText(link) {
+    if (!link) return null;
+    const nestIdx = linkNestIndex(link);
+    if (nestIdx === null) return sourceCellText(link.tabId, link.cellIndex);
+    return sourceNestText(link.tabId, link.cellIndex, nestIdx);
   }
 
   function linkMatchesSource(link, segmentText) {
-    const expected = sourceCellText(link.tabId, link.cellIndex);
+    const expected = sourceLinkText(link);
     if (expected === null) return false;
     return String(segmentText) === expected;
   }
@@ -1040,7 +1069,29 @@
   function isCellConfirmedInScope(tabId, cellIndex, scope) {
     const target = scope || currentPromptScope();
     return state.confirmedLinks.some(function (link) {
-      return link.tabId === tabId && link.cellIndex === cellIndex && link.scope === target;
+      return link.tabId === tabId && link.cellIndex === cellIndex &&
+        link.scope === target && linkNestIndex(link) === null;
+    });
+  }
+
+  function isNestConfirmed(tabId, cellIndex, nestIndex) {
+    return isNestConfirmedInScope(tabId, cellIndex, nestIndex, currentPromptScope());
+  }
+
+  function isNestConfirmedInScope(tabId, cellIndex, nestIndex, scope) {
+    if (!Number.isInteger(nestIndex) || nestIndex < 0) return false;
+    const target = scope || currentPromptScope();
+    return state.confirmedLinks.some(function (link) {
+      return link.tabId === tabId && link.cellIndex === cellIndex &&
+        link.scope === target && linkNestIndex(link) === nestIndex;
+    });
+  }
+
+  function linksForNestInScope(tabId, cellIndex, nestIndex, scope) {
+    const target = scope || currentPromptScope();
+    return state.confirmedLinks.filter(function (link) {
+      return link.scope === target && link.tabId === tabId &&
+        link.cellIndex === cellIndex && linkNestIndex(link) === nestIndex;
     });
   }
 
@@ -1049,7 +1100,7 @@
     if (!master || masterIdx < 0 || masterIdx >= master.cells.length) return false;
     const scope = currentPromptScope();
     if (isCellConfirmedInScope(master.id, masterIdx, scope)) return true;
-    const text = cellCombinedText(master, masterIdx);
+    const text = cellParentText(master, masterIdx);
     if (!text) return false;
     // Match by source text only within the active Combined scope — not across tabs.
     return state.confirmedLinks.some(function (link) {
@@ -1073,8 +1124,11 @@
     const scope = currentPromptScope();
     for (let c = 0; c < tab.cols; c++) {
       const idx = rowIndex * tab.cols + c;
-      if (!(tab.cells[idx] || '').trim()) continue;
       if (isCellConfirmedInScope(tab.id, idx, scope)) return true;
+      const nests = getCellNests(tab, idx);
+      for (let n = 0; n < nests.length; n++) {
+        if (isNestConfirmedInScope(tab.id, idx, n, scope)) return true;
+      }
     }
     return false;
   }
@@ -1217,27 +1271,67 @@
     tab.nestedCells[cellIndex] = normalizeNestList(nests);
   }
 
+  /** Parent cell text only (nests have their own Combined checkboxes). */
+  function cellParentText(tab, cellIndex) {
+    if (!tab || cellIndex < 0 || cellIndex >= tab.cells.length) return '';
+    return (tab.cells[cellIndex] || '').trim();
+  }
+
   /**
-   * Plain text used when a cell is sent to Combined: parent, then each nest's
-   * pages in order (all pages), joined by the row separator — nests are part of
-   * the same cell block.
+   * Legacy helper name: parent text for Combined. Nests append separately via
+   * their own confirmed links / nestIndex.
    */
   function cellCombinedText(tab, cellIndex) {
-    if (!tab || cellIndex < 0 || cellIndex >= tab.cells.length) return '';
-    const parts = [];
-    const parent = (tab.cells[cellIndex] || '').trim();
-    if (parent) parts.push(parent);
-    const nests = getCellNests(tab, cellIndex);
-    for (let i = 0; i < nests.length; i++) {
-      const nestText = nestExportText(nests[i]);
-      if (nestText) parts.push(nestText);
-    }
-    if (!parts.length) return '';
-    return parts.join(separatorValue(state.separators.row));
+    return cellParentText(tab, cellIndex);
   }
 
   function cellHasExportableContent(tab, cellIndex) {
-    return !!cellCombinedText(tab, cellIndex);
+    if (cellParentText(tab, cellIndex)) return true;
+    const nests = getCellNests(tab, cellIndex);
+    for (let i = 0; i < nests.length; i++) {
+      if (nestHasContent(nests[i])) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Confirmed pieces for one cell stack: parent (nestIndex omitted) then each
+   * non-empty nest, separated by the row separator.
+   */
+  function cellConfirmedPieces(tab, cellIndex, opts) {
+    const pieces = [];
+    if (!tab || cellIndex < 0 || cellIndex >= tab.cells.length) return pieces;
+    const scope = (opts && opts.scope) || currentPromptScope();
+    const skipConfirmed = !!(opts && opts.skipConfirmed);
+    const skipSlept = !!(opts && opts.skipSlept);
+    if (skipSlept && isCellSlept(tab, cellIndex)) return pieces;
+    const rowSep = separatorValue(state.separators.row);
+
+    const parent = cellParentText(tab, cellIndex);
+    if (parent && !(skipConfirmed && isCellConfirmedInScope(tab.id, cellIndex, scope))) {
+      pieces.push({
+        type: 'confirmed',
+        text: parent,
+        tabId: tab.id,
+        cellIndex: cellIndex
+      });
+    }
+
+    const nests = getCellNests(tab, cellIndex);
+    for (let n = 0; n < nests.length; n++) {
+      const nestText = nestExportText(nests[n]);
+      if (!nestText) continue;
+      if (skipConfirmed && isNestConfirmedInScope(tab.id, cellIndex, n, scope)) continue;
+      if (pieces.length) pieces.push({ type: 'plain', text: rowSep });
+      pieces.push({
+        type: 'confirmed',
+        text: nestText,
+        tabId: tab.id,
+        cellIndex: cellIndex,
+        nestIndex: n
+      });
+    }
+    return pieces;
   }
 
   function swapNestedCellIndices(tab, indexA, indexB) {
@@ -1295,6 +1389,34 @@
     setStatus('Added nest under R' + row + 'C' + col);
   }
 
+  function remapNestLinksAfterRemove(tabId, cellIndex, removedNestIndex) {
+    const byScope = {};
+    const toRemove = [];
+    state.confirmedLinks.forEach(function (link) {
+      if (link.tabId !== tabId || link.cellIndex !== cellIndex) return;
+      const ni = linkNestIndex(link);
+      if (ni === null) return;
+      if (ni === removedNestIndex) toRemove.push(link);
+    });
+    toRemove.forEach(function (link) {
+      if (!byScope[link.scope]) byScope[link.scope] = [];
+      byScope[link.scope].push(link);
+    });
+    Object.keys(byScope).forEach(function (scope) {
+      removeLinksFromCombined(byScope[scope]);
+    });
+    const removeIds = {};
+    for (let i = 0; i < toRemove.length; i++) removeIds[toRemove[i].id] = true;
+    state.confirmedLinks = state.confirmedLinks.filter(function (link) {
+      return !removeIds[link.id];
+    });
+    state.confirmedLinks.forEach(function (link) {
+      if (link.tabId !== tabId || link.cellIndex !== cellIndex) return;
+      const ni = linkNestIndex(link);
+      if (ni !== null && ni > removedNestIndex) link.nestIndex = ni - 1;
+    });
+  }
+
   function removeNestedCell(cellIndex, nestIndex) {
     const tab = activeTab();
     if (!tab || cellIndex < 0 || cellIndex >= tab.cells.length) return;
@@ -1302,6 +1424,7 @@
     const nests = tab.nestedCells[cellIndex];
     if (nestIndex < 0 || nestIndex >= nests.length) return;
     pushHistory();
+    remapNestLinksAfterRemove(tab.id, cellIndex, nestIndex);
     nests.splice(nestIndex, 1);
     revalidateLinksForCell(tab.id, cellIndex, { silent: true });
     renderGrid();
@@ -1314,16 +1437,13 @@
     setStatus('Removed nest from R' + row + 'C' + col);
   }
 
-  function refreshNestConfirmedUi(idx, nestEl) {
+  function refreshNestConfirmedUi(idx, nestIdx, nestEl) {
     const tab = activeTab();
     if (!tab) return;
-    const confirmed = isCellConfirmed(tab.id, idx);
-    const wrap = nestEl && nestEl.closest ? nestEl.closest('.cell-wrap') : null;
-    if (wrap) {
-      wrap.classList.toggle('cell-confirmed', confirmed);
-      const parentTa = wrap.querySelector('textarea.cell');
-      if (parentTa) parentTa.classList.toggle('cell-confirmed', confirmed);
-    }
+    const confirmed = isNestConfirmed(tab.id, idx, nestIdx);
+    const nestRow = nestEl && nestEl.closest ? nestEl.closest('.cell-nest') : null;
+    if (nestRow) nestRow.classList.toggle('cell-confirmed', confirmed);
+    if (nestEl && nestEl.classList) nestEl.classList.toggle('cell-confirmed', confirmed);
     applyAppendCheckedState();
     if (isMasterTab(tab)) renderMasterLibrary();
   }
@@ -1344,7 +1464,7 @@
     pushHistory({ coalesce: true });
     nest.pages[page] = e.target.value;
     revalidateLinksForCell(tab.id, idx);
-    refreshNestConfirmedUi(idx, e.target);
+    refreshNestConfirmedUi(idx, nestIdx, e.target);
     scheduleSave();
   }
 
@@ -1464,7 +1584,7 @@
     const isOn = isCellConfirmedInScope(tab.id, cellIndex, scope);
     if (isOn === !!wantOn) return false;
     if (wantOn) {
-      const value = cellCombinedText(tab, cellIndex);
+      const value = cellParentText(tab, cellIndex);
       if (!value) return false;
       appendPieces([{
         type: 'confirmed',
@@ -1475,7 +1595,9 @@
         'C' + ((cellIndex % tab.cols) + 1)), { quiet: quiet });
       return true;
     }
-    const links = linksForCellsInScope(tab.id, [cellIndex], scope);
+    const links = linksForCellsInScope(tab.id, [cellIndex], scope).filter(function (link) {
+      return linkNestIndex(link) === null;
+    });
     if (!links.length) return false;
     removeLinksFromCombined(links);
     if (!quiet) refreshAfterConfirmedChange();
@@ -1529,9 +1651,16 @@
     checkboxDrag.visited[key] = true;
     const want = checkboxDrag.value;
     if (kind === 'combined') ensureCellConfirmedState(key, want, { quiet: true });
-    else if (kind === 'row') ensureRowIncludedState(key, want, { quiet: true });
+    else if (kind === 'nest') {
+      const parts = String(key).split(':');
+      const cellIndex = parseInt(parts[0], 10);
+      const nestIndex = parseInt(parts[1], 10);
+      if (!Number.isNaN(cellIndex) && !Number.isNaN(nestIndex)) {
+        ensureNestConfirmedState(cellIndex, nestIndex, want, { quiet: true });
+      }
+    } else if (kind === 'row') ensureRowIncludedState(key, want, { quiet: true });
     else if (kind === 'sleep') ensureCellSleepState(key, want, { quiet: true });
-    if (kind === 'combined' || kind === 'row') applyAppendCheckedState();
+    if (kind === 'combined' || kind === 'nest' || kind === 'row') applyAppendCheckedState();
   }
 
   function checkboxDragHit(clientX, clientY) {
@@ -1539,10 +1668,18 @@
     if (!node || typeof node.closest !== 'function') return null;
     if (checkboxDrag.kind === 'combined') {
       const btn = node.closest('.cell-append');
-      if (!btn || !el.cellGrid.contains(btn)) return null;
+      if (!btn || btn.classList.contains('cell-nest-append') || !el.cellGrid.contains(btn)) return null;
       const idx = parseInt(btn.dataset.idx, 10);
       if (Number.isNaN(idx)) return null;
       return { kind: 'combined', key: idx };
+    }
+    if (checkboxDrag.kind === 'nest') {
+      const btn = node.closest('.cell-nest-append');
+      if (!btn || !el.cellGrid.contains(btn)) return null;
+      const idx = parseInt(btn.dataset.idx, 10);
+      const nest = parseInt(btn.dataset.nest, 10);
+      if (Number.isNaN(idx) || Number.isNaN(nest)) return null;
+      return { kind: 'nest', key: idx + ':' + nest };
     }
     if (checkboxDrag.kind === 'row') {
       const btn = node.closest('.row-append');
@@ -1582,7 +1719,7 @@
     checkboxDrag = null;
     historySuspended = false;
     endCheckboxDragListeners();
-    if (kind === 'combined' || kind === 'row') refreshAfterConfirmedChange();
+    if (kind === 'combined' || kind === 'nest' || kind === 'row') refreshAfterConfirmedChange();
     else scheduleSave();
   }
 
@@ -1603,9 +1740,16 @@
     document.addEventListener('pointerup', endCheckboxDrag);
     document.addEventListener('pointercancel', endCheckboxDrag);
     if (kind === 'combined') ensureCellConfirmedState(key, value, { quiet: true });
-    else if (kind === 'row') ensureRowIncludedState(key, value, { quiet: true });
+    else if (kind === 'nest') {
+      const parts = String(key).split(':');
+      const cellIndex = parseInt(parts[0], 10);
+      const nestIndex = parseInt(parts[1], 10);
+      if (!Number.isNaN(cellIndex) && !Number.isNaN(nestIndex)) {
+        ensureNestConfirmedState(cellIndex, nestIndex, value, { quiet: true });
+      }
+    } else if (kind === 'row') ensureRowIncludedState(key, value, { quiet: true });
     else if (kind === 'sleep') ensureCellSleepState(key, value, { quiet: true });
-    if (kind === 'combined' || kind === 'row') applyAppendCheckedState();
+    if (kind === 'combined' || kind === 'nest' || kind === 'row') applyAppendCheckedState();
   }
 
   function applyAppendCheckedState() {
@@ -1642,7 +1786,7 @@
       }
     }
 
-    const cellButtons = el.cellGrid.querySelectorAll('.cell-append');
+    const cellButtons = el.cellGrid.querySelectorAll('.cell-append:not(.cell-nest-append)');
     for (let i = 0; i < cellButtons.length; i++) {
       const btn = cellButtons[i];
       const idx = parseInt(btn.dataset.idx, 10);
@@ -1655,6 +1799,23 @@
       btn.title = on
         ? 'Remove cell R' + row + 'C' + col + ' from combined prompt'
         : 'Add cell R' + row + 'C' + col + ' to combined prompt';
+      btn.setAttribute('aria-label', btn.title);
+    }
+
+    const nestButtons = el.cellGrid.querySelectorAll('.cell-nest-append');
+    for (let i = 0; i < nestButtons.length; i++) {
+      const btn = nestButtons[i];
+      const idx = parseInt(btn.dataset.idx, 10);
+      const nest = parseInt(btn.dataset.nest, 10);
+      if (Number.isNaN(idx) || Number.isNaN(nest)) continue;
+      const on = isNestConfirmedInScope(tab.id, idx, nest, scope);
+      btn.classList.toggle('is-checked', on);
+      btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+      const row = Math.floor(idx / tab.cols) + 1;
+      const col = (idx % tab.cols) + 1;
+      btn.title = on
+        ? 'Remove nest ' + (nest + 1) + ' of R' + row + 'C' + col + ' from combined prompt'
+        : 'Add nest ' + (nest + 1) + ' of R' + row + 'C' + col + ' to combined prompt';
       btn.setAttribute('aria-label', btn.title);
     }
   }
@@ -1670,6 +1831,17 @@
       node.classList.toggle('cell-confirmed', confirmed);
       const wrap = node.closest ? node.closest('.cell-wrap') : null;
       if (wrap) wrap.classList.toggle('cell-confirmed', confirmed);
+    }
+    const nestNodes = el.cellGrid.querySelectorAll('.cell-nest');
+    for (let i = 0; i < nestNodes.length; i++) {
+      const nestRow = nestNodes[i];
+      const idx = parseInt(nestRow.dataset.idx, 10);
+      const nest = parseInt(nestRow.dataset.nest, 10);
+      const confirmed = !Number.isNaN(idx) && !Number.isNaN(nest) &&
+        isNestConfirmed(tab.id, idx, nest);
+      nestRow.classList.toggle('cell-confirmed', confirmed);
+      const nestTa = nestRow.querySelector('textarea.cell-nest-input');
+      if (nestTa) nestTa.classList.toggle('cell-confirmed', confirmed);
     }
     applyAppendCheckedState();
     // Keep Master insert picker greens in sync with Combined confirmed links.
@@ -1791,11 +1963,10 @@
   }
 
   function revalidateLinksForCell(tabId, cellIndex, opts) {
-    const expected = sourceCellText(tabId, cellIndex);
     let removed = false;
     state.confirmedLinks = state.confirmedLinks.filter(function (link) {
       if (link.tabId !== tabId || link.cellIndex !== cellIndex) return true;
-      if (expected !== null && link.text === expected) return true;
+      if (linkMatchesSource(link, link.text)) return true;
       removed = true;
       return false;
     });
@@ -1912,7 +2083,10 @@
     if (scope !== 'global' && !tab) return;
 
     if (isCellConfirmedInScope(tab.id, cellIndex, scope)) {
-      const links = linksForCellsInScope(tab.id, [cellIndex], scope);
+      // Parent checkbox only removes the parent link — nests stay independent.
+      const links = linksForCellsInScope(tab.id, [cellIndex], scope).filter(function (link) {
+        return linkNestIndex(link) === null;
+      });
       if (!links.length) {
         applyAppendCheckedState();
         return;
@@ -1926,7 +2100,7 @@
       return;
     }
 
-    const value = cellCombinedText(tab, cellIndex);
+    const value = cellParentText(tab, cellIndex);
     if (!value) {
       setStatus('Nothing to append', 'err');
       return;
@@ -1938,6 +2112,74 @@
       cellIndex: cellIndex
     }], tab.title + ' R' + (Math.floor(cellIndex / tab.cols) + 1) +
       'C' + ((cellIndex % tab.cols) + 1));
+  }
+
+  function toggleNestConfirmed(cellIndex, nestIndex) {
+    const tab = activeTab();
+    if (!tab || cellIndex < 0 || cellIndex >= tab.cells.length) return;
+    if (!Number.isInteger(nestIndex) || nestIndex < 0) return;
+    const scope = currentPromptScope();
+    const nests = getCellNests(tab, cellIndex);
+    if (nestIndex >= nests.length) return;
+
+    if (isNestConfirmedInScope(tab.id, cellIndex, nestIndex, scope)) {
+      const links = linksForNestInScope(tab.id, cellIndex, nestIndex, scope);
+      if (!links.length) {
+        applyAppendCheckedState();
+        return;
+      }
+      pushHistory();
+      removeLinksFromCombined(links);
+      refreshAfterConfirmedChange();
+      const row = Math.floor(cellIndex / tab.cols) + 1;
+      const col = (cellIndex % tab.cols) + 1;
+      setStatus('Removed nest ' + (nestIndex + 1) + ' of R' + row + 'C' + col + ' from combined', 'ok');
+      return;
+    }
+
+    const value = nestExportText(nests[nestIndex]);
+    if (!value) {
+      setStatus('Nothing to append', 'err');
+      return;
+    }
+    appendPieces([{
+      type: 'confirmed',
+      text: value,
+      tabId: tab.id,
+      cellIndex: cellIndex,
+      nestIndex: nestIndex
+    }], tab.title + ' R' + (Math.floor(cellIndex / tab.cols) + 1) +
+      'C' + ((cellIndex % tab.cols) + 1) + ' nest ' + (nestIndex + 1));
+  }
+
+  function ensureNestConfirmedState(cellIndex, nestIndex, wantOn, opts) {
+    const quiet = !!(opts && opts.quiet);
+    const tab = activeTab();
+    if (!tab || cellIndex < 0 || cellIndex >= tab.cells.length) return false;
+    if (!Number.isInteger(nestIndex) || nestIndex < 0) return false;
+    const scope = currentPromptScope();
+    const isOn = isNestConfirmedInScope(tab.id, cellIndex, nestIndex, scope);
+    if (isOn === !!wantOn) return false;
+    if (wantOn) {
+      const nests = getCellNests(tab, cellIndex);
+      if (nestIndex >= nests.length) return false;
+      const value = nestExportText(nests[nestIndex]);
+      if (!value) return false;
+      appendPieces([{
+        type: 'confirmed',
+        text: value,
+        tabId: tab.id,
+        cellIndex: cellIndex,
+        nestIndex: nestIndex
+      }], quiet ? null : (tab.title + ' R' + (Math.floor(cellIndex / tab.cols) + 1) +
+        'C' + ((cellIndex % tab.cols) + 1) + ' nest ' + (nestIndex + 1)), { quiet: quiet });
+      return true;
+    }
+    const links = linksForNestInScope(tab.id, cellIndex, nestIndex, scope);
+    if (!links.length) return false;
+    removeLinksFromCombined(links);
+    if (!quiet) refreshAfterConfirmedChange();
+    return true;
   }
 
   function appendWithPartSeparator(current, text) {
@@ -2026,7 +2268,7 @@
       if (!text && piece.type !== 'plain') continue;
       if (piece.type === 'confirmed') {
         const id = linkUid();
-        state.confirmedLinks.push({
+        const link = {
           id: id,
           tabId: piece.tabId,
           cellIndex: piece.cellIndex,
@@ -2034,7 +2276,11 @@
           start: offset,
           end: offset + text.length,
           scope: scope
-        });
+        };
+        if (Number.isInteger(piece.nestIndex) && piece.nestIndex >= 0) {
+          link.nestIndex = piece.nestIndex;
+        }
+        state.confirmedLinks.push(link);
       }
       added += text;
       offset += text.length;
@@ -2079,15 +2325,10 @@
     const colSep = separatorValue(state.separators.column);
     for (let c = 0; c < tab.cols; c++) {
       const idx = rowIndex * tab.cols + c;
-      const value = cellCombinedText(tab, idx);
-      if (!value) continue;
+      const cellPieces = cellConfirmedPieces(tab, idx);
+      if (!cellPieces.length) continue;
       if (pieces.length) pieces.push({ type: 'plain', text: colSep });
-      pieces.push({
-        type: 'confirmed',
-        text: value,
-        tabId: tab.id,
-        cellIndex: idx
-      });
+      for (let i = 0; i < cellPieces.length; i++) pieces.push(cellPieces[i]);
     }
     return pieces;
   }
@@ -3088,10 +3329,10 @@
   /** Match .cell-nest-input min-height. */
   const NEST_INPUT_MIN_H = 36;
   /**
-   * Fallback nest chrome height when off-DOM (5 stacked ~16px controls + gaps + pad).
+   * Fallback nest chrome height when off-DOM (6 stacked controls: Combined + pages + gaps + pad).
    * Chrome sits BESIDE the nest textarea, so nest row height is max(chrome, textarea).
    */
-  const NEST_CHROME_FALLBACK_H = 86;
+  const NEST_CHROME_FALLBACK_H = 104;
   const NESTS_TOP_BORDER = 1;
   const NESTS_BOTTOM_PAD = 4;
   const NESTS_GAP = 2;
@@ -3835,9 +4076,34 @@
               nestRow.className = 'cell-nest';
               nestRow.dataset.idx = String(idx);
               nestRow.dataset.nest = String(nestIndex);
+              if (isNestConfirmed(tab.id, idx, nestIndex)) nestRow.classList.add('cell-confirmed');
 
               const nestChrome = document.createElement('div');
               nestChrome.className = 'cell-nest-chrome';
+
+              const nestAppendBtn = document.createElement('button');
+              nestAppendBtn.type = 'button';
+              nestAppendBtn.className = 'cell-append cell-nest-append';
+              nestAppendBtn.dataset.idx = String(idx);
+              nestAppendBtn.dataset.nest = String(nestIndex);
+              nestAppendBtn.setAttribute('aria-pressed', 'false');
+              nestAppendBtn.innerHTML = '<span class="cell-append-mark" aria-hidden="true"></span>';
+              if (isNestConfirmed(tab.id, idx, nestIndex)) {
+                nestAppendBtn.classList.add('is-checked');
+                nestAppendBtn.setAttribute('aria-pressed', 'true');
+              }
+              nestAppendBtn.addEventListener('pointerdown', function (ev) {
+                if (ev.button != null && ev.button !== 0) return;
+                ev.preventDefault();
+                ev.stopPropagation();
+                const wantOn = !isNestConfirmedInScope(tab.id, idx, nestIndex, currentPromptScope());
+                beginCheckboxDrag('nest', idx + ':' + nestIndex, wantOn, ev);
+              });
+              nestAppendBtn.addEventListener('click', function (ev) {
+                ev.preventDefault();
+                ev.stopPropagation();
+              });
+              nestChrome.appendChild(nestAppendBtn);
 
               const prevBtn = document.createElement('button');
               prevBtn.type = 'button';
@@ -3903,6 +4169,7 @@
 
               const nestTa = document.createElement('textarea');
               nestTa.className = 'cell-nest-input';
+              if (isNestConfirmed(tab.id, idx, nestIndex)) nestTa.classList.add('cell-confirmed');
               nestTa.rows = 2;
               nestTa.spellcheck = false;
               nestTa.placeholder = 'Nest ' + (nestIndex + 1) + ' p' + (page + 1);
@@ -3917,6 +4184,22 @@
               );
               nestTa.addEventListener('input', onNestInput);
               nestTa.addEventListener('keydown', function (ev) {
+                if (ev.isComposing) return;
+                // Enter confirms / moves to next parent cell; Shift+Enter inserts newline.
+                if (ev.key === 'Enter' && !ev.shiftKey) {
+                  ev.preventDefault();
+                  if (stickyCellRange) clearStickyCellRange();
+                  const active = activeTab();
+                  if (!active || idx < 0 || idx >= active.cells.length) return;
+                  if (idx < active.cells.length - 1) {
+                    moveToNextCell(ev.currentTarget, idx + 1);
+                    return;
+                  }
+                  ev.currentTarget.blur();
+                  addRow();
+                  focusCell(idx + 1);
+                  return;
+                }
                 if (ev.altKey && (ev.key === 'ArrowLeft' || ev.key === 'ArrowRight')) {
                   ev.preventDefault();
                   stepNestPage(idx, nestIndex, ev.key === 'ArrowRight' ? 1 : -1);
@@ -5626,17 +5909,14 @@
     const colSep = separatorValue(state.separators.column);
     for (let c = 0; c < tab.cols; c++) {
       const idx = rowIndex * tab.cols + c;
-      const value = cellCombinedText(tab, idx);
-      if (!value) continue;
-      if (isCellSlept(tab, idx)) continue;
-      if (isCellConfirmedInScope(tab.id, idx, scope)) continue;
-      if (pieces.length) pieces.push({ type: 'plain', text: colSep });
-      pieces.push({
-        type: 'confirmed',
-        text: value,
-        tabId: tab.id,
-        cellIndex: idx
+      const cellPieces = cellConfirmedPieces(tab, idx, {
+        scope: scope,
+        skipConfirmed: true,
+        skipSlept: true
       });
+      if (!cellPieces.length) continue;
+      if (pieces.length) pieces.push({ type: 'plain', text: colSep });
+      for (let i = 0; i < cellPieces.length; i++) pieces.push(cellPieces[i]);
     }
     return pieces;
   }
