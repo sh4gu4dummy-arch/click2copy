@@ -75,6 +75,11 @@
   /** UI-only Tools tab — not stored in document tabs; acts on lastPartTabId */
   let toolsTabActive = false;
   let lastPartTabId = null;
+  /** UI-only Find / Find All / Replace over the active part tab (cells + nest pages). */
+  let partSearchHits = [];
+  let partSearchHitIndex = -1;
+  let partSearchQuery = '';
+  let partSearchFindAll = false;
   const pendingDocumentPaths = [];
   const EVENT_LOG_LIMIT = 40;
   const eventLog = [];
@@ -120,6 +125,13 @@
     partSeparator: document.getElementById('part-separator'),
     columnSeparator: document.getElementById('column-separator'),
     rowSeparator: document.getElementById('row-separator'),
+    partSearchBar: document.getElementById('part-search-bar'),
+    partFindInput: document.getElementById('part-find-input'),
+    partReplaceInput: document.getElementById('part-replace-input'),
+    btnFind: document.getElementById('btn-find'),
+    btnFindAll: document.getElementById('btn-find-all'),
+    btnReplace: document.getElementById('btn-replace'),
+    partSearchStatus: document.getElementById('part-search-status'),
     updateBanner: document.getElementById('update-banner'),
     updateBannerText: document.getElementById('update-banner-text'),
     btnUpdateRestart: document.getElementById('btn-update-restart'),
@@ -2744,9 +2756,9 @@
     if (state.globalCombined) mergePartPrompts();
     // Re-anchor Combined ranges after merge so cell + Master-insert greens restore.
     repairAllConfirmedLinks();
-    el.partSeparator.value = state.separators.part;
-    el.columnSeparator.value = state.separators.column;
-    el.rowSeparator.value = state.separators.row;
+    if (el.partSeparator) el.partSeparator.value = state.separators.part;
+    if (el.columnSeparator) el.columnSeparator.value = state.separators.column;
+    if (el.rowSeparator) el.rowSeparator.value = state.separators.row;
 
     renderCombinedPrompt();
     renderTabs();
@@ -4587,6 +4599,7 @@
     syncCol1FilterControls();
     applyPersistedRowHeights(tab);
     restoreStickyCellRangeHighlight();
+    applyPartSearchHighlights();
   }
 
   function resizeColumnByKeyboard(tab, col, delta) {
@@ -5640,6 +5653,8 @@
     if (!isMasterTab(tab)) lastPartTabId = id;
     focusedCell = null;
     clearStickyCellRange();
+    clearPartSearch({ keepInputs: true, keepQuery: true });
+    if (el.partFindInput) partSearchQuery = el.partFindInput.value;
     closeMasterLibFilterMenu();
     masterLibFilterMenuOpen = false;
     renderTabs();
@@ -6410,6 +6425,423 @@
     }
   }
 
+  // --- Part Find / Find All / Replace (active tab cells + nest pages) ---
+
+  function setPartSearchStatus(text) {
+    if (el.partSearchStatus) el.partSearchStatus.textContent = text || '';
+  }
+
+  function clearPartSearchDomHighlights() {
+    if (!el.cellGrid) return;
+    el.cellGrid.querySelectorAll('.search-hit, .search-hit-current, .search-hit-wrap').forEach(function (node) {
+      node.classList.remove('search-hit', 'search-hit-current', 'search-hit-wrap');
+    });
+  }
+
+  function clearPartSearch(opts) {
+    partSearchHits = [];
+    partSearchHitIndex = -1;
+    partSearchFindAll = false;
+    if (!(opts && opts.keepQuery)) partSearchQuery = '';
+    clearPartSearchDomHighlights();
+    setPartSearchStatus('');
+    if (opts && opts.keepInputs) return;
+    if (el.partFindInput) el.partFindInput.value = '';
+    if (el.partReplaceInput) el.partReplaceInput.value = '';
+  }
+
+  function currentPartSearchTab() {
+    return activeTab();
+  }
+
+  function collectPartSearchHits(tab, query) {
+    const hits = [];
+    if (!tab || !query) return hits;
+    const q = String(query);
+    const qLower = q.toLowerCase();
+    if (!qLower) return hits;
+    ensureNestedCells(tab);
+    const n = tab.cols * tab.rows;
+    for (let i = 0; i < n; i++) {
+      const cellText = tab.cells[i] == null ? '' : String(tab.cells[i]);
+      const cellLower = cellText.toLowerCase();
+      let from = 0;
+      while (from <= cellLower.length) {
+        const at = cellLower.indexOf(qLower, from);
+        if (at < 0) break;
+        hits.push({
+          cellIndex: i,
+          nestIndex: null,
+          pageIndex: null,
+          start: at,
+          end: at + q.length
+        });
+        from = at + Math.max(1, qLower.length);
+      }
+      const nests = tab.nestedCells[i] || [];
+      for (let ni = 0; ni < nests.length; ni++) {
+        const nest = nests[ni];
+        if (!nest || !Array.isArray(nest.pages)) continue;
+        for (let pi = 0; pi < nest.pages.length; pi++) {
+          const pageText = nest.pages[pi] == null ? '' : String(nest.pages[pi]);
+          const pageLower = pageText.toLowerCase();
+          from = 0;
+          while (from <= pageLower.length) {
+            const at = pageLower.indexOf(qLower, from);
+            if (at < 0) break;
+            hits.push({
+              cellIndex: i,
+              nestIndex: ni,
+              pageIndex: pi,
+              start: at,
+              end: at + q.length
+            });
+            from = at + Math.max(1, qLower.length);
+          }
+        }
+      }
+    }
+    return hits;
+  }
+
+  function rebuildPartSearchHits() {
+    const tab = currentPartSearchTab();
+    const query = el.partFindInput ? el.partFindInput.value : '';
+    partSearchQuery = query;
+    partSearchHits = collectPartSearchHits(tab, query);
+    if (partSearchHitIndex >= partSearchHits.length) partSearchHitIndex = partSearchHits.length - 1;
+    return partSearchHits;
+  }
+
+  function getHitText(tab, hit) {
+    if (!tab || !hit) return '';
+    if (hit.nestIndex == null) {
+      return tab.cells[hit.cellIndex] == null ? '' : String(tab.cells[hit.cellIndex]);
+    }
+    ensureNestedCells(tab);
+    const nest = (tab.nestedCells[hit.cellIndex] || [])[hit.nestIndex];
+    if (!nest || !Array.isArray(nest.pages)) return '';
+    const page = nest.pages[hit.pageIndex];
+    return page == null ? '' : String(page);
+  }
+
+  function setHitText(tab, hit, text) {
+    if (!tab || !hit) return;
+    if (hit.nestIndex == null) {
+      tab.cells[hit.cellIndex] = text;
+      return;
+    }
+    ensureNestedCells(tab);
+    const nest = (tab.nestedCells[hit.cellIndex] || [])[hit.nestIndex];
+    if (!nest || !Array.isArray(nest.pages)) return;
+    if (hit.pageIndex < 0 || hit.pageIndex >= nest.pages.length) return;
+    nest.pages[hit.pageIndex] = text;
+  }
+
+  function queryHitTextarea(hit) {
+    if (!el.cellGrid || !hit) return null;
+    if (hit.nestIndex == null) {
+      return el.cellGrid.querySelector('textarea.cell[data-idx="' + hit.cellIndex + '"]');
+    }
+    return el.cellGrid.querySelector(
+      'textarea.cell-nest-input[data-idx="' + hit.cellIndex + '"][data-nest="' + hit.nestIndex + '"]'
+    );
+  }
+
+  function applyPartSearchHighlights() {
+    clearPartSearchDomHighlights();
+    if (!partSearchHits.length) return;
+    const markAll = partSearchFindAll;
+    const current = partSearchHitIndex >= 0 ? partSearchHits[partSearchHitIndex] : null;
+    const seen = Object.create(null);
+    function markHit(hit, isCurrent) {
+      if (!hit) return;
+      const key = hit.cellIndex + ':' + (hit.nestIndex == null ? 'c' : hit.nestIndex + ':' + hit.pageIndex);
+      const ta = queryHitTextarea(hit);
+      // Only highlight nest textarea when its visible page matches (or parent cell).
+      if (hit.nestIndex != null) {
+        const tab = currentPartSearchTab();
+        if (tab) {
+          ensureNestedCells(tab);
+          const nest = (tab.nestedCells[hit.cellIndex] || [])[hit.nestIndex];
+          if (!nest || nest.page !== hit.pageIndex) {
+            // Still mark the nest row wrap if find-all, via nest row if present for other page? skip ta
+            if (!isCurrent && !markAll) return;
+          }
+        }
+      }
+      if (ta) {
+        if (markAll) ta.classList.add('search-hit');
+        if (isCurrent) ta.classList.add('search-hit-current');
+        const wrap = hit.nestIndex == null
+          ? (ta.closest ? ta.closest('.cell-wrap') : null)
+          : (ta.closest ? ta.closest('.cell-nest') : null);
+        if (wrap && (markAll || isCurrent)) wrap.classList.add('search-hit-wrap');
+      }
+      seen[key] = true;
+    }
+    if (markAll) {
+      for (let i = 0; i < partSearchHits.length; i++) markHit(partSearchHits[i], false);
+    }
+    if (current) markHit(current, true);
+  }
+
+  function revealPartSearchHit(hit, opts) {
+    const tab = currentPartSearchTab();
+    if (!tab || !hit) return;
+    focusedCell = { tabId: tab.id, index: hit.cellIndex };
+    if (hit.nestIndex != null) {
+      ensureNestedCells(tab);
+      const nest = (tab.nestedCells[hit.cellIndex] || [])[hit.nestIndex];
+      if (nest && nest.page !== hit.pageIndex) {
+        setNestPage(hit.cellIndex, hit.nestIndex, hit.pageIndex, { forceRender: true });
+      }
+    }
+    applyPartSearchHighlights();
+    const ta = queryHitTextarea(hit);
+    if (ta) {
+      ta.focus();
+      try {
+        const start = Math.max(0, hit.start);
+        const end = Math.max(start, Math.min(hit.end, (ta.value || '').length));
+        ta.setSelectionRange(start, end);
+      } catch (err) { /* ignore */ }
+      if (typeof ta.scrollIntoView === 'function') {
+        ta.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+      }
+    }
+    if (!(opts && opts.silent)) {
+      const n = partSearchHits.length;
+      const i = partSearchHitIndex + 1;
+      const addr = cellAddressFromIndex(tab, hit.cellIndex);
+      const where = hit.nestIndex == null
+        ? addr
+        : (addr + ' nest ' + (hit.nestIndex + 1) + ' p' + (hit.pageIndex + 1));
+      setPartSearchStatus(n ? (i + ' / ' + n) : '0');
+      setStatus('Find: ' + where + (n ? (' (' + i + '/' + n + ')') : ''));
+    }
+  }
+
+  function partFindNext(opts) {
+    const tab = currentPartSearchTab();
+    if (!tab) {
+      setStatus('No part tab to search', 'err');
+      return;
+    }
+    if (toolsTabActive) {
+      setStatus('Switch to a part tab to search cells', 'err');
+      return;
+    }
+    const query = el.partFindInput ? el.partFindInput.value : '';
+    if (!query) {
+      setPartSearchStatus('');
+      setStatus('Enter text to find', 'err');
+      if (el.partFindInput) el.partFindInput.focus();
+      return;
+    }
+    const rebuilt = query !== partSearchQuery || !partSearchHits.length;
+    if (rebuilt) {
+      partSearchFindAll = !!(opts && opts.findAll);
+      rebuildPartSearchHits();
+      partSearchHitIndex = -1;
+    } else if (opts && opts.findAll) {
+      partSearchFindAll = true;
+    }
+    if (!partSearchHits.length) {
+      partSearchHitIndex = -1;
+      applyPartSearchHighlights();
+      setPartSearchStatus('0');
+      setStatus('No matches in ' + tab.title, 'err');
+      return;
+    }
+    if (opts && opts.findAll && rebuilt) {
+      partSearchHitIndex = 0;
+      revealPartSearchHit(partSearchHits[0]);
+      setPartSearchStatus(partSearchHits.length + ' matches');
+      setStatus('Find All: ' + partSearchHits.length + ' in ' + tab.title, 'ok');
+      applyPartSearchHighlights();
+      return;
+    }
+    partSearchHitIndex = (partSearchHitIndex + 1) % partSearchHits.length;
+    revealPartSearchHit(partSearchHits[partSearchHitIndex]);
+  }
+
+  function partFindAll() {
+    partFindNext({ findAll: true });
+  }
+
+  function replaceInHitText(text, hit, replacement) {
+    const start = hit.start;
+    const end = hit.end;
+    if (start < 0 || end < start || end > text.length) return null;
+    return text.slice(0, start) + replacement + text.slice(end);
+  }
+
+  function replaceAllInText(text, query, replacement) {
+    if (!query) return { text: text, count: 0 };
+    const qLower = query.toLowerCase();
+    const src = String(text);
+    let out = '';
+    let i = 0;
+    let count = 0;
+    const lower = src.toLowerCase();
+    while (i < src.length) {
+      const at = lower.indexOf(qLower, i);
+      if (at < 0) {
+        out += src.slice(i);
+        break;
+      }
+      out += src.slice(i, at) + replacement;
+      i = at + query.length;
+      count++;
+    }
+    return { text: out, count: count };
+  }
+
+  function partReplace(opts) {
+    const tab = currentPartSearchTab();
+    if (!tab) {
+      setStatus('No part tab to search', 'err');
+      return;
+    }
+    if (toolsTabActive) {
+      setStatus('Switch to a part tab to replace in cells', 'err');
+      return;
+    }
+    const query = el.partFindInput ? el.partFindInput.value : '';
+    const replacement = el.partReplaceInput ? el.partReplaceInput.value : '';
+    if (!query) {
+      setStatus('Enter text to find before replacing', 'err');
+      if (el.partFindInput) el.partFindInput.focus();
+      return;
+    }
+    const replaceAll = !!(opts && opts.replaceAll);
+
+    if (replaceAll) {
+      rebuildPartSearchHits();
+      if (!partSearchHits.length) {
+        setPartSearchStatus('0');
+        setStatus('No matches to replace in ' + tab.title, 'err');
+        return;
+      }
+      pushHistory();
+      // Unique fields (cell or nest page), replace all occurrences in each.
+      const keysDone = Object.create(null);
+      let total = 0;
+      const touchedCells = Object.create(null);
+      for (let h = 0; h < partSearchHits.length; h++) {
+        const hit = partSearchHits[h];
+        const key = hit.cellIndex + ':' + (hit.nestIndex == null ? 'c' : (hit.nestIndex + ':' + hit.pageIndex));
+        if (keysDone[key]) continue;
+        keysDone[key] = true;
+        const before = getHitText(tab, hit);
+        const result = replaceAllInText(before, query, replacement);
+        if (!result.count) continue;
+        setHitText(tab, hit, result.text);
+        total += result.count;
+        touchedCells[hit.cellIndex] = true;
+        liveSyncConfirmedLinksForCell(tab.id, hit.cellIndex, hit.nestIndex, { silent: true });
+      }
+      Object.keys(touchedCells).forEach(function (idxStr) {
+        const idx = parseInt(idxStr, 10);
+        revalidateLinksForCell(tab.id, idx, { silent: true });
+      });
+      partSearchFindAll = false;
+      rebuildPartSearchHits();
+      partSearchHitIndex = partSearchHits.length ? 0 : -1;
+      renderGrid();
+      if (isMasterTab(tab)) renderMasterLibrary();
+      scheduleSave();
+      setPartSearchStatus(total ? ('replaced ' + total) : '0');
+      setStatus(total ? ('Replaced ' + total + ' in ' + tab.title) : ('No matches in ' + tab.title), total ? 'ok' : 'err');
+      if (partSearchHitIndex >= 0) revealPartSearchHit(partSearchHits[partSearchHitIndex], { silent: true });
+      return;
+    }
+
+    // Single replace: ensure a current hit, replace that occurrence, then find next.
+    if (query !== partSearchQuery || !partSearchHits.length || partSearchHitIndex < 0) {
+      partSearchFindAll = false;
+      rebuildPartSearchHits();
+      if (!partSearchHits.length) {
+        setPartSearchStatus('0');
+        setStatus('No matches to replace in ' + tab.title, 'err');
+        return;
+      }
+      partSearchHitIndex = 0;
+      revealPartSearchHit(partSearchHits[0], { silent: true });
+    }
+    const hit = partSearchHits[partSearchHitIndex];
+    if (!hit) return;
+    const before = getHitText(tab, hit);
+    const after = replaceInHitText(before, hit, replacement);
+    if (after == null) {
+      setStatus('Replace failed — match out of range', 'err');
+      return;
+    }
+    pushHistory();
+    setHitText(tab, hit, after);
+    liveSyncConfirmedLinksForCell(tab.id, hit.cellIndex, hit.nestIndex);
+    // Refresh DOM value if visible
+    if (hit.nestIndex != null) {
+      ensureNestedCells(tab);
+      const nest = (tab.nestedCells[hit.cellIndex] || [])[hit.nestIndex];
+      if (nest && nest.page !== hit.pageIndex) {
+        setNestPage(hit.cellIndex, hit.nestIndex, hit.pageIndex, { forceRender: true });
+      } else {
+        const ta = queryHitTextarea(hit);
+        if (ta) ta.value = after;
+      }
+    } else {
+      const ta = queryHitTextarea(hit);
+      if (ta) ta.value = after;
+    }
+    applyAppendCheckedState();
+    if (isMasterTab(tab)) renderMasterLibrary();
+    scheduleSave();
+
+    // Rebuild and advance to next match after this point.
+    const resumeCell = hit.cellIndex;
+    const resumeNest = hit.nestIndex;
+    const resumePage = hit.pageIndex;
+    const resumeStart = hit.start + replacement.length;
+    rebuildPartSearchHits();
+    let nextIdx = -1;
+    for (let i = 0; i < partSearchHits.length; i++) {
+      const h = partSearchHits[i];
+      if (h.cellIndex < resumeCell) continue;
+      if (h.cellIndex > resumeCell) { nextIdx = i; break; }
+      if (resumeNest == null) {
+        if (h.nestIndex != null) { nextIdx = i; break; }
+        if (h.start >= resumeStart) { nextIdx = i; break; }
+        continue;
+      }
+      if (h.nestIndex == null) continue;
+      if (h.nestIndex < resumeNest) continue;
+      if (h.nestIndex > resumeNest) { nextIdx = i; break; }
+      if (h.pageIndex < resumePage) continue;
+      if (h.pageIndex > resumePage) { nextIdx = i; break; }
+      if (h.start >= resumeStart) { nextIdx = i; break; }
+    }
+    if (nextIdx < 0 && partSearchHits.length) nextIdx = 0; // wrap
+    partSearchHitIndex = nextIdx;
+    if (partSearchHitIndex >= 0) {
+      revealPartSearchHit(partSearchHits[partSearchHitIndex]);
+      setStatus('Replaced in ' + cellAddressFromIndex(tab, hit.cellIndex), 'ok');
+    } else {
+      applyPartSearchHighlights();
+      setPartSearchStatus('done');
+      setStatus('Replaced — no more matches', 'ok');
+    }
+  }
+
+  function focusPartFindInput() {
+    if (toolsTabActive) return false;
+    if (!el.partFindInput) return false;
+    el.partFindInput.focus();
+    el.partFindInput.select();
+    return true;
+  }
+
   el.btnAdd.addEventListener('click', addTab);
   el.btnRename.addEventListener('click', renameActiveTab);
   el.btnDelete.addEventListener('click', function () {
@@ -6436,6 +6868,15 @@
       closeCol1FilterMenu();
       closeMasterLibFilterMenu();
       if (stickyCellRange) clearStickyCellRange();
+      if (partSearchHits.length || partSearchFindAll) {
+        clearPartSearch({ keepInputs: true, keepQuery: true });
+        partSearchQuery = el.partFindInput ? el.partFindInput.value : '';
+      }
+    }
+    if ((e.key === 'f' || e.key === 'F') && (e.ctrlKey || e.metaKey) && !e.altKey) {
+      if (focusPartFindInput()) {
+        e.preventDefault();
+      }
     }
   });
   window.addEventListener('resize', function () {
@@ -6469,9 +6910,42 @@
     });
   }
 
-  onSeparatorInput('part', el.partSeparator);
-  onSeparatorInput('column', el.columnSeparator);
-  onSeparatorInput('row', el.rowSeparator);
+  if (el.partSeparator) onSeparatorInput('part', el.partSeparator);
+  if (el.columnSeparator) onSeparatorInput('column', el.columnSeparator);
+  if (el.rowSeparator) onSeparatorInput('row', el.rowSeparator);
+
+  if (el.btnFind) el.btnFind.addEventListener('click', function () { partFindNext(); });
+  if (el.btnFindAll) el.btnFindAll.addEventListener('click', partFindAll);
+  if (el.btnReplace) {
+    el.btnReplace.addEventListener('click', function (e) {
+      partReplace({ replaceAll: !!(e && e.shiftKey) });
+    });
+  }
+  if (el.partFindInput) {
+    el.partFindInput.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        if (e.shiftKey) partFindAll();
+        else partFindNext();
+      }
+    });
+    el.partFindInput.addEventListener('input', function () {
+      partSearchQuery = '';
+      partSearchHits = [];
+      partSearchHitIndex = -1;
+      partSearchFindAll = false;
+      clearPartSearchDomHighlights();
+      setPartSearchStatus('');
+    });
+  }
+  if (el.partReplaceInput) {
+    el.partReplaceInput.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        partReplace({ replaceAll: !!e.shiftKey });
+      }
+    });
+  }
 
   if (window.click2copy && window.click2copy.onOpenDocument) {
     window.click2copy.onOpenDocument(function (filePath) {

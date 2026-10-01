@@ -5,7 +5,8 @@ A simple Electron desktop app for composing prompts from reusable parts.
 ## Features
 
 - **Editable tabs** — add, rename (double-click or Tools → Rename), and delete tabs
-- **Tools tab** — shared UI tab that parks little-used controls (**+ Row**, **+ Column**, **Rename**) so the main part toolbar stays uncluttered; actions still apply to the active part tab (highlighted while Tools is open)
+- **Tools tab** — shared UI tab that parks little-used controls (**+ Row**, **+ Column**, **Rename**, and **Part / Column / Row separators**) so the main part toolbar stays uncluttered; actions still apply to the active part tab (highlighted while Tools is open)
+- **Find / Replace** — search bar on the current part tab: **Find**, **Find All**, and **Replace** (Shift+Replace = replace all) over cells and nest pages; Ctrl/Cmd+F focuses Find
 - **Cell grid** — each tab is a grid of independently editable cells (default 3 columns × 8 rows)
 - **Excel-style cell names** — columns labeled **A, B, C…**, rows **1, 2, 3…**; empty-cell placeholders and status/aria chrome use addresses like **A1** / **B2**
 - **+ Row / + Column** — in the **Tools** tab; grow the active part’s grid; new cells start empty
@@ -90,7 +91,7 @@ Confirmed append links (ranges into the combined prompt tied to source tab/cell,
 2. Use **All** / **Non-empty** / **In Combined** to filter which rows are visible. Use **Values** on the Column A header to multi-select which Column A values to show (composes with the row filters). Use **A–Z** / **Z–A** on the Column A header to sort rows by the first column. The Master parts picker has its own **Values** / **A–Z** / **Z–A** (display-only) for finding insertable Master text; its greens follow the active tab’s Combined.
 3. Check the box left of a row (or the Combined box on a cell) to include it in the Combined prompt at the Combined caret (place the caret first, or it appends at the end); uncheck to remove it. Turn on **Match source order** beside **Global** if you want Combined segments to stay in grid order as you check/uncheck. Use **+** under the Combined checkbox to add indented nested cells (pages via ◀ ▶).
 4. Or click **Append all active** to include every missing non-empty cell.
-5. Open the shared **Tools** tab for **+ Row** / **+ Column** / **Rename** (they still act on the active part tab).
+5. Open the shared **Tools** tab for **+ Row** / **+ Column** / **Rename** and separator settings (they still act on the active part tab). Use the part **Find** bar to search or replace text in cells (and nests).
 6. Click a cell to place the caret where you clicked and copy its text (or Tab/Enter/arrow keys onto it). Click+hold+drag a cell onto another to move/swap (Combined links stay aligned). Click+drag across cells immediately to select a rectangle (full range stays highlighted sticky after mouseup) — on mouseup the range is copied as TSV for pasting into Sheets/Excel; drag the sticky selection to move/swap the block. Paste from Google Sheets or Excel into a focused cell — tab-separated or HTML table data fills the grid (expanding rows/columns as needed) instead of dumping into one cell. Copy/cut with no text selection copies the whole focused cell.
 7. Click **Copy** when ready to paste elsewhere.
 8. Double-click a tab title to rename it (or use Tools → Rename); use **Delete** (with confirm if non-empty) to remove a tab.
