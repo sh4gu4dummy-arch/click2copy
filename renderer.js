@@ -239,6 +239,112 @@
     return list.map(normalizeNest);
   }
 
+  /** Deep clone nest list (normalizeNest always returns fresh objects). */
+  function cloneNestList(list) {
+    return normalizeNestList(list);
+  }
+
+  /** Compare nest page contents (ignore current page index — view state only). */
+  function nestsContentEqual(a, b) {
+    const aa = normalizeNestList(a);
+    const bb = normalizeNestList(b);
+    if (aa.length !== bb.length) return false;
+    for (let i = 0; i < aa.length; i++) {
+      if (aa[i].pages.length !== bb[i].pages.length) return false;
+      for (let p = 0; p < aa[i].pages.length; p++) {
+        if (aa[i].pages[p] !== bb[i].pages[p]) return false;
+      }
+    }
+    return true;
+  }
+
+  function isMasterCellEditFor(tab, cellIndex) {
+    return !!(isMasterCellEditSession() && tab &&
+      masterSegmentEdit.tabId === tab.id &&
+      masterSegmentEdit.cellIndex === cellIndex);
+  }
+
+  /** Locked Master-inserted cell and not in an unlock edit session. */
+  function isCellMasterEditBlocked(tab, cellIndex) {
+    return !!(tab && !isMasterTab(tab) && isCellMasterLocked(tab, cellIndex) &&
+      !isMasterCellEditFor(tab, cellIndex));
+  }
+
+  /** Replace target nests with a clone of Master[masterIdx] nests (or []). */
+  function copyNestsFromMasterToCell(targetTab, targetIndex, masterIdx) {
+    if (!targetTab || targetIndex < 0) return;
+    ensureNestedCells(targetTab);
+    if (targetIndex >= targetTab.nestedCells.length) return;
+    const master = state.tabs.find(isMasterTab);
+    if (!master || !Number.isInteger(masterIdx) || masterIdx < 0 ||
+        masterIdx >= master.cells.length) {
+      targetTab.nestedCells[targetIndex] = [];
+      return;
+    }
+    ensureNestedCells(master);
+    targetTab.nestedCells[targetIndex] = cloneNestList(getCellNests(master, masterIdx));
+  }
+
+  /**
+   * Drop Combined nest links whose nestIndex is out of range after a nest sync,
+   * then live-rewrite remaining links for the cell.
+   */
+  function syncNestLinksAfterNestReplace(tabId, cellIndex) {
+    const tab = state.tabs.find(function (t) { return t.id === tabId; });
+    if (!tab) return;
+    ensureNestedCells(tab);
+    const nestCount = getCellNests(tab, cellIndex).length;
+    const toRemove = [];
+    state.confirmedLinks.forEach(function (link) {
+      if (link.tabId !== tabId || link.cellIndex !== cellIndex) return;
+      const ni = linkNestIndex(link);
+      if (ni === null) return;
+      if (ni < 0 || ni >= nestCount) toRemove.push(link);
+    });
+    if (toRemove.length) {
+      const byScope = {};
+      toRemove.forEach(function (link) {
+        if (!byScope[link.scope]) byScope[link.scope] = [];
+        byScope[link.scope].push(link);
+      });
+      Object.keys(byScope).forEach(function (scope) {
+        removeLinksFromCombined(byScope[scope]);
+      });
+      const removeIds = {};
+      for (let i = 0; i < toRemove.length; i++) removeIds[toRemove[i].id] = true;
+      state.confirmedLinks = state.confirmedLinks.filter(function (link) {
+        return !removeIds[link.id];
+      });
+    }
+    liveSyncConfirmedLinksForCell(tabId, cellIndex, undefined, { silent: true });
+  }
+
+  /**
+   * Push Master[masterIdx] nests onto every Master-origin part cell locked to that index.
+   * Skips an in-progress Master cell edit session on that cell.
+   */
+  function syncLockedPartNestsFromMaster(masterIdx) {
+    if (!Number.isInteger(masterIdx) || masterIdx < 0) return;
+    const master = state.tabs.find(isMasterTab);
+    if (!master || masterIdx >= master.cells.length) return;
+    ensureNestedCells(master);
+    const source = cloneNestList(getCellNests(master, masterIdx));
+    state.tabs.forEach(function (tab) {
+      if (!tab || isMasterTab(tab)) return;
+      ensureCellLocks(tab);
+      ensureNestedCells(tab);
+      for (let i = 0; i < tab.cellLocks.length; i++) {
+        const lock = tab.cellLocks[i];
+        if (!lock || lock.masterOrigin !== true) continue;
+        if (!Number.isInteger(lock.masterCellIndex) || lock.masterCellIndex !== masterIdx) continue;
+        if (isMasterCellEditFor(tab, i)) continue;
+        if (nestsContentEqual(tab.nestedCells[i], source)) continue;
+        tab.nestedCells[i] = cloneNestList(source);
+        syncNestLinksAfterNestReplace(tab.id, i);
+      }
+    });
+  }
+
   /** Nested-cell arrays parallel to cells; missing/short pad with []. */
   function normalizeNestedCells(nested, length) {
     const needed = length > 0 ? length : 0;
@@ -1407,7 +1513,7 @@
       if (title) title.textContent = 'Master cell edited';
       if (body) {
         body.textContent =
-          'Overwrite the Master library (and other tabs using that Master text), keep this as local cell text only, or cancel and discard the edit?';
+          'Overwrite the Master library cell (parent text + nests) and other tabs using that Master cell, keep this as local cell text/nests only, or cancel and discard the edit?';
       }
     } else {
       if (title) title.textContent = 'Master segment edited';
@@ -1887,11 +1993,16 @@
   function addNestedCell(cellIndex) {
     const tab = activeTab();
     if (!tab || cellIndex < 0 || cellIndex >= tab.cells.length) return;
+    if (isCellMasterEditBlocked(tab, cellIndex)) {
+      setStatus('Locked Master cell — double-click to unlock before editing', 'err');
+      return;
+    }
     pushHistory();
     ensureNestedCells(tab);
     tab.nestedCells[cellIndex] = tab.nestedCells[cellIndex].concat([makeEmptyNest()]);
     const nestIndex = tab.nestedCells[cellIndex].length - 1;
     const row = Math.floor(cellIndex / tab.cols);
+    if (isMasterTab(tab)) syncLockedPartNestsFromMaster(cellIndex);
     renderGrid();
     // Persisted rowHeights from before the nest would clip / spill; grow this row.
     refitRowHeightAt(row);
@@ -1934,6 +2045,10 @@
   function removeNestedCell(cellIndex, nestIndex) {
     const tab = activeTab();
     if (!tab || cellIndex < 0 || cellIndex >= tab.cells.length) return;
+    if (isCellMasterEditBlocked(tab, cellIndex)) {
+      setStatus('Locked Master cell — double-click to unlock before editing', 'err');
+      return;
+    }
     ensureNestedCells(tab);
     const nests = tab.nestedCells[cellIndex];
     if (nestIndex < 0 || nestIndex >= nests.length) return;
@@ -1941,6 +2056,7 @@
     remapNestLinksAfterRemove(tab.id, cellIndex, nestIndex);
     nests.splice(nestIndex, 1);
     revalidateLinksForCell(tab.id, cellIndex, { silent: true });
+    if (isMasterTab(tab)) syncLockedPartNestsFromMaster(cellIndex);
     const row = Math.floor(cellIndex / tab.cols);
     renderGrid();
     refitRowHeightAt(row);
@@ -1969,6 +2085,17 @@
     const nestIdx = parseInt(e.target.dataset.nest, 10);
     if (Number.isNaN(idx) || idx < 0 || idx >= tab.cells.length) return;
     if (Number.isNaN(nestIdx) || nestIdx < 0) return;
+    // Locked Master-inserted cell nests: read-only until double-click unlock.
+    if (isCellMasterEditBlocked(tab, idx)) {
+      ensureNestedCells(tab);
+      const nestLocked = tab.nestedCells[idx] && tab.nestedCells[idx][nestIdx];
+      const pageLocked = nestLocked ? (nestLocked.page || 0) : 0;
+      e.target.value = nestLocked && nestLocked.pages
+        ? (nestLocked.pages[pageLocked] || '')
+        : '';
+      setStatus('Locked Master cell — double-click to unlock before editing', 'err');
+      return;
+    }
     ensureNestedCells(tab);
     const nest = tab.nestedCells[idx][nestIdx];
     if (!nest) return;
@@ -1980,6 +2107,8 @@
     nest.pages[page] = e.target.value;
     liveSyncConfirmedLinksForCell(tab.id, idx, nestIdx);
     refreshNestConfirmedUi(idx, nestIdx, e.target);
+    // Master tab nest edits push to locked part cells pointing at this Master index.
+    if (isMasterTab(tab)) syncLockedPartNestsFromMaster(idx);
     maybeLiveRefitRowFromInput(Math.floor(idx / tab.cols));
     scheduleSave();
   }
@@ -2011,12 +2140,17 @@
   function addNestPage(cellIndex, nestIndex) {
     const tab = activeTab();
     if (!tab || cellIndex < 0 || cellIndex >= tab.cells.length) return;
+    if (isCellMasterEditBlocked(tab, cellIndex)) {
+      setStatus('Locked Master cell — double-click to unlock before editing', 'err');
+      return;
+    }
     ensureNestedCells(tab);
     const nest = tab.nestedCells[cellIndex][nestIndex];
     if (!nest) return;
     pushHistory();
     nest.pages.push('');
     nest.page = nest.pages.length - 1;
+    if (isMasterTab(tab)) syncLockedPartNestsFromMaster(cellIndex);
     renderGrid();
     refitRowHeightAt(Math.floor(cellIndex / tab.cols));
     scheduleSave();
@@ -2030,6 +2164,10 @@
   function removeNestPage(cellIndex, nestIndex) {
     const tab = activeTab();
     if (!tab || cellIndex < 0 || cellIndex >= tab.cells.length) return;
+    if (isCellMasterEditBlocked(tab, cellIndex)) {
+      setStatus('Locked Master cell — double-click to unlock before editing', 'err');
+      return;
+    }
     ensureNestedCells(tab);
     const nest = tab.nestedCells[cellIndex][nestIndex];
     if (!nest || nest.pages.length <= 1) {
@@ -2041,6 +2179,7 @@
     nest.pages.splice(removeAt, 1);
     if (nest.page >= nest.pages.length) nest.page = nest.pages.length - 1;
     liveSyncConfirmedLinksForCell(tab.id, cellIndex, nestIndex, { silent: true });
+    if (isMasterTab(tab)) syncLockedPartNestsFromMaster(cellIndex);
     renderGrid();
     renderCombinedPrompt();
     applyConfirmedCellHighlights();
@@ -3108,32 +3247,54 @@
     setStatus('Master segment unlocked — edit, then choose Overwrite / Keep local / Cancel', 'ok');
   }
 
-  function beginMasterCellEdit(ta, tab, cellIndex) {
-    if (!ta || !tab || masterSegmentDialogOpen) return;
+  function beginMasterCellEdit(ta, tab, cellIndex, focusEl) {
+    if (!tab || masterSegmentDialogOpen) return;
     if (isMasterTab(tab)) return;
     if (!isCellMasterLocked(tab, cellIndex)) return;
     const originalText = tab.cells[cellIndex] == null ? '' : String(tab.cells[cellIndex]);
+    ensureNestedCells(tab);
     masterSegmentEdit = {
       kind: 'cell',
       tabId: tab.id,
       cellIndex: cellIndex,
-      originalText: originalText
+      originalText: originalText,
+      originalNests: cloneNestList(getCellNests(tab, cellIndex))
     };
     // Keep cellLocks.locked true in data until dialog resolves.
-    ta.readOnly = false;
-    ta.classList.remove('master-cell-locked');
-    ta.classList.add('master-cell-editing');
-    const wrap = ta.closest ? ta.closest('.cell-wrap') : null;
-    if (wrap) {
-      wrap.classList.remove('master-cell-locked');
-      wrap.classList.add('master-cell-editing');
+    const parentTa = el.cellGrid
+      ? el.cellGrid.querySelector('textarea.cell[data-idx="' + cellIndex + '"]')
+      : null;
+    const unlockTa = parentTa || ta;
+    const wrapNode = unlockTa && unlockTa.closest
+      ? unlockTa.closest('.cell-wrap')
+      : (ta && ta.closest ? ta.closest('.cell-wrap') : null);
+    if (unlockTa) {
+      unlockTa.readOnly = false;
+      unlockTa.classList.remove('master-cell-locked');
+      unlockTa.classList.add('master-cell-editing');
+      unlockTa.title = 'Editing Master cell — blur or Enter to confirm; Esc to cancel';
     }
-    ta.title = 'Editing Master cell — blur or Enter to confirm; Esc to cancel';
-    ta.focus();
-    try {
-      const len = (ta.value || '').length;
-      ta.setSelectionRange(len, len);
-    } catch (err) { /* no-op */ }
+    if (wrapNode) {
+      wrapNode.classList.remove('master-cell-locked');
+      wrapNode.classList.add('master-cell-editing');
+      const nestTas = wrapNode.querySelectorAll('textarea.cell-nest-input');
+      for (let i = 0; i < nestTas.length; i++) {
+        nestTas[i].readOnly = false;
+        nestTas[i].classList.remove('master-cell-locked');
+        nestTas[i].classList.add('master-cell-editing');
+        nestTas[i].title = 'Editing Master nest — blur or Enter to confirm; Esc to cancel';
+      }
+    }
+    const focusTarget = focusEl || unlockTa;
+    if (focusTarget && typeof focusTarget.focus === 'function') {
+      focusTarget.focus();
+      try {
+        if (typeof focusTarget.setSelectionRange === 'function') {
+          const len = (focusTarget.value || '').length;
+          focusTarget.setSelectionRange(len, len);
+        }
+      } catch (err) { /* no-op */ }
+    }
     setStatus('Master cell unlocked — edit, then choose Overwrite / Keep local / Cancel', 'ok');
   }
 
@@ -3164,7 +3325,12 @@
       const liveText = idx >= 0 && idx < tab.cells.length
         ? (tab.cells[idx] == null ? '' : String(tab.cells[idx]))
         : masterSegmentEdit.originalText;
-      if (!opts.forceDialog && liveText === masterSegmentEdit.originalText) {
+      const liveNests = idx >= 0 ? getCellNests(tab, idx) : [];
+      const nestsUnchanged = nestsContentEqual(
+        liveNests,
+        masterSegmentEdit.originalNests || []
+      );
+      if (!opts.forceDialog && liveText === masterSegmentEdit.originalText && nestsUnchanged) {
         ensureCellLocks(tab);
         if (tab.cellLocks[idx]) tab.cellLocks[idx].locked = true;
         masterSegmentEdit = null;
@@ -3211,6 +3377,8 @@
       if (tab && edit.cellIndex >= 0 && edit.cellIndex < tab.cells.length) {
         pushHistory();
         tab.cells[edit.cellIndex] = edit.originalText;
+        ensureNestedCells(tab);
+        tab.nestedCells[edit.cellIndex] = cloneNestList(edit.originalNests || []);
         ensureCellLocks(tab);
         if (tab.cellLocks[edit.cellIndex]) {
           tab.cellLocks[edit.cellIndex].locked = true;
@@ -3218,6 +3386,7 @@
         } else {
           setCellMasterLock(tab, edit.cellIndex, null);
         }
+        syncNestLinksAfterNestReplace(tab.id, edit.cellIndex);
         liveSyncConfirmedLinksForCell(tab.id, edit.cellIndex, null, { silent: true });
       }
       masterSegmentEdit = null;
@@ -3238,7 +3407,7 @@
     setStatus('Master segment edit cancelled — locked again', 'ok');
   }
 
-  function applyMasterOverwriteText(oldText, newText, preferredMasterIdx) {
+  function applyMasterOverwriteText(oldText, newText, preferredMasterIdx, nestsFromEdit) {
     const master = state.tabs.find(isMasterTab);
     let masterIdx = Number.isInteger(preferredMasterIdx) ? preferredMasterIdx : -1;
     if (master) {
@@ -3247,7 +3416,14 @@
         const found = findMasterCellIndexByText(oldText);
         masterIdx = found === null ? -1 : found;
       }
-      if (masterIdx >= 0) master.cells[masterIdx] = newText;
+      if (masterIdx >= 0) {
+        master.cells[masterIdx] = newText;
+        // Optional nest payload from a part-cell Overwrite (parent + nests travel together).
+        if (nestsFromEdit !== undefined) {
+          ensureNestedCells(master);
+          master.nestedCells[masterIdx] = cloneNestList(nestsFromEdit);
+        }
+      }
     }
 
     // Sync every tab cell that still holds the old Master text (library + parts).
@@ -3277,6 +3453,9 @@
       if (masterIdx >= 0) other.masterCellIndex = masterIdx;
     });
 
+    // Locked inserted cells: sync nests from Master (same index), not only parent text.
+    if (masterIdx >= 0) syncLockedPartNestsFromMaster(masterIdx);
+
     return masterIdx;
   }
 
@@ -3299,12 +3478,13 @@
       const oldText = edit.originalText;
       const lock = getCellLock(tab, edit.cellIndex);
       const preferred = lock && Number.isInteger(lock.masterCellIndex) ? lock.masterCellIndex : -1;
+      const nestsFromEdit = cloneNestList(getCellNests(tab, edit.cellIndex));
       pushHistory();
-      const masterIdx = applyMasterOverwriteText(oldText, newText, preferred);
+      const masterIdx = applyMasterOverwriteText(oldText, newText, preferred, nestsFromEdit);
       setCellMasterLock(tab, edit.cellIndex, masterIdx >= 0 ? masterIdx : null);
       masterSegmentEdit = null;
       refreshAfterMasterSegmentChange();
-      setStatus('Overwrote Master and synced matching cells/segments', 'ok');
+      setStatus('Overwrote Master (text + nests) and synced matching cells/segments', 'ok');
       return;
     }
 
@@ -3333,7 +3513,7 @@
     }
     masterSegmentEdit = null;
     refreshAfterMasterSegmentChange();
-    setStatus('Overwrote Master and synced matching cells/segments', 'ok');
+    setStatus('Overwrote Master (text + nests) and synced matching cells/segments', 'ok');
   }
 
   function keepMasterSegmentLocalOnly() {
@@ -3354,17 +3534,15 @@
       const newText = tab.cells[edit.cellIndex] == null ? '' : String(tab.cells[edit.cellIndex]);
       pushHistory();
       clearCellMasterLock(tab, edit.cellIndex);
-      // Drop Master lock/origin on Combined links for this cell (parent).
+      // Drop Master lock/origin on Combined links for this cell (parent + nests).
       state.confirmedLinks.forEach(function (other) {
         if (other.tabId !== tab.id || other.cellIndex !== edit.cellIndex) return;
-        if (linkNestIndex(other) !== null) return;
         if (!isMasterOriginLink(other)) return;
         other.masterOrigin = false;
         other.locked = false;
         if ('masterCellIndex' in other) delete other.masterCellIndex;
-        if (other.text !== newText) rewriteConfirmedLinkSegment(other, newText);
       });
-      liveSyncConfirmedLinksForCell(tab.id, edit.cellIndex, null, { silent: true });
+      liveSyncConfirmedLinksForCell(tab.id, edit.cellIndex, undefined, { silent: true });
       masterSegmentEdit = null;
       refreshAfterMasterSegmentChange();
       setStatus('Kept as local cell text — unlinked from Master lock', 'ok');
@@ -4353,7 +4531,7 @@
             button.dataset.row = String(row);
             button.dataset.col = String(col);
             button.addEventListener('click', function () {
-              insertMasterText(cellText);
+              insertMasterText(cellText, masterIdx);
             });
             grid.appendChild(button);
           } else {
@@ -4481,7 +4659,7 @@
     syncMasterLibFilterControls();
   }
 
-  function insertMasterText(text) {
+  function insertMasterText(text, masterCellIndex) {
     const tab = activeTab();
     if (!tab || isMasterTab(tab) || tab.cells.length === 0) return;
 
@@ -4503,8 +4681,14 @@
 
     pushHistory();
     tab.cells[index] = text;
-    const masterIdx = findMasterCellIndexByText(text);
-    setCellMasterLock(tab, index, masterIdx);
+    let masterIdx = Number.isInteger(masterCellIndex) && masterCellIndex >= 0
+      ? masterCellIndex
+      : findMasterCellIndexByText(text);
+    if (masterIdx === null) masterIdx = -1;
+    setCellMasterLock(tab, index, masterIdx >= 0 ? masterIdx : null);
+    // Replace/sync nests from the Master cell (Ash): parent + nest pages travel together.
+    copyNestsFromMasterToCell(tab, index, masterIdx);
+    syncNestLinksAfterNestReplace(tab.id, index);
     focusedCell = { tabId: tab.id, index: index };
     revalidateLinksForCell(tab.id, index, { silent: true });
     // Auto-check Combined for the inserted cell (no-op if already included).
@@ -4524,8 +4708,8 @@
     if (cell) cell.focus();
     setStatus(
       usedFirstCellFallback
-        ? 'Added Master text to ' + tab.title + ' (replaced the first cell; Combined checked; locked until double-click unlock)'
-        : 'Added Master text to ' + tab.title + ' (Combined checked; locked until double-click unlock)',
+        ? 'Added Master text (+ nests) to ' + tab.title + ' (replaced the first cell; Combined checked; locked until double-click unlock)'
+        : 'Added Master text (+ nests) to ' + tab.title + ' (Combined checked; locked until double-click unlock)',
       'ok'
     );
   }
@@ -5549,9 +5733,50 @@
                 'Nest ' + (nestIndex + 1) + ' page ' + (page + 1) + ' of ' + pageCount +
                   ' under ' + cellAddress(r, c)
               );
+              if (cellEditing) {
+                nestTa.classList.add('master-cell-editing');
+                nestTa.title = 'Editing Master nest — blur or Enter to confirm; Esc to cancel';
+              } else if (cellLocked) {
+                nestTa.readOnly = true;
+                nestTa.classList.add('master-cell-locked');
+                nestTa.title = 'Locked Master nest — double-click to unlock before editing';
+              }
               nestTa.addEventListener('input', onNestInput);
+              nestTa.addEventListener('beforeinput', onNestBeforeInputMasterLock);
+              nestTa.addEventListener('dblclick', onNestDblClickMasterUnlock);
+              nestTa.addEventListener('blur', onNestBlurMasterFinish);
               nestTa.addEventListener('keydown', function (ev) {
                 if (ev.isComposing) return;
+                if (isMasterCellEditFor(tab, idx) && !masterSegmentDialogOpen) {
+                  if (ev.key === 'Escape') {
+                    ev.preventDefault();
+                    cancelMasterSegmentEdit();
+                    return;
+                  }
+                  if (ev.key === 'Enter' && !ev.shiftKey) {
+                    ev.preventDefault();
+                    requestMasterSegmentFinish();
+                    return;
+                  }
+                }
+                if (isCellMasterEditBlocked(tab, idx)) {
+                  const nav = ev.key === 'Tab' || ev.key === 'Escape' ||
+                    ev.key === 'ArrowUp' || ev.key === 'ArrowDown' ||
+                    ev.key === 'ArrowLeft' || ev.key === 'ArrowRight' ||
+                    ev.key === 'Home' || ev.key === 'End' || ev.key === 'PageUp' || ev.key === 'PageDown';
+                  const modNav = (ev.ctrlKey || ev.metaKey) && (ev.key === 'c' || ev.key === 'C' ||
+                    ev.key === 'a' || ev.key === 'A');
+                  // Allow page-flip arrows / Alt+arrows; block editing keys.
+                  if (ev.altKey && (ev.key === 'ArrowLeft' || ev.key === 'ArrowRight')) {
+                    /* page flip allowed below */
+                  } else if (!nav && !modNav) {
+                    if (!(ev.key === 'ArrowLeft' || ev.key === 'ArrowRight')) {
+                      ev.preventDefault();
+                      setStatus('Locked Master cell — double-click to unlock before editing', 'err');
+                      return;
+                    }
+                  }
+                }
                 // Enter moves to next parent cell (no auto-copy); Shift+Enter inserts newline.
                 if (ev.key === 'Enter' && !ev.shiftKey) {
                   ev.preventDefault();
@@ -6466,6 +6691,63 @@
     beginMasterCellEdit(ta, tab, idx);
   }
 
+  function onNestDblClickMasterUnlock(e) {
+    const tab = activeTab();
+    if (!tab || isMasterTab(tab) || masterSegmentDialogOpen) return;
+    const nestTa = e.currentTarget;
+    const idx = parseInt(nestTa.dataset.idx, 10);
+    if (Number.isNaN(idx) || idx < 0 || idx >= tab.cells.length) return;
+    if (!isCellMasterLocked(tab, idx)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const parentTa = el.cellGrid
+      ? el.cellGrid.querySelector('textarea.cell[data-idx="' + idx + '"]')
+      : null;
+    beginMasterCellEdit(parentTa || nestTa, tab, idx, nestTa);
+  }
+
+  function onNestBlurMasterFinish(e) {
+    if (!isMasterCellEditSession() || masterSegmentDialogOpen) return;
+    const tab = activeTab();
+    const nestTa = e.currentTarget;
+    if (!tab || !nestTa) return;
+    const idx = parseInt(nestTa.dataset.idx, 10);
+    if (masterSegmentEdit.tabId !== tab.id || masterSegmentEdit.cellIndex !== idx) return;
+    const next = e.relatedTarget;
+    if (next && el.masterSegmentDialog && el.masterSegmentDialog.contains(next)) return;
+    // Stay in-session when focus moves to parent/sibling nest of the same cell.
+    if (next && next.closest) {
+      const wrap = nestTa.closest('.cell-wrap');
+      if (wrap && wrap.contains(next)) return;
+    }
+    window.setTimeout(function () {
+      if (!isMasterCellEditSession() || masterSegmentDialogOpen) return;
+      const active = document.activeElement;
+      if (el.masterSegmentDialog && el.masterSegmentDialog.contains(active)) return;
+      if (active === nestTa) return;
+      const wrap = nestTa.closest ? nestTa.closest('.cell-wrap') : null;
+      if (wrap && wrap.contains(active)) return;
+      requestMasterSegmentFinish();
+    }, 0);
+  }
+
+  function onNestBeforeInputMasterLock(e) {
+    if (masterSegmentDialogOpen) {
+      e.preventDefault();
+      return;
+    }
+    const tab = activeTab();
+    if (!tab || isMasterTab(tab)) return;
+    const nestTa = e.currentTarget;
+    const idx = parseInt(nestTa.dataset.idx, 10);
+    if (Number.isNaN(idx) || idx < 0 || idx >= tab.cells.length) return;
+    if (isMasterCellEditFor(tab, idx)) return;
+    if (isCellMasterLocked(tab, idx) || nestTa.readOnly) {
+      e.preventDefault();
+      setStatus('Locked Master cell — double-click to unlock before editing', 'err');
+    }
+  }
+
   function onCellBlurMasterFinish(e) {
     if (!isMasterCellEditSession() || masterSegmentDialogOpen) return;
     const tab = activeTab();
@@ -6475,11 +6757,17 @@
     if (masterSegmentEdit.tabId !== tab.id || masterSegmentEdit.cellIndex !== idx) return;
     const next = e.relatedTarget;
     if (next && el.masterSegmentDialog && el.masterSegmentDialog.contains(next)) return;
+    if (next && next.closest) {
+      const wrap = ta.closest('.cell-wrap');
+      if (wrap && wrap.contains(next)) return;
+    }
     window.setTimeout(function () {
       if (!isMasterCellEditSession() || masterSegmentDialogOpen) return;
       const active = document.activeElement;
       if (el.masterSegmentDialog && el.masterSegmentDialog.contains(active)) return;
       if (active === ta) return;
+      const wrap = ta.closest ? ta.closest('.cell-wrap') : null;
+      if (wrap && wrap.contains(active)) return;
       requestMasterSegmentFinish();
     }, 0);
   }
