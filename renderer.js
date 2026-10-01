@@ -1463,7 +1463,7 @@
     if (stickyCellRange) clearStickyCellRange();
     pushHistory({ coalesce: true });
     nest.pages[page] = e.target.value;
-    revalidateLinksForCell(tab.id, idx);
+    liveSyncConfirmedLinksForCell(tab.id, idx, nestIdx);
     refreshNestConfirmedUi(idx, nestIdx, e.target);
     scheduleSave();
   }
@@ -1523,7 +1523,7 @@
     const removeAt = nest.page || 0;
     nest.pages.splice(removeAt, 1);
     if (nest.page >= nest.pages.length) nest.page = nest.pages.length - 1;
-    revalidateLinksForCell(tab.id, cellIndex, { silent: true });
+    liveSyncConfirmedLinksForCell(tab.id, cellIndex, nestIndex, { silent: true });
     renderGrid();
     renderCombinedPrompt();
     applyConfirmedCellHighlights();
@@ -1962,6 +1962,132 @@
     applyConfirmedCellHighlights();
   }
 
+  /**
+   * Rewrite one confirmed segment in Combined to newText (in place), shifting
+   * later links in the same scope. Returns false if the old span cannot be found.
+   */
+  function rewriteConfirmedLinkSegment(link, newText) {
+    if (!link || typeof newText !== 'string') return false;
+    const scope = link.scope;
+    let text = getPromptText(scope);
+    if (!repairConfirmedLinkOffset(link, text)) return false;
+    text = getPromptText(scope);
+    const oldStart = link.start;
+    const oldEnd = link.end;
+    const delta = newText.length - (oldEnd - oldStart);
+    if (delta === 0 && text.slice(oldStart, oldEnd) === newText) {
+      link.text = newText;
+      return true;
+    }
+    text = text.slice(0, oldStart) + newText + text.slice(oldEnd);
+    link.text = newText;
+    link.start = oldStart;
+    link.end = oldStart + newText.length;
+    state.confirmedLinks.forEach(function (other) {
+      if (other.scope !== scope || other.id === link.id) return;
+      if (other.start >= oldEnd) {
+        other.start += delta;
+        other.end += delta;
+      }
+    });
+    setPromptText(scope, text);
+    return true;
+  }
+
+  /**
+   * Ash: editing a green/confirmed cell or nest in the table also edits the
+   * matching Combined segment live (keeps the link). Empty source removes it.
+   * nestIndexFilter: undefined = all links for the cell; null = parent only;
+   * integer = that nest only.
+   */
+  function liveSyncConfirmedLinksForCell(tabId, cellIndex, nestIndexFilter, opts) {
+    const silent = !!(opts && opts.silent);
+    const candidates = state.confirmedLinks.filter(function (link) {
+      if (link.tabId !== tabId || link.cellIndex !== cellIndex) return false;
+      if (nestIndexFilter === undefined) return true;
+      return linkNestIndex(link) === nestIndexFilter;
+    });
+    if (!candidates.length) return false;
+
+    const toRemove = [];
+    const toRewrite = [];
+    candidates.forEach(function (link) {
+      const expected = sourceLinkText(link);
+      if (expected === null || expected === '') {
+        toRemove.push(link);
+        return;
+      }
+      if (link.text === expected) {
+        const text = getPromptText(link.scope);
+        if (repairConfirmedLinkOffset(link, text) &&
+            text.slice(link.start, link.end) === expected) {
+          return;
+        }
+        // Offset lost but source still has text — drop rather than guess.
+        toRemove.push(link);
+        return;
+      }
+      toRewrite.push(link);
+    });
+
+    let changed = false;
+
+    // Rewrite before remove so removeLinksFromCombined sees up-to-date offsets.
+    if (toRewrite.length) {
+      const byScope = {};
+      toRewrite.forEach(function (link) {
+        if (!byScope[link.scope]) byScope[link.scope] = [];
+        byScope[link.scope].push(link);
+      });
+      Object.keys(byScope).forEach(function (scope) {
+        const links = byScope[scope].slice().sort(function (a, b) {
+          return b.start - a.start;
+        });
+        for (let i = 0; i < links.length; i++) {
+          const link = links[i];
+          if (!state.confirmedLinks.some(function (l) { return l.id === link.id; })) continue;
+          const expected = sourceLinkText(link);
+          if (expected === null || expected === '') {
+            toRemove.push(link);
+            continue;
+          }
+          if (rewriteConfirmedLinkSegment(link, expected)) changed = true;
+          else {
+            // Cannot locate old segment — drop the link record (Combined text kept).
+            state.confirmedLinks = state.confirmedLinks.filter(function (l) {
+              return l.id !== link.id;
+            });
+            changed = true;
+          }
+        }
+      });
+    }
+
+    if (toRemove.length) {
+      const byScope = {};
+      toRemove.forEach(function (link) {
+        if (!byScope[link.scope]) byScope[link.scope] = [];
+        byScope[link.scope].push(link);
+      });
+      Object.keys(byScope).forEach(function (scope) {
+        // Deduplicate ids in case rewrite path also queued a remove.
+        const seen = {};
+        const list = byScope[scope].filter(function (link) {
+          if (seen[link.id]) return false;
+          seen[link.id] = true;
+          return state.confirmedLinks.some(function (l) { return l.id === link.id; });
+        });
+        if (list.length && removeLinksFromCombined(list)) changed = true;
+      });
+    }
+
+    if (changed && !silent) {
+      renderCombinedPrompt();
+      applyConfirmedCellHighlights();
+    }
+    return changed;
+  }
+
   function revalidateLinksForCell(tabId, cellIndex, opts) {
     let removed = false;
     state.confirmedLinks = state.confirmedLinks.filter(function (link) {
@@ -2374,7 +2500,7 @@
       span.className = 'confirmed-segment';
       span.dataset.linkId = link.id;
       span.textContent = link.text;
-      span.title = 'Confirmed from linked cell — edit to unlink';
+      span.title = 'Confirmed from linked cell — edit Combined to unlink; edit cell/nest to update live';
       el.combined.appendChild(span);
       pos = link.end;
     });
@@ -5196,7 +5322,7 @@
     if (stickyCellRange) clearStickyCellRange();
     pushHistory({ coalesce: true });
     tab.cells[idx] = e.target.value;
-    revalidateLinksForCell(tab.id, idx);
+    liveSyncConfirmedLinksForCell(tab.id, idx, null);
     const confirmed = isCellConfirmed(tab.id, idx);
     e.target.classList.toggle('cell-confirmed', confirmed);
     const wrap = e.target.closest ? e.target.closest('.cell-wrap') : null;
