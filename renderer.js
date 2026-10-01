@@ -768,6 +768,161 @@
   let lastCombinedActivateCopyAt = 0;
   let combinedActivateSkipCopy = false;
 
+  /**
+   * Last known Combined caret/selection as plain-text offsets into the active
+   * Combined prompt. Used when checkbox / Append / Master Combined-add runs
+   * after focus has left the Combined editor. null start ⇒ append at end.
+   */
+  let lastCombinedCaret = { start: null, end: null, scope: null };
+
+  function readCombinedSelectionOffsets() {
+    const sel = window.getSelection();
+    if (!sel || !sel.rangeCount) return null;
+    const range = sel.getRangeAt(0);
+    if (!el.combined.contains(range.commonAncestorContainer) &&
+        range.commonAncestorContainer !== el.combined) {
+      return null;
+    }
+    function offsetAt(node, offset) {
+      try {
+        const pre = document.createRange();
+        pre.selectNodeContents(el.combined);
+        pre.setEnd(node, offset);
+        return pre.toString().length;
+      } catch (err) {
+        return null;
+      }
+    }
+    const start = offsetAt(range.startContainer, range.startOffset);
+    const end = offsetAt(range.endContainer, range.endOffset);
+    if (start == null || end == null) return null;
+    return {
+      start: Math.min(start, end),
+      end: Math.max(start, end)
+    };
+  }
+
+  function rememberCombinedCaretFromDom() {
+    const offsets = readCombinedSelectionOffsets();
+    if (!offsets) return;
+    const scope = currentPromptScope();
+    const textLen = (getPromptText(scope) || '').length;
+    lastCombinedCaret = {
+      start: Math.max(0, Math.min(offsets.start, textLen)),
+      end: Math.max(0, Math.min(offsets.end, textLen)),
+      scope: scope
+    };
+  }
+
+  function snapCaretOutOfConfirmedLinks(scope, pos) {
+    const links = linksForScope(scope);
+    for (let i = 0; i < links.length; i++) {
+      const link = links[i];
+      if (pos > link.start && pos < link.end) return link.end;
+    }
+    return pos;
+  }
+
+  /**
+   * Where Combined-add paths should insert: live Combined selection if focused,
+   * else last known caret for this scope, else end (legacy append).
+   * Non-collapsed selection is replaced. Collapsed caret inside a confirmed
+   * segment snaps to after that segment so greens/links stay intact.
+   */
+  function resolveCombinedInsertRange(scope, textLen) {
+    let start = null;
+    let end = null;
+    if (document.activeElement === el.combined) {
+      const live = readCombinedSelectionOffsets();
+      if (live) {
+        start = live.start;
+        end = live.end;
+        lastCombinedCaret = { start: start, end: end, scope: scope };
+      }
+    }
+    if (start == null && lastCombinedCaret.scope === scope &&
+        typeof lastCombinedCaret.start === 'number') {
+      start = lastCombinedCaret.start;
+      end = typeof lastCombinedCaret.end === 'number'
+        ? lastCombinedCaret.end
+        : start;
+    }
+    if (start == null) {
+      return { start: textLen, end: textLen };
+    }
+    start = Math.max(0, Math.min(start, textLen));
+    end = Math.max(0, Math.min(end == null ? start : end, textLen));
+    if (end < start) {
+      const tmp = start;
+      start = end;
+      end = tmp;
+    }
+    if (start === end) {
+      const snapped = snapCaretOutOfConfirmedLinks(scope, start);
+      start = end = snapped;
+    }
+    return { start: start, end: end };
+  }
+
+  function setCombinedCaretOffset(offset) {
+    if (!el.combined) return;
+    const textLen = (getCombinedPlainText() || '').length;
+    offset = Math.max(0, Math.min(typeof offset === 'number' ? offset : textLen, textLen));
+    const sel = window.getSelection();
+    if (!sel) return;
+
+    function placeAt(node, pos) {
+      const range = document.createRange();
+      if (node.nodeType === Node.TEXT_NODE) {
+        range.setStart(node, Math.max(0, Math.min(pos, (node.nodeValue || '').length)));
+      } else {
+        range.selectNodeContents(node);
+        range.collapse(pos <= 0);
+      }
+      range.collapse(true);
+      sel.removeAllRanges();
+      sel.addRange(range);
+    }
+
+    let remaining = offset;
+    const kids = el.combined.childNodes;
+    if (!kids.length) {
+      const range = document.createRange();
+      range.selectNodeContents(el.combined);
+      range.collapse(true);
+      sel.removeAllRanges();
+      sel.addRange(range);
+      return;
+    }
+    for (let i = 0; i < kids.length; i++) {
+      const node = kids[i];
+      const len = (node.textContent || '').length;
+      if (remaining > len) {
+        remaining -= len;
+        continue;
+      }
+      if (node.nodeType === Node.TEXT_NODE) {
+        placeAt(node, remaining);
+        return;
+      }
+      if (node.classList && node.classList.contains('confirmed-segment')) {
+        const tn = node.firstChild;
+        if (tn && tn.nodeType === Node.TEXT_NODE) placeAt(tn, remaining);
+        else placeAt(node, remaining <= 0 ? 0 : 1);
+        return;
+      }
+      const tn = node.firstChild;
+      if (tn && tn.nodeType === Node.TEXT_NODE) placeAt(tn, remaining);
+      else placeAt(el.combined, 1);
+      return;
+    }
+    const range = document.createRange();
+    range.selectNodeContents(el.combined);
+    range.collapse(false);
+    sel.removeAllRanges();
+    sel.addRange(range);
+  }
+
   function copyCombinedOnActivate(e) {
     if (!initialized) return;
     if (combinedActivateSkipCopy || (e && (e.ctrlKey || e.metaKey))) return;
@@ -1794,7 +1949,8 @@
   }
 
   /**
-   * Append plain and confirmed pieces into the active combined prompt.
+   * Insert plain and confirmed pieces into the active combined prompt at the
+   * Combined caret/selection (or last known caret). Falls back to end append.
    * pieces: [{ type:'plain'|'confirmed', text, tabId?, cellIndex? }]
    */
   function appendPieces(pieces, label, opts) {
@@ -1807,9 +1963,16 @@
     if (scope !== 'global' && !activeTab()) return;
 
     let current = getPromptText(scope);
+    const insertRange = resolveCombinedInsertRange(scope, current.length);
+    const insertAt = insertRange.start;
+    const insertEnd = insertRange.end;
+    const before = current.slice(0, insertAt);
+    const after = current.slice(insertEnd);
+    const removedLen = insertEnd - insertAt;
+
     const partSeparator = separatorValue(state.separators.part);
     const toAdd = [];
-    if (current && partSeparator && !current.endsWith(partSeparator)) {
+    if (before && partSeparator && !before.endsWith(partSeparator)) {
       toAdd.push({ type: 'plain', text: partSeparator });
     }
     for (let i = 0; i < pieces.length; i++) toAdd.push(pieces[i]);
@@ -1829,7 +1992,33 @@
 
     pushHistory();
 
-    let offset = current.length;
+    // Drop links overlapping a replaced selection; shift survivors after the hole
+    // into post-deletion coordinates (still relative to `before + after`).
+    if (removedLen > 0) {
+      state.confirmedLinks = state.confirmedLinks.filter(function (link) {
+        if (link.scope !== scope) return true;
+        if (link.end <= insertAt || link.start >= insertEnd) return true;
+        return false;
+      });
+      state.confirmedLinks.forEach(function (link) {
+        if (link.scope !== scope) return;
+        if (link.start >= insertEnd) {
+          link.start -= removedLen;
+          link.end -= removedLen;
+        }
+      });
+    }
+
+    // Shift surviving links that begin at/after the insert point to make room.
+    state.confirmedLinks.forEach(function (link) {
+      if (link.scope !== scope) return;
+      if (link.start >= insertAt) {
+        link.start += willAdd.length;
+        link.end += willAdd.length;
+      }
+    });
+
+    let offset = insertAt;
     let added = '';
     for (let i = 0; i < toAdd.length; i++) {
       const piece = toAdd[i];
@@ -1856,7 +2045,13 @@
       return;
     }
 
-    setPromptText(scope, current + added);
+    setPromptText(scope, before + added + after);
+    lastCombinedCaret = {
+      start: insertAt + added.length,
+      end: insertAt + added.length,
+      scope: scope
+    };
+
     if (quiet) {
       scheduleSave();
       return;
@@ -1864,6 +2059,9 @@
     renderCombinedPrompt();
     applyConfirmedCellHighlights();
     renderMasterLibrary();
+    if (document.activeElement === el.combined) {
+      setCombinedCaretOffset(lastCombinedCaret.start);
+    }
     scheduleSave();
     setStatus('Appended' + (label ? ' "' + label + '"' : ''), 'ok');
   }
@@ -5531,6 +5729,7 @@
     pushHistory();
     setPromptText(scope, '');
     dropLinksForScope(scope);
+    lastCombinedCaret = { start: 0, end: 0, scope: scope };
     renderCombinedPrompt();
     applyConfirmedCellHighlights();
     scheduleSave();
@@ -5698,18 +5897,34 @@
   el.combined.addEventListener('click', function (e) {
     copyCombinedOnActivate(e);
     combinedActivateSkipCopy = false;
+    rememberCombinedCaretFromDom();
   });
   el.combined.addEventListener('pointerup', function () {
-    window.setTimeout(function () { combinedActivateSkipCopy = false; }, 0);
+    window.setTimeout(function () {
+      combinedActivateSkipCopy = false;
+      if (document.activeElement === el.combined) rememberCombinedCaretFromDom();
+    }, 0);
   });
   el.combined.addEventListener('pointercancel', function () {
     combinedActivateSkipCopy = false;
+  });
+  el.combined.addEventListener('keyup', function () {
+    rememberCombinedCaretFromDom();
+  });
+  el.combined.addEventListener('blur', function () {
+    // selectionchange often clears before blur; keep last remembered offsets.
+    rememberCombinedCaretFromDom();
+  });
+  document.addEventListener('selectionchange', function () {
+    if (document.activeElement !== el.combined) return;
+    rememberCombinedCaretFromDom();
   });
 
   el.combined.addEventListener('input', function () {
     dismissUndoClear();
     pushHistory({ coalesce: true });
     syncConfirmedFromCombinedDom();
+    rememberCombinedCaretFromDom();
     scheduleSave();
   });
 
