@@ -5,6 +5,8 @@
   const DEFAULT_ROWS = 8;
   const DEFAULT_COLUMN_WIDTH = 160;
   const MIN_COLUMN_WIDTH = 100;
+  /** Match --cell-min-h; used for auto-fit row heights. */
+  const MIN_ROW_HEIGHT = 64;
   const DEFAULT_SEPARATORS = {
     part: '\\n\\n',
     column: ' | ',
@@ -66,6 +68,7 @@
     btnFilterAll: document.getElementById('btn-filter-all'),
     btnFilterNonempty: document.getElementById('btn-filter-nonempty'),
     btnFilterIncluded: document.getElementById('btn-filter-included'),
+    btnFitRows: document.getElementById('btn-fit-rows'),
     btnAppend: document.getElementById('btn-append'),
     btnCopy: document.getElementById('btn-copy'),
     btnClear: document.getElementById('btn-clear'),
@@ -149,6 +152,23 @@
       : null;
   }
 
+  function normalizeRowHeights(heights, rows) {
+    if (!Array.isArray(heights) || heights.length !== rows) return null;
+    const normalized = heights.map(function (height) {
+      const value = Number(height);
+      return Number.isFinite(value) && value >= MIN_ROW_HEIGHT ? value : null;
+    });
+    return normalized.every(function (height) { return height !== null; })
+      ? normalized
+      : null;
+  }
+
+  /** Keep tab.rowHeights length in sync when rows grow/shrink (only if already set). */
+  function ensureRowHeightsLength(tab) {
+    if (!tab || !Array.isArray(tab.rowHeights)) return;
+    while (tab.rowHeights.length < tab.rows) tab.rowHeights.push(MIN_ROW_HEIGHT);
+    if (tab.rowHeights.length > tab.rows) tab.rowHeights = tab.rowHeights.slice(0, tab.rows);
+  }
 
   /** CSS grid-template columns for tab content cells (no row-gutter). Uses tab.columnWidths. */
   function contentColumnTemplate(tab, equalMinPx) {
@@ -219,9 +239,11 @@
     }
 
     const columnWidths = normalizeColumnWidths(t.columnWidths, cols);
+    const rowHeights = normalizeRowHeights(t.rowHeights, rows);
     const sleptCells = normalizeSleptCells(t.sleptCells, needed);
     const normalized = { id: t.id, title: t.title, cols: cols, rows: rows, cells: cells, sleptCells: sleptCells };
     if (columnWidths) normalized.columnWidths = columnWidths;
+    if (rowHeights) normalized.rowHeights = rowHeights;
     return normalized;
   }
 
@@ -2234,6 +2256,81 @@
     el.cellGrid.style.gridTemplateColumns = '40px ' + contentColumnTemplate(tab, 120);
   }
 
+  function columnWidthForMeasure(tab, col) {
+    const widths = normalizeColumnWidths(tab && tab.columnWidths, tab && tab.cols);
+    if (widths && col >= 0 && col < widths.length) return widths[col];
+    return DEFAULT_COLUMN_WIDTH;
+  }
+
+  /**
+   * Measure wrapped content height for a cell textarea.
+   * Uses an off-DOM clone so filtered (display:none) rows still measure correctly.
+   */
+  function measureCellContentHeight(ta, tab) {
+    if (!ta) return MIN_ROW_HEIGHT;
+    const col = parseInt(ta.dataset.col, 10);
+    let width = ta.getBoundingClientRect().width;
+    if (!(width > 0)) width = columnWidthForMeasure(tab, col) - 26; // approx gutter + padding space
+    if (!(width > 0)) width = DEFAULT_COLUMN_WIDTH;
+    const helper = document.createElement('textarea');
+    helper.className = 'cell';
+    helper.setAttribute('aria-hidden', 'true');
+    helper.tabIndex = -1;
+    helper.rows = 1;
+    helper.value = ta.value || '';
+    helper.style.cssText =
+      'position:absolute;left:-99999px;top:0;height:0;min-height:0;' +
+      'overflow:hidden;visibility:hidden;resize:none;box-sizing:border-box;';
+    helper.style.width = width + 'px';
+    document.body.appendChild(helper);
+    const needed = Math.max(MIN_ROW_HEIGHT, helper.scrollHeight);
+    document.body.removeChild(helper);
+    return needed;
+  }
+
+  function applyHeightToGridRow(row, heightPx) {
+    if (!el.cellGrid) return;
+    const h = Math.max(MIN_ROW_HEIGHT, heightPx);
+    const textareas = el.cellGrid.querySelectorAll('textarea.cell[data-row="' + row + '"]');
+    for (let i = 0; i < textareas.length; i++) {
+      textareas[i].style.height = h + 'px';
+    }
+    const wraps = el.cellGrid.querySelectorAll('.cell-wrap[data-row="' + row + '"]');
+    for (let w = 0; w < wraps.length; w++) {
+      wraps[w].style.minHeight = h + 'px';
+    }
+    const controls = el.cellGrid.querySelector('.row-controls[data-row="' + row + '"]');
+    if (controls) controls.style.minHeight = h + 'px';
+  }
+
+  function applyPersistedRowHeights(tab) {
+    const heights = normalizeRowHeights(tab && tab.rowHeights, tab && tab.rows);
+    if (!heights) return;
+    for (let r = 0; r < heights.length; r++) {
+      applyHeightToGridRow(r, heights[r]);
+    }
+  }
+
+  /** One-click: size every row to its tallest cell content on the active tab grid. */
+  function autoFitAllRowHeights() {
+    const tab = activeTab();
+    if (!tab || !el.cellGrid) return;
+    pushHistory();
+    const heights = [];
+    for (let r = 0; r < tab.rows; r++) {
+      let maxH = MIN_ROW_HEIGHT;
+      const textareas = el.cellGrid.querySelectorAll('textarea.cell[data-row="' + r + '"]');
+      for (let i = 0; i < textareas.length; i++) {
+        const h = measureCellContentHeight(textareas[i], tab);
+        if (h > maxH) maxH = h;
+      }
+      heights.push(maxH);
+      applyHeightToGridRow(r, maxH);
+    }
+    tab.rowHeights = heights;
+    scheduleSave();
+    setStatus('Auto-fitted row heights (' + tab.rows + ' rows)', 'ok');
+  }
 
   function uniqueCol1Values(tab) {
     const seen = Object.create(null);
@@ -2591,6 +2688,7 @@
     for (let r = 0; r < tab.rows; r++) {
       const rowControls = document.createElement('div');
       rowControls.className = 'row-controls';
+      rowControls.dataset.row = String(r);
 
       const rowBtn = document.createElement('button');
       rowBtn.type = 'button';
@@ -2748,6 +2846,7 @@
       if (menu) buildCol1FilterMenu(tab, menu);
     }
     syncCol1FilterControls();
+    applyPersistedRowHeights(tab);
     restoreStickyCellRangeHighlight();
   }
 
@@ -4041,6 +4140,7 @@
         tab.sleptCells.push(false);
       }
       tab.rows += 1;
+      ensureRowHeightsLength(tab);
     }
   }
 
@@ -4153,6 +4253,7 @@
       tab.sleptCells.push(false);
     }
     tab.rows += 1;
+    ensureRowHeightsLength(tab);
     renderTabs();
     renderGrid();
     renderMasterLibrary();
@@ -4211,6 +4312,9 @@
 
     tab.cells = newCells;
     tab.sleptCells = newSlept;
+    if (Array.isArray(tab.rowHeights) && tab.rowHeights.length === rows) {
+      tab.rowHeights = order.map(function (src) { return tab.rowHeights[src]; });
+    }
 
     state.confirmedLinks.forEach(function (link) {
       if (link.tabId !== tab.id) return;
@@ -4245,6 +4349,11 @@
       }
       swapSleptRowIndices(tab, rowIndex, destination);
       swapConfirmedRowIndices(tab.id, tab.cols, rowIndex, destination);
+      if (Array.isArray(tab.rowHeights) && tab.rowHeights.length === tab.rows) {
+        const tmpH = tab.rowHeights[rowIndex];
+        tab.rowHeights[rowIndex] = tab.rowHeights[destination];
+        tab.rowHeights[destination] = tmpH;
+      }
     } else {
       let emptyRow = rowIndex + 1;
       while (emptyRow < tab.rows && !rowIsEmpty(tab, emptyRow)) emptyRow++;
@@ -4253,18 +4362,27 @@
         tab.cells.push.apply(tab.cells, emptyCells(tab.cols, 1));
         tab.sleptCells.push.apply(tab.sleptCells, emptySleptCells(tab.cols, 1));
         tab.rows++;
+        ensureRowHeightsLength(tab);
         emptyRow = tab.rows - 1;
       }
 
       const movingCells = tab.cells.slice(rowIndex * tab.cols, (rowIndex + 1) * tab.cols);
+      const movingHeight = Array.isArray(tab.rowHeights) && tab.rowHeights.length === tab.rows
+        ? tab.rowHeights[rowIndex]
+        : null;
       for (let row = emptyRow; row > rowIndex + 1; row--) {
         for (let col = 0; col < tab.cols; col++) {
           tab.cells[row * tab.cols + col] = tab.cells[(row - 1) * tab.cols + col];
         }
+        if (movingHeight != null) tab.rowHeights[row] = tab.rowHeights[row - 1];
       }
       for (let col = 0; col < tab.cols; col++) {
         tab.cells[(rowIndex + 1) * tab.cols + col] = movingCells[col];
         tab.cells[rowIndex * tab.cols + col] = '';
+      }
+      if (movingHeight != null) {
+        tab.rowHeights[rowIndex + 1] = movingHeight;
+        tab.rowHeights[rowIndex] = MIN_ROW_HEIGHT;
       }
       shiftSleptRowsDown(tab, rowIndex, emptyRow);
       shiftConfirmedRowsDown(tab.id, tab.cols, rowIndex, emptyRow);
@@ -4510,6 +4628,7 @@
   if (el.btnFilterAll) el.btnFilterAll.addEventListener('click', function () { setGridRowFilter('all'); });
   if (el.btnFilterNonempty) el.btnFilterNonempty.addEventListener('click', function () { setGridRowFilter('nonempty'); });
   if (el.btnFilterIncluded) el.btnFilterIncluded.addEventListener('click', function () { setGridRowFilter('included'); });
+  if (el.btnFitRows) el.btnFitRows.addEventListener('click', autoFitAllRowHeights);
   document.addEventListener('pointerdown', function (e) {
     if (!col1FilterMenuOpen) return;
     const wrap = el.cellGrid && el.cellGrid.querySelector('.column-col1-filter');

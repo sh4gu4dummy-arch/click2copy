@@ -13,6 +13,7 @@ A simple Electron desktop app for composing prompts from reusable parts.
 - **Sticky Master insert** — Master parts picker sits above the grid; its collapse header stays sticky while scrolling the Master insert list
 - **Master insert greens** — Master library cells turn green when that Master text is currently represented in Combined (direct Master link or matching confirmed part cell); green clears when unlinked
 - **Row filters** — All / Non-empty / In Combined buttons hide rows that do not match (data stays intact; empty and Combined inclusion filters)
+- **Fit row heights** — one-click toolbar button sizes every row on the active tab to fit its tallest wrapped cell content (all rows, not just selection); heights persist with the tab like column widths
 - **Column 1 value filter** — Values multi-select on the Column 1 header picks which unique first-column values to show; composes with All / Non-empty / In Combined (data stays intact)
 - **Sort by column 1** — A–Z / Z–A buttons on the Column 1 header reorder all rows by first-column text (case-insensitive); cells, sleep flags, Combined checkboxes, and confirmed-link cell indices stay row-aligned (blank column-1 values sink to the bottom)
 - **Checkbox drag-paint** — click+drag across Combined cell toggles, sleep (Zzz) checkboxes, or row Combined toggles to set many at once to the first control’s new value; Combined, sleep, and row drags never mix
@@ -73,7 +74,7 @@ Each tab is stored as:
 }
 ```
 
-`cells` is a flat row-major array of length `cols * rows`. `sleptCells` is a parallel boolean array (same length); slept cells are excluded from Append all active.
+`cells` is a flat row-major array of length `cols * rows`. `sleptCells` is a parallel boolean array (same length); slept cells are excluded from Append all active. Optional `columnWidths` / `rowHeights` arrays (lengths `cols` / `rows`) store resized column widths and auto-fitted row heights in pixels.
 
 Confirmed append links (ranges into the combined prompt tied to source tab/cell) are stored as `confirmedLinks` on the document. They round-trip through session JSON, untitled autosave, named `.c2copy` files, and recoverable backups so cell greens and Master-insert greens restore on launch (offsets are repaired if Combined text still matches).
 
