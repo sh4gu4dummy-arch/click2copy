@@ -5534,6 +5534,11 @@
               });
               nestTa.addEventListener('click', function (ev) {
                 ev.stopPropagation();
+                if (ev.detail !== 3) return;
+                const nestEl = ev.currentTarget;
+                window.setTimeout(function () {
+                  copyTripleClickSelection(nestEl);
+                }, 0);
               });
 
               nestRow.appendChild(nestChrome);
@@ -5682,11 +5687,12 @@
     focusedCell = { tabId: tab.id, index: idx };
   }
 
-  // Click2Copy cells: short click/focus leaves the caret (no auto-copy). Enter moves to
-  // the next cell without copying (Shift+Enter = newline). Combined click/focus copies
-  // Combined; Ctrl/Cmd+C copies cell or sticky multi-cell TSV. A fresh drag selects a
-  // rectangle; only a later drag started inside that sticky selection moves/swaps the block.
-  // Shift+Arrow extends the active cell into the same sticky multi-cell highlight.
+  // Click2Copy cells: short click/focus leaves the caret (no auto-copy). Triple-click
+  // keeps the native line/all selection and also copies that text + status toast.
+  // Enter moves to the next cell without copying (Shift+Enter = newline). Combined
+  // click/focus copies Combined; Ctrl/Cmd+C copies cell or sticky multi-cell TSV. A
+  // fresh drag selects a rectangle; only a later drag started inside that sticky
+  // selection moves/swaps the block. Shift+Arrow extends the sticky multi-cell highlight.
   let lastAutoCopyKey = '';
   let lastAutoCopyAt = 0;
   let suppressCellAutoCopy = false;
@@ -5734,6 +5740,33 @@
         setStatus('Copy failed', 'err');
       }
     });
+  }
+
+  /**
+   * Triple-click helper: copy the native textarea selection (line/all) — or the whole
+   * value if selection is empty — and show the same status toast as other copies.
+   * Does not re-introduce single/double-click or Enter auto-copy.
+   */
+  function copyTripleClickSelection(ta) {
+    if (suppressCellAutoCopy) return;
+    if (!ta || ta.tagName !== 'TEXTAREA') return;
+    const full = ta.value == null ? '' : String(ta.value);
+    let value = full;
+    if (typeof ta.selectionStart === 'number' && typeof ta.selectionEnd === 'number' &&
+        ta.selectionStart !== ta.selectionEnd) {
+      value = full.slice(ta.selectionStart, ta.selectionEnd);
+    }
+    if (!value) return;
+    const tab = activeTab();
+    const idx = parseInt(ta.dataset.idx, 10);
+    const nest = ta.dataset.nest != null ? String(ta.dataset.nest) : '';
+    const key = (tab ? tab.id : '') + ':' + (Number.isNaN(idx) ? '' : idx) +
+      (nest ? ':n' + nest : '') + ':' + value;
+    const now = Date.now();
+    if (key === lastAutoCopyKey && now - lastAutoCopyAt < 300) return;
+    lastAutoCopyKey = key;
+    lastAutoCopyAt = now;
+    copyTextWithStatus(value, 'Copied cell');
   }
 
   /** Snap selection to the whole cell (used after relocate; clicks leave the caret). */
@@ -6348,8 +6381,15 @@
   }
 
   function onCellClickSelect(e) {
-    // Leave caret at click position (or word select on double-click); copy on Enter confirm.
+    // Leave caret at click position (or word select on double-click). Triple-click keeps
+    // the native line/all selection and also copies + status toast (same as Combined).
     rememberFocusedCell(e);
+    if (e.detail !== 3) return;
+    const ta = e.currentTarget;
+    // Defer so the browser finishes applying the triple-click selection first.
+    window.setTimeout(function () {
+      copyTripleClickSelection(ta);
+    }, 0);
   }
 
   function onCellDblClickMasterUnlock(e) {
