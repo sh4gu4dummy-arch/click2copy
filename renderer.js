@@ -252,6 +252,112 @@
     return out;
   }
 
+  function normalizeCellLock(item) {
+    if (!item || typeof item !== 'object') return null;
+    if (item.masterOrigin !== true) return null;
+    const out = { masterOrigin: true, locked: item.locked === false ? false : true };
+    if (Number.isInteger(item.masterCellIndex) && item.masterCellIndex >= 0) {
+      out.masterCellIndex = item.masterCellIndex;
+    }
+    return out;
+  }
+
+  function normalizeCellLocks(locks, length) {
+    const needed = length > 0 ? length : 0;
+    let out;
+    if (Array.isArray(locks)) {
+      out = locks.map(normalizeCellLock);
+    } else {
+      out = Array(needed).fill(null);
+    }
+    if (out.length < needed) {
+      while (out.length < needed) out.push(null);
+    } else if (out.length > needed) {
+      out = out.slice(0, needed);
+    }
+    return out;
+  }
+
+  function emptyCellLocks(cols, rows) {
+    return Array(cols * rows).fill(null);
+  }
+
+  function ensureCellLocks(tab) {
+    if (!tab) return;
+    const needed = (tab.cols || 0) * (tab.rows || 0);
+    tab.cellLocks = normalizeCellLocks(tab.cellLocks, needed);
+  }
+
+  function getCellLock(tab, cellIndex) {
+    if (!tab || !Number.isInteger(cellIndex) || cellIndex < 0) return null;
+    ensureCellLocks(tab);
+    if (cellIndex >= tab.cellLocks.length) return null;
+    return tab.cellLocks[cellIndex];
+  }
+
+  function isCellMasterLocked(tab, cellIndex) {
+    const lock = getCellLock(tab, cellIndex);
+    return !!(lock && lock.masterOrigin === true && lock.locked !== false);
+  }
+
+  function setCellMasterLock(tab, cellIndex, masterCellIndex) {
+    if (!tab || isMasterTab(tab)) return;
+    ensureCellLocks(tab);
+    if (cellIndex < 0 || cellIndex >= tab.cellLocks.length) return;
+    const lock = { masterOrigin: true, locked: true };
+    if (Number.isInteger(masterCellIndex) && masterCellIndex >= 0) {
+      lock.masterCellIndex = masterCellIndex;
+    } else {
+      const text = tab.cells[cellIndex] || '';
+      const found = findMasterCellIndexByText(text);
+      if (found !== null) lock.masterCellIndex = found;
+    }
+    tab.cellLocks[cellIndex] = lock;
+  }
+
+  function clearCellMasterLock(tab, cellIndex) {
+    if (!tab) return;
+    ensureCellLocks(tab);
+    if (cellIndex < 0 || cellIndex >= tab.cellLocks.length) return;
+    tab.cellLocks[cellIndex] = null;
+  }
+
+  function swapCellLockIndices(tab, indexA, indexB) {
+    if (!tab || indexA === indexB) return;
+    ensureCellLocks(tab);
+    if (indexA < 0 || indexB < 0 || indexA >= tab.cellLocks.length || indexB >= tab.cellLocks.length) return;
+    const tmp = tab.cellLocks[indexA];
+    tab.cellLocks[indexA] = tab.cellLocks[indexB];
+    tab.cellLocks[indexB] = tmp;
+  }
+
+  function remapCellLocksAfterColumnAdd(tab, oldCols, newCols) {
+    ensureCellLocks(tab);
+    const oldLocks = tab.cellLocks.slice();
+    const next = emptyCellLocks(newCols, tab.rows);
+    for (let r = 0; r < tab.rows; r++) {
+      for (let c = 0; c < oldCols; c++) {
+        const oldIdx = r * oldCols + c;
+        next[r * newCols + c] = oldIdx < oldLocks.length ? oldLocks[oldIdx] : null;
+      }
+    }
+    tab.cellLocks = next;
+  }
+
+  function copyCellLockRow(tab, fromRow, toRow) {
+    ensureCellLocks(tab);
+    for (let col = 0; col < tab.cols; col++) {
+      tab.cellLocks[toRow * tab.cols + col] = tab.cellLocks[fromRow * tab.cols + col];
+    }
+  }
+
+  function clearCellLockRow(tab, rowIndex) {
+    ensureCellLocks(tab);
+    for (let col = 0; col < tab.cols; col++) {
+      tab.cellLocks[rowIndex * tab.cols + col] = null;
+    }
+  }
+
   function nestPageText(nest, pageIndex) {
     if (!nest || !Array.isArray(nest.pages)) return '';
     if (pageIndex < 0 || pageIndex >= nest.pages.length) return '';
@@ -281,7 +387,8 @@
       cols: DEFAULT_COLS,
       rows: DEFAULT_ROWS,
       cells: emptyCells(DEFAULT_COLS, DEFAULT_ROWS),
-      nestedCells: emptyNestedCells(DEFAULT_COLS, DEFAULT_ROWS)
+      nestedCells: emptyNestedCells(DEFAULT_COLS, DEFAULT_ROWS),
+      cellLocks: emptyCellLocks(DEFAULT_COLS, DEFAULT_ROWS)
     };
     tab.icon = isTabIconId(icon) ? icon : defaultIconForTab(tab);
     return tab;
@@ -379,7 +486,8 @@
         cols: DEFAULT_COLS,
         rows: DEFAULT_ROWS,
         cells: cells,
-        nestedCells: emptyNestedCells(DEFAULT_COLS, DEFAULT_ROWS)
+        nestedCells: emptyNestedCells(DEFAULT_COLS, DEFAULT_ROWS),
+        cellLocks: emptyCellLocks(DEFAULT_COLS, DEFAULT_ROWS)
       };
       legacy.icon = isTabIconId(t.icon) ? t.icon : defaultIconForTab(legacy);
       return legacy;
@@ -408,13 +516,15 @@
     const rowHeights = normalizeRowHeights(t.rowHeights, rows);
     // sleptCells from older docs are ignored (sleep UI dropped).
     const nestedCells = normalizeNestedCells(t.nestedCells, needed);
+    const cellLocks = normalizeCellLocks(t.cellLocks, needed);
     const normalized = {
       id: t.id,
       title: t.title,
       cols: cols,
       rows: rows,
       cells: cells,
-      nestedCells: nestedCells
+      nestedCells: nestedCells,
+      cellLocks: cellLocks
     };
     normalized.icon = isTabIconId(t.icon) ? t.icon : defaultIconForTab(normalized);
     if (columnWidths) normalized.columnWidths = columnWidths;
@@ -1299,9 +1409,114 @@
     });
   }
 
-  /** Active Master-segment unlock/edit session in Combined (null when idle). */
+  /**
+   * Active Master unlock/edit session (null when idle).
+   * Combined: { kind:'combined', linkId, originalText, scope }
+   * Part cell: { kind:'cell', tabId, cellIndex, originalText }
+   */
   let masterSegmentEdit = null;
   let masterSegmentDialogOpen = false;
+
+  function isMasterCellEditSession() {
+    return !!(masterSegmentEdit && masterSegmentEdit.kind === 'cell');
+  }
+
+  function isMasterCombinedEditSession() {
+    return !!(masterSegmentEdit && masterSegmentEdit.kind === 'combined');
+  }
+
+  function updateMasterEditDialogCopy() {
+    const title = document.getElementById('master-segment-dialog-title');
+    const body = el.masterSegmentDialog
+      ? el.masterSegmentDialog.querySelector('.modal-body')
+      : null;
+    if (isMasterCellEditSession()) {
+      if (title) title.textContent = 'Master cell edited';
+      if (body) {
+        body.textContent =
+          'Overwrite the Master library (and other tabs using that Master text), keep this as local cell text only, or cancel and discard the edit?';
+      }
+    } else {
+      if (title) title.textContent = 'Master segment edited';
+      if (body) {
+        body.textContent =
+          'Overwrite the Master library (and other tabs using that Master text), keep this as local Combined text only, or cancel and discard the edit?';
+      }
+    }
+  }
+
+  /** True when a live selection / target range intersects a locked Master Combined span. */
+  function rangeTouchesLockedMasterSegment(range) {
+    if (!range || !el.combined) return null;
+    const lockedNodes = el.combined.querySelectorAll('.confirmed-segment.master-segment-locked');
+    for (let i = 0; i < lockedNodes.length; i++) {
+      const node = lockedNodes[i];
+      try {
+        if (range.intersectsNode(node)) return node;
+      } catch (err) { /* detached */ }
+    }
+    return null;
+  }
+
+  function selectionTouchesLockedMasterSegment() {
+    const sel = window.getSelection();
+    if (!sel || !sel.rangeCount) return null;
+    const hit = rangeTouchesLockedMasterSegment(sel.getRangeAt(0));
+    if (hit) return hit;
+    const nodes = [sel.anchorNode, sel.focusNode];
+    for (let i = 0; i < nodes.length; i++) {
+      const node = nodes[i];
+      const elNode = node && node.nodeType === Node.TEXT_NODE ? node.parentElement : node;
+      const locked = elNode && elNode.closest
+        ? elNode.closest('.confirmed-segment.master-segment-locked')
+        : null;
+      if (locked && el.combined.contains(locked)) return locked;
+    }
+    return null;
+  }
+
+  /** Locked span that Backspace/Delete at a collapsed caret would remove or bite into. */
+  function lockedSegmentAdjacentToCaret(key) {
+    const sel = window.getSelection();
+    if (!sel || !sel.rangeCount || !sel.isCollapsed) return null;
+    const range = sel.getRangeAt(0);
+    let node = range.startContainer;
+    let offset = range.startOffset;
+
+    function lockedFromNode(n) {
+      if (!n) return null;
+      if (n.nodeType === Node.ELEMENT_NODE && n.classList &&
+          n.classList.contains('confirmed-segment') &&
+          n.classList.contains('master-segment-locked') &&
+          el.combined.contains(n)) {
+        return n;
+      }
+      if (n.nodeType === Node.TEXT_NODE && n.parentElement) {
+        return lockedFromNode(n.parentElement);
+      }
+      return null;
+    }
+
+    if (key === 'Backspace') {
+      if (node.nodeType === Node.TEXT_NODE && offset === 0) {
+        return lockedFromNode(node.previousSibling) ||
+          lockedFromNode(node.parentElement && node.parentElement.previousSibling);
+      }
+      if (node.nodeType === Node.ELEMENT_NODE && offset > 0) {
+        return lockedFromNode(node.childNodes[offset - 1]);
+      }
+    }
+    if (key === 'Delete') {
+      if (node.nodeType === Node.TEXT_NODE && offset === (node.textContent || '').length) {
+        return lockedFromNode(node.nextSibling) ||
+          lockedFromNode(node.parentElement && node.parentElement.nextSibling);
+      }
+      if (node.nodeType === Node.ELEMENT_NODE && offset < node.childNodes.length) {
+        return lockedFromNode(node.childNodes[offset]);
+      }
+    }
+    return null;
+  }
 
   function findMasterCellIndexByText(text) {
     const master = state.tabs.find(isMasterTab);
@@ -1350,6 +1565,19 @@
         link.masterCellIndex = piece.cellIndex;
       }
       return link;
+    }
+    // Prefer explicit Master-lock metadata on the part cell (insert-from-Master).
+    if (piece && piece.tabId && Number.isInteger(piece.cellIndex)) {
+      const srcTab = state.tabs.find(function (t) { return t.id === piece.tabId; });
+      const cellLock = srcTab && !isMasterTab(srcTab) ? getCellLock(srcTab, piece.cellIndex) : null;
+      if (cellLock && cellLock.masterOrigin === true) {
+        link.masterOrigin = true;
+        link.locked = true;
+        if (Number.isInteger(cellLock.masterCellIndex) && cellLock.masterCellIndex >= 0) {
+          link.masterCellIndex = cellLock.masterCellIndex;
+        }
+        return link;
+      }
     }
     const origin = findMasterOriginForText(link.text);
     if (origin) {
@@ -2167,7 +2395,7 @@
       const link = state.confirmedLinks.find(function (item) {
         return item.id === span.id && item.scope === scope;
       });
-      const editingMaster = masterSegmentEdit && masterSegmentEdit.linkId === span.id;
+      const editingMaster = isMasterCombinedEditSession() && masterSegmentEdit.linkId === span.id;
       const stillGood = link && !seen[span.id] &&
         (editingMaster || linkMatchesSource(link, span.text));
       if (!stillGood) {
@@ -2844,6 +3072,7 @@
     if (!link || !isMasterLockedLink(link)) return;
     const originalText = link.text;
     masterSegmentEdit = {
+      kind: 'combined',
       linkId: linkId,
       originalText: originalText,
       scope: link.scope
@@ -2867,8 +3096,38 @@
     setStatus('Master segment unlocked — edit, then choose Overwrite / Keep local / Cancel', 'ok');
   }
 
+  function beginMasterCellEdit(ta, tab, cellIndex) {
+    if (!ta || !tab || masterSegmentDialogOpen) return;
+    if (isMasterTab(tab)) return;
+    if (!isCellMasterLocked(tab, cellIndex)) return;
+    const originalText = tab.cells[cellIndex] == null ? '' : String(tab.cells[cellIndex]);
+    masterSegmentEdit = {
+      kind: 'cell',
+      tabId: tab.id,
+      cellIndex: cellIndex,
+      originalText: originalText
+    };
+    // Keep cellLocks.locked true in data until dialog resolves.
+    ta.readOnly = false;
+    ta.classList.remove('master-cell-locked');
+    ta.classList.add('master-cell-editing');
+    const wrap = ta.closest ? ta.closest('.cell-wrap') : null;
+    if (wrap) {
+      wrap.classList.remove('master-cell-locked');
+      wrap.classList.add('master-cell-editing');
+    }
+    ta.title = 'Editing Master cell — blur or Enter to confirm; Esc to cancel';
+    ta.focus();
+    try {
+      const len = (ta.value || '').length;
+      ta.setSelectionRange(len, len);
+    } catch (err) { /* no-op */ }
+    setStatus('Master cell unlocked — edit, then choose Overwrite / Keep local / Cancel', 'ok');
+  }
+
   function showMasterSegmentDialog() {
     if (!el.masterSegmentDialog) return;
+    updateMasterEditDialogCopy();
     masterSegmentDialogOpen = true;
     el.masterSegmentDialog.hidden = false;
     if (el.btnMasterOverwrite) el.btnMasterOverwrite.focus();
@@ -2882,6 +3141,28 @@
   function requestMasterSegmentFinish(opts) {
     opts = opts || {};
     if (!masterSegmentEdit || masterSegmentDialogOpen) return;
+
+    if (masterSegmentEdit.kind === 'cell') {
+      const tab = state.tabs.find(function (t) { return t.id === masterSegmentEdit.tabId; });
+      if (!tab) {
+        masterSegmentEdit = null;
+        return;
+      }
+      const idx = masterSegmentEdit.cellIndex;
+      const liveText = idx >= 0 && idx < tab.cells.length
+        ? (tab.cells[idx] == null ? '' : String(tab.cells[idx]))
+        : masterSegmentEdit.originalText;
+      if (!opts.forceDialog && liveText === masterSegmentEdit.originalText) {
+        ensureCellLocks(tab);
+        if (tab.cellLocks[idx]) tab.cellLocks[idx].locked = true;
+        masterSegmentEdit = null;
+        refreshAfterMasterSegmentChange();
+        return;
+      }
+      showMasterSegmentDialog();
+      return;
+    }
+
     const link = linkById(masterSegmentEdit.linkId, masterSegmentEdit.scope);
     if (!link) {
       masterSegmentEdit = null;
@@ -2911,8 +3192,29 @@
       return;
     }
     const edit = masterSegmentEdit;
-    const link = linkById(edit.linkId, edit.scope);
     hideMasterSegmentDialog();
+
+    if (edit.kind === 'cell') {
+      const tab = state.tabs.find(function (t) { return t.id === edit.tabId; });
+      if (tab && edit.cellIndex >= 0 && edit.cellIndex < tab.cells.length) {
+        pushHistory();
+        tab.cells[edit.cellIndex] = edit.originalText;
+        ensureCellLocks(tab);
+        if (tab.cellLocks[edit.cellIndex]) {
+          tab.cellLocks[edit.cellIndex].locked = true;
+          tab.cellLocks[edit.cellIndex].masterOrigin = true;
+        } else {
+          setCellMasterLock(tab, edit.cellIndex, null);
+        }
+        liveSyncConfirmedLinksForCell(tab.id, edit.cellIndex, null, { silent: true });
+      }
+      masterSegmentEdit = null;
+      refreshAfterMasterSegmentChange();
+      setStatus('Master cell edit cancelled — locked again', 'ok');
+      return;
+    }
+
+    const link = linkById(edit.linkId, edit.scope);
     if (link) {
       pushHistory();
       rewriteConfirmedLinkSegment(link, edit.originalText);
@@ -2924,27 +3226,9 @@
     setStatus('Master segment edit cancelled — locked again', 'ok');
   }
 
-  function overwriteMasterFromSegmentEdit() {
-    if (!masterSegmentEdit) {
-      hideMasterSegmentDialog();
-      return;
-    }
-    const edit = masterSegmentEdit;
-    const link = linkById(edit.linkId, edit.scope);
-    hideMasterSegmentDialog();
-    if (!link) {
-      masterSegmentEdit = null;
-      refreshAfterMasterSegmentChange();
-      return;
-    }
-    const span = findCombinedSegmentSpan(edit.linkId);
-    if (span) syncConfirmedFromCombinedDom();
-    const newText = link.text;
-    const oldText = edit.originalText;
-    pushHistory();
-
+  function applyMasterOverwriteText(oldText, newText, preferredMasterIdx) {
     const master = state.tabs.find(isMasterTab);
-    let masterIdx = Number.isInteger(link.masterCellIndex) ? link.masterCellIndex : -1;
+    let masterIdx = Number.isInteger(preferredMasterIdx) ? preferredMasterIdx : -1;
     if (master) {
       if (masterIdx < 0 || masterIdx >= master.cells.length ||
           cellParentText(master, masterIdx) !== oldText) {
@@ -2961,6 +3245,9 @@
         if (master && tab.id === master.id && i === masterIdx) continue;
         if (cellParentText(tab, i) === oldText) {
           tab.cells[i] = newText;
+          if (!isMasterTab(tab)) {
+            setCellMasterLock(tab, i, masterIdx >= 0 ? masterIdx : null);
+          }
         }
       }
     });
@@ -2970,17 +3257,68 @@
       if (!isMasterOriginLink(other)) return;
       const sameMaster = Number.isInteger(masterIdx) && masterIdx >= 0 &&
         other.masterCellIndex === masterIdx;
-      const sameText = other.text === oldText || other.id === link.id;
-      if (!sameMaster && !sameText && other.id !== link.id) return;
+      const sameText = other.text === oldText;
+      if (!sameMaster && !sameText) return;
       if (other.text !== newText) rewriteConfirmedLinkSegment(other, newText);
       other.masterOrigin = true;
       other.locked = true;
       if (masterIdx >= 0) other.masterCellIndex = masterIdx;
     });
 
+    return masterIdx;
+  }
+
+  function overwriteMasterFromSegmentEdit() {
+    if (!masterSegmentEdit) {
+      hideMasterSegmentDialog();
+      return;
+    }
+    const edit = masterSegmentEdit;
+    hideMasterSegmentDialog();
+
+    if (edit.kind === 'cell') {
+      const tab = state.tabs.find(function (t) { return t.id === edit.tabId; });
+      if (!tab || edit.cellIndex < 0 || edit.cellIndex >= tab.cells.length) {
+        masterSegmentEdit = null;
+        refreshAfterMasterSegmentChange();
+        return;
+      }
+      const newText = tab.cells[edit.cellIndex] == null ? '' : String(tab.cells[edit.cellIndex]);
+      const oldText = edit.originalText;
+      const lock = getCellLock(tab, edit.cellIndex);
+      const preferred = lock && Number.isInteger(lock.masterCellIndex) ? lock.masterCellIndex : -1;
+      pushHistory();
+      const masterIdx = applyMasterOverwriteText(oldText, newText, preferred);
+      setCellMasterLock(tab, edit.cellIndex, masterIdx >= 0 ? masterIdx : null);
+      masterSegmentEdit = null;
+      refreshAfterMasterSegmentChange();
+      setStatus('Overwrote Master and synced matching cells/segments', 'ok');
+      return;
+    }
+
+    const link = linkById(edit.linkId, edit.scope);
+    if (!link) {
+      masterSegmentEdit = null;
+      refreshAfterMasterSegmentChange();
+      return;
+    }
+    const span = findCombinedSegmentSpan(edit.linkId);
+    if (span) syncConfirmedFromCombinedDom();
+    const newText = link.text;
+    const oldText = edit.originalText;
+    pushHistory();
+    const preferred = Number.isInteger(link.masterCellIndex) ? link.masterCellIndex : -1;
+    const masterIdx = applyMasterOverwriteText(oldText, newText, preferred);
     link.masterOrigin = true;
     link.locked = true;
     if (masterIdx >= 0) link.masterCellIndex = masterIdx;
+    // Also lock the linked part cell when it holds this Master text.
+    const srcTab = state.tabs.find(function (t) { return t.id === link.tabId; });
+    if (srcTab && !isMasterTab(srcTab) && link.cellIndex >= 0 &&
+        link.cellIndex < srcTab.cells.length &&
+        cellParentText(srcTab, link.cellIndex) === newText) {
+      setCellMasterLock(srcTab, link.cellIndex, masterIdx >= 0 ? masterIdx : null);
+    }
     masterSegmentEdit = null;
     refreshAfterMasterSegmentChange();
     setStatus('Overwrote Master and synced matching cells/segments', 'ok');
@@ -2992,8 +3330,36 @@
       return;
     }
     const edit = masterSegmentEdit;
-    const link = linkById(edit.linkId, edit.scope);
     hideMasterSegmentDialog();
+
+    if (edit.kind === 'cell') {
+      const tab = state.tabs.find(function (t) { return t.id === edit.tabId; });
+      if (!tab || edit.cellIndex < 0 || edit.cellIndex >= tab.cells.length) {
+        masterSegmentEdit = null;
+        refreshAfterMasterSegmentChange();
+        return;
+      }
+      const newText = tab.cells[edit.cellIndex] == null ? '' : String(tab.cells[edit.cellIndex]);
+      pushHistory();
+      clearCellMasterLock(tab, edit.cellIndex);
+      // Drop Master lock/origin on Combined links for this cell (parent).
+      state.confirmedLinks.forEach(function (other) {
+        if (other.tabId !== tab.id || other.cellIndex !== edit.cellIndex) return;
+        if (linkNestIndex(other) !== null) return;
+        if (!isMasterOriginLink(other)) return;
+        other.masterOrigin = false;
+        other.locked = false;
+        if ('masterCellIndex' in other) delete other.masterCellIndex;
+        if (other.text !== newText) rewriteConfirmedLinkSegment(other, newText);
+      });
+      liveSyncConfirmedLinksForCell(tab.id, edit.cellIndex, null, { silent: true });
+      masterSegmentEdit = null;
+      refreshAfterMasterSegmentChange();
+      setStatus('Kept as local cell text — unlinked from Master lock', 'ok');
+      return;
+    }
+
+    const link = linkById(edit.linkId, edit.scope);
     if (!link) {
       masterSegmentEdit = null;
       refreshAfterMasterSegmentChange();
@@ -3011,6 +3377,7 @@
       if (nestIdx === null) {
         if (link.cellIndex >= 0 && link.cellIndex < tab.cells.length) {
           tab.cells[link.cellIndex] = newText;
+          if (!isMasterTab(tab)) clearCellMasterLock(tab, link.cellIndex);
         }
       } else {
         ensureNestedCells(tab);
@@ -3063,7 +3430,7 @@
       span.textContent = link.text;
       if (isMasterOriginLink(link)) {
         span.classList.add('master-segment');
-        const editing = masterSegmentEdit && masterSegmentEdit.linkId === link.id;
+        const editing = isMasterCombinedEditSession() && masterSegmentEdit.linkId === link.id;
         if (editing) {
           span.classList.add('master-segment-editing');
           span.contentEditable = 'true';
@@ -4042,6 +4409,8 @@
 
     pushHistory();
     tab.cells[index] = text;
+    const masterIdx = findMasterCellIndexByText(text);
+    setCellMasterLock(tab, index, masterIdx);
     focusedCell = { tabId: tab.id, index: index };
     revalidateLinksForCell(tab.id, index, { silent: true });
     renderTabs();
@@ -4053,8 +4422,8 @@
     if (cell) cell.focus();
     setStatus(
       usedFirstCellFallback
-        ? 'Added Master text to ' + tab.title + ' (replaced the first cell; no empty cells)'
-        : 'Added Master text to ' + tab.title,
+        ? 'Added Master text to ' + tab.title + ' (replaced the first cell; locked until double-click unlock)'
+        : 'Added Master text to ' + tab.title + ' (locked until double-click unlock)',
       'ok'
     );
   }
@@ -4884,6 +5253,11 @@
         wrap.dataset.row = String(r);
         wrap.dataset.col = String(c);
         if (isCellConfirmed(tab.id, idx)) wrap.classList.add('cell-confirmed');
+        const cellLocked = !isMasterTab(tab) && isCellMasterLocked(tab, idx);
+        const cellEditing = isMasterCellEditSession() &&
+          masterSegmentEdit.tabId === tab.id && masterSegmentEdit.cellIndex === idx;
+        if (cellEditing) wrap.classList.add('master-cell-editing');
+        else if (cellLocked) wrap.classList.add('master-cell-locked');
         const gutter = document.createElement('div');
         gutter.className = 'cell-gutter';
 
@@ -4945,14 +5319,26 @@
         ta.dataset.col = String(c);
         ta.dataset.idx = String(idx);
         ta.setAttribute('aria-label', 'Cell ' + cellAddress(r, c));
+        if (cellEditing) {
+          ta.classList.add('master-cell-editing');
+          ta.readOnly = false;
+          ta.title = 'Editing Master cell — blur or Enter to confirm; Esc to cancel';
+        } else if (cellLocked) {
+          ta.classList.add('master-cell-locked');
+          ta.readOnly = true;
+          ta.title = 'Locked Master cell — double-click to unlock and edit';
+        }
         ta.addEventListener('input', onCellInput);
         ta.addEventListener('keydown', onCellKeydown);
         ta.addEventListener('pointerdown', onCellPointerDownSelect);
         ta.addEventListener('focus', onCellFocusSelect);
         ta.addEventListener('click', onCellClickSelect);
+        ta.addEventListener('dblclick', onCellDblClickMasterUnlock);
+        ta.addEventListener('blur', onCellBlurMasterFinish);
         ta.addEventListener('paste', onCellPaste);
         ta.addEventListener('copy', onCellCopy);
         ta.addEventListener('cut', onCellCut);
+        ta.addEventListener('beforeinput', onCellBeforeInputMasterLock);
         stack.appendChild(ta);
 
         const nests = getCellNests(tab, idx);
@@ -5500,10 +5886,12 @@
     }
     pushHistory();
     ensureNestedCells(tab);
+    ensureCellLocks(tab);
     const tmp = tab.cells[fromIdx];
     tab.cells[fromIdx] = tab.cells[toIdx];
     tab.cells[toIdx] = tmp;
     swapNestedCellIndices(tab, fromIdx, toIdx);
+    swapCellLockIndices(tab, fromIdx, toIdx);
     swapConfirmedCellIndices(tab.id, fromIdx, toIdx);
     return true;
   }
@@ -5539,10 +5927,13 @@
     );
 
     ensureNestedCells(tab);
+    ensureCellLocks(tab);
     const srcCells = srcIndices.map(function (i) { return tab.cells[i]; });
     const srcNested = srcIndices.map(function (i) { return normalizeNestList(tab.nestedCells[i]); });
+    const srcLocks = srcIndices.map(function (i) { return tab.cellLocks[i]; });
     const dstCells = dstIndices.map(function (i) { return tab.cells[i]; });
     const dstNested = dstIndices.map(function (i) { return normalizeNestList(tab.nestedCells[i]); });
+    const dstLocks = dstIndices.map(function (i) { return tab.cellLocks[i]; });
 
     let destHadContent = false;
     if (!overlap) {
@@ -5563,8 +5954,10 @@
       for (let i = 0; i < srcIndices.length; i++) {
         tab.cells[dstIndices[i]] = srcCells[i];
         tab.nestedCells[dstIndices[i]] = srcNested[i];
+        tab.cellLocks[dstIndices[i]] = srcLocks[i];
         tab.cells[srcIndices[i]] = dstCells[i];
         tab.nestedCells[srcIndices[i]] = dstNested[i];
+        tab.cellLocks[srcIndices[i]] = dstLocks[i];
         indexMap[srcIndices[i]] = dstIndices[i];
         indexMap[dstIndices[i]] = srcIndices[i];
       }
@@ -5577,10 +5970,12 @@
       for (let i = 0; i < srcIndices.length; i++) {
         tab.cells[srcIndices[i]] = '';
         tab.nestedCells[srcIndices[i]] = [];
+        tab.cellLocks[srcIndices[i]] = null;
       }
       for (let i = 0; i < srcIndices.length; i++) {
         tab.cells[dstIndices[i]] = srcCells[i];
         tab.nestedCells[dstIndices[i]] = srcNested[i];
+        tab.cellLocks[dstIndices[i]] = srcLocks[i];
         indexMap[srcIndices[i]] = dstIndices[i];
       }
     }
@@ -6041,12 +6436,73 @@
     rememberFocusedCell(e);
   }
 
+  function onCellDblClickMasterUnlock(e) {
+    const tab = activeTab();
+    if (!tab || isMasterTab(tab) || masterSegmentDialogOpen) return;
+    const ta = e.currentTarget;
+    const idx = parseInt(ta.dataset.idx, 10);
+    if (Number.isNaN(idx) || idx < 0 || idx >= tab.cells.length) return;
+    if (!isCellMasterLocked(tab, idx)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    beginMasterCellEdit(ta, tab, idx);
+  }
+
+  function onCellBlurMasterFinish(e) {
+    if (!isMasterCellEditSession() || masterSegmentDialogOpen) return;
+    const tab = activeTab();
+    const ta = e.currentTarget;
+    if (!tab || !ta) return;
+    const idx = parseInt(ta.dataset.idx, 10);
+    if (masterSegmentEdit.tabId !== tab.id || masterSegmentEdit.cellIndex !== idx) return;
+    const next = e.relatedTarget;
+    if (next && el.masterSegmentDialog && el.masterSegmentDialog.contains(next)) return;
+    window.setTimeout(function () {
+      if (!isMasterCellEditSession() || masterSegmentDialogOpen) return;
+      const active = document.activeElement;
+      if (el.masterSegmentDialog && el.masterSegmentDialog.contains(active)) return;
+      if (active === ta) return;
+      requestMasterSegmentFinish();
+    }, 0);
+  }
+
+  function onCellBeforeInputMasterLock(e) {
+    if (masterSegmentDialogOpen) {
+      e.preventDefault();
+      return;
+    }
+    const tab = activeTab();
+    if (!tab || isMasterTab(tab)) return;
+    const ta = e.currentTarget;
+    const idx = parseInt(ta.dataset.idx, 10);
+    if (Number.isNaN(idx) || idx < 0 || idx >= tab.cells.length) return;
+    // Allow typing only while this cell is the active unlocked Master edit session.
+    if (isMasterCellEditSession() &&
+        masterSegmentEdit.tabId === tab.id &&
+        masterSegmentEdit.cellIndex === idx) {
+      return;
+    }
+    if (isCellMasterLocked(tab, idx) || ta.readOnly) {
+      e.preventDefault();
+      setStatus('Locked Master cell — double-click to unlock before editing', 'err');
+    }
+  }
+
   function onCellInput(e) {
     const tab = activeTab();
     if (!tab) return;
     rememberFocusedCell(e);
     const idx = parseInt(e.target.dataset.idx, 10);
     if (Number.isNaN(idx) || idx < 0 || idx >= tab.cells.length) return;
+    // Hard block: locked Master cells are read-only until double-click unlock.
+    if (!isMasterTab(tab) && isCellMasterLocked(tab, idx) &&
+        !(isMasterCellEditSession() &&
+          masterSegmentEdit.tabId === tab.id &&
+          masterSegmentEdit.cellIndex === idx)) {
+      e.target.value = tab.cells[idx] || '';
+      setStatus('Locked Master cell — double-click to unlock before editing', 'err');
+      return;
+    }
     if (stickyCellRange) clearStickyCellRange();
     pushHistory({ coalesce: true });
     tab.cells[idx] = e.target.value;
@@ -6118,15 +6574,53 @@
 
   function onCellKeydown(e) {
     if (e.isComposing) return;
+    const tab = activeTab();
+    const idx = parseInt(e.currentTarget.dataset.idx, 10);
+    if (!tab || Number.isNaN(idx) || idx < 0 || idx >= tab.cells.length) return;
+
+    if (isMasterCellEditSession() &&
+        masterSegmentEdit.tabId === tab.id &&
+        masterSegmentEdit.cellIndex === idx &&
+        !masterSegmentDialogOpen) {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        cancelMasterSegmentEdit();
+        return;
+      }
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        requestMasterSegmentFinish();
+        return;
+      }
+    }
+
+    if (!isMasterTab(tab) && isCellMasterLocked(tab, idx) &&
+        !(isMasterCellEditSession() &&
+          masterSegmentEdit.tabId === tab.id &&
+          masterSegmentEdit.cellIndex === idx)) {
+      // Allow navigation; block editing keys.
+      const nav = e.key === 'Tab' || e.key === 'Escape' ||
+        e.key === 'ArrowUp' || e.key === 'ArrowDown' ||
+        e.key === 'ArrowLeft' || e.key === 'ArrowRight' ||
+        e.key === 'Home' || e.key === 'End' || e.key === 'PageUp' || e.key === 'PageDown';
+      const modNav = (e.ctrlKey || e.metaKey) && (e.key === 'c' || e.key === 'C' ||
+        e.key === 'a' || e.key === 'A');
+      if (!nav && !modNav) {
+        e.preventDefault();
+        if (e.key === 'Enter' && !e.shiftKey) {
+          // Still allow Enter confirm-copy navigation on locked cells (no edit).
+        } else {
+          setStatus('Locked Master cell — double-click to unlock before editing', 'err');
+          return;
+        }
+      }
+    }
+
     const isEnter = e.key === 'Enter' && !e.shiftKey;
     const isTab = e.key === 'Tab';
     const isArrow = e.key === 'ArrowUp' || e.key === 'ArrowDown' ||
       e.key === 'ArrowLeft' || e.key === 'ArrowRight';
     if (!isEnter && !isTab && !isArrow) return;
-
-    const tab = activeTab();
-    const idx = parseInt(e.currentTarget.dataset.idx, 10);
-    if (!tab || Number.isNaN(idx) || idx < 0 || idx >= tab.cells.length) return;
 
     if (isArrow) {
       // Leave Shift/Ctrl/Alt/Meta+arrow for text selection / OS shortcuts.
@@ -6539,6 +7033,7 @@
 
   function ensureTabSize(tab, rows, cols) {
     ensureNestedCells(tab);
+    ensureCellLocks(tab);
     while (tab.cols < cols) {
       const oldCols = tab.cols;
       const newCells = [];
@@ -6555,13 +7050,16 @@
       tab.cols += 1;
       tab.cells = newCells;
       remapNestedAfterColumnAdd(tab, oldCols, tab.cols);
+      remapCellLocksAfterColumnAdd(tab, oldCols, tab.cols);
       remapConfirmedAfterColumnAdd(tab.id, oldCols, tab.cols);
     }
     while (tab.rows < rows) {
       ensureNestedCells(tab);
+      ensureCellLocks(tab);
       for (let c = 0; c < tab.cols; c++) {
         tab.cells.push('');
         tab.nestedCells.push([]);
+        tab.cellLocks.push(null);
       }
       tab.rows += 1;
       ensureRowHeightsLength(tab);
@@ -6577,6 +7075,8 @@
       for (let c = 0; c < pasteCols; c++) {
         const idx = (startRow + r) * tab.cols + (startCol + c);
         tab.cells[idx] = matrix[r][c] == null ? '' : String(matrix[r][c]);
+        // Sheet paste replaces cell text — drop Master lock on overwritten cells.
+        if (!isMasterTab(tab)) clearCellMasterLock(tab, idx);
         revalidateLinksForCell(tab.id, idx, { silent: true });
       }
     }
@@ -6596,6 +7096,15 @@
     const startIdx = parseInt(e.currentTarget.dataset.idx, 10);
     if (Number.isNaN(startIdx) || startIdx < 0 || startIdx >= tab.cells.length) return;
 
+    if (!isMasterTab(tab) && isCellMasterLocked(tab, startIdx) &&
+        !(isMasterCellEditSession() &&
+          masterSegmentEdit.tabId === tab.id &&
+          masterSegmentEdit.cellIndex === startIdx)) {
+      e.preventDefault();
+      setStatus('Locked Master cell — double-click to unlock before editing', 'err');
+      return;
+    }
+
     const matrix = parseClipboardMatrix(e.clipboardData);
     if (!matrix || !isMultiCellMatrix(matrix)) {
       // Single-cell / plain text: let the textarea handle a normal paste.
@@ -6603,9 +7112,26 @@
     }
 
     e.preventDefault();
-    pushHistory();
     const startRow = Math.floor(startIdx / tab.cols);
     const startCol = startIdx % tab.cols;
+    if (!isMasterTab(tab)) {
+      const pr = matrix.length;
+      const pc = matrix[0].length;
+      for (let r = 0; r < pr; r++) {
+        for (let c = 0; c < pc; c++) {
+          const rr = startRow + r;
+          const cc = startCol + c;
+          if (rr < tab.rows && cc < tab.cols) {
+            const i = rr * tab.cols + cc;
+            if (isCellMasterLocked(tab, i)) {
+              setStatus('Locked Master cell in paste range — double-click to unlock first', 'err');
+              return;
+            }
+          }
+        }
+      }
+    }
+    pushHistory();
     const result = pasteMatrixAt(tab, startRow, startCol, matrix);
     if (!result) return;
 
@@ -6646,15 +7172,25 @@
         ta.selectionStart !== ta.selectionEnd) {
       return;
     }
+    const idx = parseInt(ta.dataset.idx, 10);
+    if (!Number.isNaN(idx) && idx >= 0 && idx < tab.cells.length &&
+        !isMasterTab(tab) && isCellMasterLocked(tab, idx) &&
+        !(isMasterCellEditSession() &&
+          masterSegmentEdit.tabId === tab.id &&
+          masterSegmentEdit.cellIndex === idx)) {
+      e.preventDefault();
+      setStatus('Locked Master cell — double-click to unlock before editing', 'err');
+      return;
+    }
     const value = ta.value == null ? '' : String(ta.value);
     if (!e.clipboardData) return;
     e.preventDefault();
     e.clipboardData.setData('text/plain', value);
-    const idx = parseInt(ta.dataset.idx, 10);
     if (!Number.isNaN(idx) && idx >= 0 && idx < tab.cells.length) {
       pushHistory();
       tab.cells[idx] = '';
       ta.value = '';
+      clearCellMasterLock(tab, idx);
       revalidateLinksForCell(tab.id, idx);
       const confirmed = isCellConfirmed(tab.id, idx);
       ta.classList.toggle('cell-confirmed', confirmed);
@@ -6672,9 +7208,11 @@
     if (!tab) return;
     pushHistory();
     ensureNestedCells(tab);
+    ensureCellLocks(tab);
     for (let c = 0; c < tab.cols; c++) {
       tab.cells.push('');
       tab.nestedCells.push([]);
+      tab.cellLocks.push(null);
     }
     tab.rows += 1;
     ensureRowHeightsLength(tab);
@@ -6724,14 +7262,17 @@
       return a - b;
     });
 
+    ensureCellLocks(tab);
     const newCells = [];
     const newNested = [];
+    const newLocks = [];
     for (let i = 0; i < order.length; i++) {
       const src = order[i];
       for (let c = 0; c < cols; c++) {
         const idx = src * cols + c;
         newCells.push(tab.cells[idx] || '');
         newNested.push(normalizeNestList(tab.nestedCells[idx]));
+        newLocks.push(tab.cellLocks[idx] || null);
       }
     }
 
@@ -6742,6 +7283,7 @@
 
     tab.cells = newCells;
     tab.nestedCells = newNested;
+    tab.cellLocks = newLocks;
     if (Array.isArray(tab.rowHeights) && tab.rowHeights.length === rows) {
       tab.rowHeights = order.map(function (src) { return tab.rowHeights[src]; });
     }
@@ -6787,14 +7329,17 @@
       order.splice(rowIndex, 1);
       order.splice(destination, 0, rowIndex);
 
+      ensureCellLocks(tab);
       const newCells = [];
       const newNested = [];
+      const newLocks = [];
       for (let i = 0; i < order.length; i++) {
         const src = order[i];
         for (let c = 0; c < cols; c++) {
           const idx = src * cols + c;
           newCells.push(tab.cells[idx] || '');
           newNested.push(normalizeNestList(tab.nestedCells[idx]));
+          newLocks.push(tab.cellLocks[idx] || null);
         }
       }
 
@@ -6805,14 +7350,17 @@
 
       tab.cells = newCells;
       tab.nestedCells = newNested;
+      tab.cellLocks = newLocks;
       if (Array.isArray(tab.rowHeights) && tab.rowHeights.length === rows) {
         tab.rowHeights = order.map(function (src) { return tab.rowHeights[src]; });
       }
       remapConfirmedRowsByOrder(tab.id, cols, oldToNew);
     } else {
       // ↓ Grow by one, push everything below further down, move this row into the gap.
+      ensureCellLocks(tab);
       tab.cells.push.apply(tab.cells, emptyCells(cols, 1));
       tab.nestedCells.push.apply(tab.nestedCells, emptyNestedCells(cols, 1));
+      tab.cellLocks.push.apply(tab.cellLocks, emptyCellLocks(cols, 1));
       tab.rows += 1;
       ensureRowHeightsLength(tab);
 
@@ -6822,6 +7370,7 @@
           tab.cells[row * cols + col] = tab.cells[(row - 1) * cols + col];
         }
         copyNestedRow(tab, row - 1, row);
+        copyCellLockRow(tab, row - 1, row);
         if (Array.isArray(tab.rowHeights) && tab.rowHeights.length === tab.rows) {
           tab.rowHeights[row] = tab.rowHeights[row - 1];
         }
@@ -6833,6 +7382,8 @@
       }
       copyNestedRow(tab, rowIndex, rowIndex + 1);
       clearNestedRow(tab, rowIndex);
+      copyCellLockRow(tab, rowIndex, rowIndex + 1);
+      clearCellLockRow(tab, rowIndex);
       if (Array.isArray(tab.rowHeights) && tab.rowHeights.length === tab.rows) {
         tab.rowHeights[rowIndex + 1] = tab.rowHeights[rowIndex];
         tab.rowHeights[rowIndex] = MIN_ROW_HEIGHT;
@@ -6869,6 +7420,7 @@
     tab.cols += 1;
     tab.cells = newCells;
     remapNestedAfterColumnAdd(tab, oldCols, tab.cols);
+    remapCellLocksAfterColumnAdd(tab, oldCols, tab.cols);
     remapConfirmedAfterColumnAdd(tab.id, oldCols, tab.cols);
     renderTabs();
     renderGrid();
@@ -7173,6 +7725,7 @@
   function setHitText(tab, hit, text) {
     if (!tab || !hit) return;
     if (hit.nestIndex == null) {
+      if (!isMasterTab(tab) && isCellMasterLocked(tab, hit.cellIndex)) return;
       tab.cells[hit.cellIndex] = text;
       return;
     }
@@ -7629,19 +8182,25 @@
       e.preventDefault();
       return;
     }
-    const sel = window.getSelection();
-    if (!sel || !sel.rangeCount) return;
-    const node = sel.anchorNode;
-    const elNode = node && node.nodeType === Node.TEXT_NODE ? node.parentElement : node;
-    const locked = elNode && elNode.closest
-      ? elNode.closest('.confirmed-segment.master-segment-locked')
-      : null;
-    if (locked && el.combined.contains(locked)) {
+    // While editing an unlocked Master segment, allow input only outside other locked spans.
+    if (typeof e.getTargetRanges === 'function') {
+      const ranges = e.getTargetRanges();
+      for (let i = 0; i < ranges.length; i++) {
+        const hit = rangeTouchesLockedMasterSegment(ranges[i]);
+        if (hit) {
+          e.preventDefault();
+          setStatus('Locked Master segment — double-click to unlock before editing', 'err');
+          return;
+        }
+      }
+    }
+    if (selectionTouchesLockedMasterSegment()) {
       e.preventDefault();
+      setStatus('Locked Master segment — double-click to unlock before editing', 'err');
     }
   });
   el.combined.addEventListener('focusout', function (e) {
-    if (!masterSegmentEdit || masterSegmentDialogOpen) return;
+    if (!isMasterCombinedEditSession() || masterSegmentDialogOpen) return;
     const next = e.relatedTarget;
     if (next && el.masterSegmentDialog && el.masterSegmentDialog.contains(next)) return;
     const span = findCombinedSegmentSpan(masterSegmentEdit.linkId);
@@ -7694,7 +8253,7 @@
   });
 
   el.combined.addEventListener('keydown', function (event) {
-    if (masterSegmentEdit && !masterSegmentDialogOpen && !event.isComposing) {
+    if (isMasterCombinedEditSession() && !masterSegmentDialogOpen && !event.isComposing) {
       if (event.key === 'Escape') {
         event.preventDefault();
         cancelMasterSegmentEdit();
@@ -7706,19 +8265,29 @@
         return;
       }
     }
-    if (!event.isComposing && (event.key === 'Backspace' || event.key === 'Delete') &&
-        !masterSegmentEdit) {
-      const sel = window.getSelection();
-      if (sel && sel.rangeCount) {
-        const range = sel.getRangeAt(0);
-        const lockedNodes = el.combined.querySelectorAll('.confirmed-segment.master-segment-locked');
-        for (let i = 0; i < lockedNodes.length; i++) {
-          const node = lockedNodes[i];
-          if (range.intersectsNode(node)) {
-            event.preventDefault();
-            setStatus('Locked Master segment — double-click to unlock before editing', 'err');
-            return;
-          }
+    if (!event.isComposing && !masterSegmentDialogOpen) {
+      const editingCombined = isMasterCombinedEditSession();
+      if (event.key === 'Backspace' || event.key === 'Delete') {
+        const touched = selectionTouchesLockedMasterSegment() ||
+          lockedSegmentAdjacentToCaret(event.key);
+        if (touched) {
+          event.preventDefault();
+          setStatus('Locked Master segment — double-click to unlock before editing', 'err');
+          return;
+        }
+      } else if (!editingCombined) {
+        // Block printable / modifying keys when caret sits in a locked span.
+        const isMod = event.ctrlKey || event.metaKey || event.altKey;
+        const isNav = event.key === 'Escape' || event.key === 'Tab' ||
+          event.key === 'ArrowUp' || event.key === 'ArrowDown' ||
+          event.key === 'ArrowLeft' || event.key === 'ArrowRight' ||
+          event.key === 'Home' || event.key === 'End' ||
+          event.key === 'PageUp' || event.key === 'PageDown';
+        if (!isMod && !isNav && event.key.length === 1 &&
+            selectionTouchesLockedMasterSegment()) {
+          event.preventDefault();
+          setStatus('Locked Master segment — double-click to unlock before editing', 'err');
+          return;
         }
       }
     }
@@ -7745,6 +8314,11 @@
   });
 
   el.combined.addEventListener('paste', function (event) {
+    if (masterSegmentDialogOpen || selectionTouchesLockedMasterSegment()) {
+      event.preventDefault();
+      setStatus('Locked Master segment — double-click to unlock before editing', 'err');
+      return;
+    }
     event.preventDefault();
     const pasted = (event.clipboardData || window.clipboardData).getData('text/plain');
     if (document.queryCommandSupported && document.queryCommandSupported('insertText')) {
