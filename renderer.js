@@ -3364,15 +3364,74 @@
     focusCell(index);
   }
 
+  function isWholeCellSelected(ta) {
+    if (!ta || ta.tagName !== 'TEXTAREA') return false;
+    const len = (ta.value == null ? '' : String(ta.value)).length;
+    return ta.selectionStart === 0 && ta.selectionEnd === len;
+  }
+
+  /** True when caret is collapsed at the text edge matching the arrow direction. */
+  function caretAtArrowBoundary(ta, key) {
+    if (!ta || ta.tagName !== 'TEXTAREA') return false;
+    const val = ta.value == null ? '' : String(ta.value);
+    const start = ta.selectionStart;
+    const end = ta.selectionEnd;
+    if (start !== end) return false;
+    if (key === 'ArrowLeft') return start === 0;
+    if (key === 'ArrowRight') return start === val.length;
+    // Up/Down: first/last visual line (no newline before/after caret).
+    if (key === 'ArrowUp') return val.slice(0, start).indexOf('\n') === -1;
+    if (key === 'ArrowDown') return val.slice(end).indexOf('\n') === -1;
+    return false;
+  }
+
+  function adjacentCellIndex(idx, cols, rows, key) {
+    const row = Math.floor(idx / cols);
+    const col = idx % cols;
+    if (key === 'ArrowLeft') {
+      if (col <= 0) return -1;
+      return idx - 1;
+    }
+    if (key === 'ArrowRight') {
+      if (col >= cols - 1) return -1;
+      return idx + 1;
+    }
+    if (key === 'ArrowUp') {
+      if (row <= 0) return -1;
+      return idx - cols;
+    }
+    if (key === 'ArrowDown') {
+      if (row >= rows - 1) return -1;
+      return idx + cols;
+    }
+    return -1;
+  }
+
   function onCellKeydown(e) {
     if (e.isComposing) return;
     const isEnter = e.key === 'Enter' && !e.shiftKey;
     const isTab = e.key === 'Tab';
-    if (!isEnter && !isTab) return;
+    const isArrow = e.key === 'ArrowUp' || e.key === 'ArrowDown' ||
+      e.key === 'ArrowLeft' || e.key === 'ArrowRight';
+    if (!isEnter && !isTab && !isArrow) return;
 
     const tab = activeTab();
     const idx = parseInt(e.currentTarget.dataset.idx, 10);
     if (!tab || Number.isNaN(idx) || idx < 0 || idx >= tab.cells.length) return;
+
+    if (isArrow) {
+      // Leave Shift/Ctrl/Alt/Meta+arrow for text selection / OS shortcuts.
+      if (e.shiftKey || e.altKey || e.ctrlKey || e.metaKey) return;
+      const ta = e.currentTarget;
+      // Whole-cell select, or caret at edge matching direction → move cells.
+      // Mid-text edit (double-click caret) keeps normal caret movement.
+      if (!isWholeCellSelected(ta) && !caretAtArrowBoundary(ta, e.key)) return;
+      const next = adjacentCellIndex(idx, tab.cols, tab.rows, e.key);
+      if (next < 0) return;
+      e.preventDefault();
+      moveToNextCell(ta, next);
+      return;
+    }
 
     // Keep Tab/Shift+Tab inside the cell grid (skip sleep / Combined controls).
     e.preventDefault();
