@@ -2082,12 +2082,12 @@
   }
 
   /**
-   * Ash Col1 Combined cascade (part tabs only): when checking Column A into
-   * Combined, also check same-row Col B and every other Col A cell with the
-   * same trimmed value V (exact string match, same as Values filter) plus each
-   * of those rows' Col B. Uncheck stays single-cell — no group auto-uncheck.
-   * Nest Combined checkboxes are independent (not included). Master skipped.
-   * Parent grid cells only (cellParentText).
+   * Ash Col1 Combined cascade (part tabs only): when checking or unchecking
+   * Column A into Combined, also (un)check same-row Col B and every other Col A
+   * cell with the same trimmed value V (exact string match, same as Values
+   * filter) plus each of those rows' Col B. Nest Combined checkboxes are
+   * independent (not included). Master skipped. Parent grid cells only
+   * (cellParentText).
    */
   function collectCol1CombinedCascadeIndices(tab, cellIndex) {
     const cols = tab.cols || 0;
@@ -2134,8 +2134,8 @@
       const value = cellParentText(tab, cellIndex);
       if (!value) return false;
       let indices = [cellIndex];
-      // Only auto-batch on Combined checkbox check (col1Cascade), never on uncheck
-      // or other callers (e.g. Master insert).
+      // Auto-batch on Combined checkbox check/uncheck (col1Cascade) for Col1
+      // only — other callers (e.g. Master insert) stay single-cell.
       if (col1Cascade && shouldCol1CombinedCascade(tab, cellIndex)) {
         indices = collectCol1CombinedCascadeIndices(tab, cellIndex);
       }
@@ -2156,8 +2156,12 @@
       appendPieces(pieces, quiet ? null : (tab.title + ' ' + cellAddressFromIndex(tab, cellIndex)), { quiet: quiet });
       return true;
     }
-    // Uncheck: only this parent cell — do not auto-uncheck the Col1 group.
-    const links = linksForCellsInScope(tab.id, [cellIndex], scope).filter(function (link) {
+    // Uncheck: reverse Col1 cascade when col1Cascade (same category + Col2s).
+    let indices = [cellIndex];
+    if (col1Cascade && shouldCol1CombinedCascade(tab, cellIndex)) {
+      indices = collectCol1CombinedCascadeIndices(tab, cellIndex);
+    }
+    const links = linksForCellsInScope(tab.id, indices, scope).filter(function (link) {
       return linkNestIndex(link) === null;
     });
     if (!links.length) return false;
