@@ -1971,6 +1971,7 @@
     const page = nest.page || 0;
     if (page < 0 || page >= nest.pages.length) return;
     if (stickyCellRange) clearStickyCellRange();
+    clearKeyboardCellRange();
     pushHistory({ coalesce: true });
     nest.pages[page] = e.target.value;
     liveSyncConfirmedLinksForCell(tab.id, idx, nestIdx);
@@ -5660,16 +5661,18 @@
 
   // Click2Copy cells: short click/focus leaves the caret (no auto-copy). Enter confirms and
   // copies the cell, then moves to the next (Shift+Enter = newline, no copy). Combined
-  // click-copy / Combined auto-clipboard stay separate. Hold+drag = relocate/swap one cell.
-  // Immediate click+drag across cells selects a rectangle; mouseup copies TSV and keeps a sticky
-  // multi-cell highlight (Excel-ish). Drag inside that sticky selection moves/swaps the block.
+  // click-copy / Combined auto-clipboard stay separate. A fresh drag always selects/copies a
+  // rectangle; only a later drag started inside that sticky selection moves/swaps the block.
+  // Shift+Arrow extends the active cell into the same sticky multi-cell highlight.
   let lastAutoCopyKey = '';
   let lastAutoCopyAt = 0;
   let suppressCellAutoCopy = false;
   let cellRangeDrag = null;
   /** Sticky multi-cell range after drag-copy (Excel-ish). Cleared on Esc / outside click / edit / nav. */
   let stickyCellRange = null;
-  const CELL_HOLD_MS = 220;
+  /** Keyboard range anchor/focus for Excel-like Shift+Arrow extension. */
+  let keyboardRangeAnchor = null;
+  let keyboardRangeFocus = null;
   const CELL_DRAG_MOVE_PX = 8;
 
   function writeTextToClipboard(text) {
@@ -5811,6 +5814,41 @@
     applyCellRangeHighlight(b.rMin, b.cMin, b.rMax, b.cMax);
   }
 
+  function clearKeyboardCellRange() {
+    keyboardRangeAnchor = null;
+    keyboardRangeFocus = null;
+  }
+
+  /** Extend the active cell with Shift+Arrow, like a spreadsheet range selection. */
+  function extendKeyboardCellRange(ta, key) {
+    const tab = activeTab();
+    if (!tab || !ta) return false;
+    const row = parseInt(ta.dataset.row, 10);
+    const col = parseInt(ta.dataset.col, 10);
+    if (Number.isNaN(row) || Number.isNaN(col)) return false;
+
+    if (!keyboardRangeAnchor || keyboardRangeAnchor.tabId !== tab.id) {
+      keyboardRangeAnchor = { tabId: tab.id, row: row, col: col };
+      keyboardRangeFocus = { row: row, col: col };
+    }
+    const current = keyboardRangeFocus || { row: row, col: col };
+    const currentIdx = current.row * tab.cols + current.col;
+    const nextIdx = adjacentCellIndex(currentIdx, tab.cols, tab.rows, key);
+    if (nextIdx < 0) return true;
+
+    keyboardRangeFocus = {
+      row: Math.floor(nextIdx / tab.cols),
+      col: nextIdx % tab.cols
+    };
+    const b = normalizeRangeBounds(
+      keyboardRangeAnchor.row, keyboardRangeAnchor.col,
+      keyboardRangeFocus.row, keyboardRangeFocus.col
+    );
+    if (isMultiCellBounds(b)) setStickyCellRange(b, tab.id);
+    else clearStickyCellRange();
+    return true;
+  }
+
   function applyCellRangeHighlight(r0, c0, r1, c1) {
     clearCellRangeHighlight();
     clearCellRelocateHighlight();
@@ -5828,29 +5866,6 @@
         if (ta) ta.classList.add('cell-range-selected', 'selected');
       }
     }
-  }
-
-  function applyCellRelocateHighlight(srcRow, srcCol, tgtRow, tgtCol) {
-    clearCellRangeHighlight();
-    clearCellRelocateHighlight();
-    if (!el.cellGrid) return;
-    const src = el.cellGrid.querySelector(
-      '.cell-wrap[data-row="' + srcRow + '"][data-col="' + srcCol + '"]'
-    );
-    if (src) {
-      src.classList.add('cell-relocate-source');
-      const ta = src.querySelector('textarea.cell');
-      if (ta) ta.classList.add('cell-relocate-source');
-    }
-    if (tgtRow == null || tgtCol == null) return;
-    if (tgtRow === srcRow && tgtCol === srcCol) return;
-    const tgt = el.cellGrid.querySelector(
-      '.cell-wrap[data-row="' + tgtRow + '"][data-col="' + tgtCol + '"]'
-    );
-    if (!tgt) return;
-    tgt.classList.add('cell-relocate-target');
-    const ta2 = tgt.querySelector('textarea.cell');
-    if (ta2) ta2.classList.add('cell-relocate-target');
   }
 
   function buildCellRangeTsv(tab, r0, c0, r1, c1) {
@@ -5873,27 +5888,6 @@
     if (!wrap || !el.cellGrid.contains(wrap)) return null;
     if (wrap.classList.contains('is-row-filtered')) return null;
     return wrap;
-  }
-
-  /**
-   * Swap two cells' text and Combined-link indices.
-   * Empty target ⇒ move; both filled ⇒ swap. Combined segments stay valid.
-   */
-  function relocateOrSwapCells(tab, fromIdx, toIdx) {
-    if (!tab || fromIdx === toIdx) return false;
-    if (fromIdx < 0 || toIdx < 0 || fromIdx >= tab.cells.length || toIdx >= tab.cells.length) {
-      return false;
-    }
-    pushHistory();
-    ensureNestedCells(tab);
-    ensureCellLocks(tab);
-    const tmp = tab.cells[fromIdx];
-    tab.cells[fromIdx] = tab.cells[toIdx];
-    tab.cells[toIdx] = tmp;
-    swapNestedCellIndices(tab, fromIdx, toIdx);
-    swapCellLockIndices(tab, fromIdx, toIdx);
-    swapConfirmedCellIndices(tab.id, fromIdx, toIdx);
-    return true;
   }
 
   /**
@@ -6050,10 +6044,6 @@
     document.removeEventListener('dragstart', onCellRangeDragStartPrevent, true);
     document.body.classList.remove('selecting-cell-range');
     document.body.classList.remove('relocating-cell');
-    if (cellRangeDrag && cellRangeDrag.holdTimer) {
-      clearTimeout(cellRangeDrag.holdTimer);
-      cellRangeDrag.holdTimer = null;
-    }
     if (cellRangeDrag && cellRangeDrag.captureEl && cellRangeDrag.pointerId != null) {
       try {
         if (cellRangeDrag.captureEl.releasePointerCapture) {
@@ -6084,7 +6074,7 @@
 
   function beginMultiCellRangeDrag() {
     if (!cellRangeDrag || cellRangeDrag.mode === 'multi') return;
-    if (cellRangeDrag.mode === 'relocate' || cellRangeDrag.mode === 'block-relocate') return;
+    if (cellRangeDrag.mode === 'block-relocate') return;
     cellRangeDrag.mode = 'multi';
     cellRangeDrag.multi = true;
     suppressCellAutoCopy = true;
@@ -6095,25 +6085,9 @@
     collapseCellTextSelection();
   }
 
-  function beginCellRelocateDrag() {
-    if (!cellRangeDrag || cellRangeDrag.mode === 'relocate') return;
-    if (cellRangeDrag.mode === 'multi' || cellRangeDrag.mode === 'block-relocate') return;
-    cellRangeDrag.mode = 'relocate';
-    cellRangeDrag.multi = false;
-    suppressCellAutoCopy = true;
-    document.body.classList.remove('selecting-cell-range');
-    document.body.classList.add('relocating-cell');
-    clearStickyCellRange();
-    collapseCellTextSelection();
-    applyCellRelocateHighlight(
-      cellRangeDrag.startRow, cellRangeDrag.startCol,
-      cellRangeDrag.endRow, cellRangeDrag.endCol
-    );
-  }
-
   function beginBlockRelocateDrag() {
     if (!cellRangeDrag || cellRangeDrag.mode === 'block-relocate') return;
-    if (cellRangeDrag.mode === 'multi' || cellRangeDrag.mode === 'relocate') return;
+    if (cellRangeDrag.mode === 'multi') return;
     if (!cellRangeDrag.blockBounds || !isMultiCellBounds(cellRangeDrag.blockBounds)) return;
     cellRangeDrag.mode = 'block-relocate';
     cellRangeDrag.multi = false;
@@ -6164,7 +6138,6 @@
 
     if (!cellRangeDrag.mode && moved) {
       if (cellRangeDrag.fromStickyBlock) beginBlockRelocateDrag();
-      else if (cellRangeDrag.held) beginCellRelocateDrag();
       else beginMultiCellRangeDrag();
     }
 
@@ -6177,15 +6150,6 @@
     if (cellRangeDrag.mode === 'multi') {
       if (e.cancelable) e.preventDefault();
       applyCellRangeHighlight(
-        cellRangeDrag.startRow, cellRangeDrag.startCol,
-        cellRangeDrag.endRow, cellRangeDrag.endCol
-      );
-      return;
-    }
-
-    if (cellRangeDrag.mode === 'relocate') {
-      if (e.cancelable) e.preventDefault();
-      applyCellRelocateHighlight(
         cellRangeDrag.startRow, cellRangeDrag.startCol,
         cellRangeDrag.endRow, cellRangeDrag.endCol
       );
@@ -6259,46 +6223,6 @@
       return;
     }
 
-    if (drag.mode === 'relocate') {
-      suppressCellAutoCopy = true;
-      clearCellRelocateHighlight();
-      const tab = activeTab();
-      const same =
-        drag.startRow === drag.endRow && drag.startCol === drag.endCol;
-      if (tab && !same) {
-        const fromIdx = drag.startRow * tab.cols + drag.startCol;
-        const toIdx = drag.endRow * tab.cols + drag.endCol;
-        const targetHadContent = !!(tab.cells[toIdx] || '').trim();
-        if (relocateOrSwapCells(tab, fromIdx, toIdx)) {
-          renderTabs();
-          renderGrid();
-          renderMasterLibrary();
-          renderCombinedPrompt();
-          scheduleSave();
-          const fromLabel = cellAddress(drag.startRow, drag.startCol);
-          const toLabel = cellAddress(drag.endRow, drag.endCol);
-          setStatus(
-            targetHadContent
-              ? ('Swapped ' + fromLabel + ' \u2194 ' + toLabel)
-              : ('Moved ' + fromLabel + ' \u2192 ' + toLabel),
-            'ok'
-          );
-          window.setTimeout(function () {
-            suppressCellAutoCopy = false;
-            cellRangeDrag = null;
-            focusCell(toIdx);
-            const ta = el.cellGrid.querySelector('textarea.cell[data-idx="' + toIdx + '"]');
-            if (ta) selectWholeCellContents(ta);
-          }, 0);
-          return;
-        }
-      }
-      // Hold released on same cell (or failed relocate): leave caret (copy on Enter confirm).
-      suppressCellAutoCopy = false;
-      cellRangeDrag = null;
-      return;
-    }
-
     if (drag.mode === 'block-relocate') {
       suppressCellAutoCopy = true;
       clearCellRelocateHighlight();
@@ -6367,6 +6291,7 @@
   function onCellPointerDownSelect(e) {
     if (e.button != null && e.button !== 0) return;
     const ta = e.currentTarget;
+    clearKeyboardCellRange();
     const row = parseInt(ta.dataset.row, 10);
     const col = parseInt(ta.dataset.col, 10);
     if (Number.isNaN(row) || Number.isNaN(col)) return;
@@ -6386,8 +6311,6 @@
       active: true,
       mode: null,
       multi: false,
-      held: false,
-      holdTimer: null,
       startRow: row,
       startCol: col,
       endRow: row,
@@ -6409,14 +6332,6 @@
       destRMin: sticky ? sticky.rMin : row,
       destCMin: sticky ? sticky.cMin : col
     };
-    if (!insideSticky) {
-      cellRangeDrag.holdTimer = window.setTimeout(function () {
-        if (!cellRangeDrag || !cellRangeDrag.active || cellRangeDrag.mode) return;
-        cellRangeDrag.held = true;
-        // Affordance: held long enough that a drag will relocate instead of range-copy.
-        applyCellRelocateHighlight(cellRangeDrag.startRow, cellRangeDrag.startCol, null, null);
-      }, CELL_HOLD_MS);
-    }
     document.addEventListener('pointermove', onCellRangePointerMove);
     document.addEventListener('pointerup', onCellRangePointerUp);
     document.addEventListener('pointercancel', onCellRangePointerUp);
@@ -6504,6 +6419,7 @@
       return;
     }
     if (stickyCellRange) clearStickyCellRange();
+    clearKeyboardCellRange();
     pushHistory({ coalesce: true });
     tab.cells[idx] = e.target.value;
     liveSyncConfirmedLinksForCell(tab.id, idx, null);
@@ -6623,8 +6539,15 @@
     if (!isEnter && !isTab && !isArrow) return;
 
     if (isArrow) {
-      // Leave Shift/Ctrl/Alt/Meta+arrow for text selection / OS shortcuts.
-      if (e.shiftKey || e.altKey || e.ctrlKey || e.metaKey) return;
+      if (e.shiftKey && !e.altKey && !e.ctrlKey && !e.metaKey) {
+        // Shift+Arrow selects cells, not text, when the caret is at a grid boundary.
+        if (!isWholeCellSelected(e.currentTarget) && !caretAtArrowBoundary(e.currentTarget, e.key)) return;
+        e.preventDefault();
+        extendKeyboardCellRange(e.currentTarget, e.key);
+        return;
+      }
+      // Leave Ctrl/Alt/Meta+arrow for text selection / OS shortcuts.
+      if (e.altKey || e.ctrlKey || e.metaKey) return;
       const ta = e.currentTarget;
       // Whole-cell select (e.g. after relocate), or caret at edge → move cells.
       // Mid-text caret (normal click) keeps normal caret movement.
@@ -6633,6 +6556,7 @@
       if (next < 0) return;
       e.preventDefault();
       if (stickyCellRange) clearStickyCellRange();
+      clearKeyboardCellRange();
       moveToNextCell(ta, next);
       return;
     }
@@ -6640,6 +6564,7 @@
     // Keep Tab/Shift+Tab inside the cell grid (skip Combined controls).
     e.preventDefault();
     if (stickyCellRange) clearStickyCellRange();
+    clearKeyboardCellRange();
 
     // Enter confirms edit + copies cell; Shift+Enter is newline (handled above via !isEnter).
     // Tab navigates without copying.
@@ -6677,6 +6602,7 @@
     if (!isMasterTab(tab)) lastPartTabId = id;
     focusedCell = null;
     clearStickyCellRange();
+    clearKeyboardCellRange();
     clearPartSearch({ keepInputs: true, keepQuery: true });
     if (el.partFindInput) partSearchQuery = el.partFindInput.value;
     closeMasterLibFilterMenu();
@@ -8071,6 +7997,7 @@
       closeCol1FilterMenu();
       closeMasterLibFilterMenu();
       if (stickyCellRange) clearStickyCellRange();
+      clearKeyboardCellRange();
       if (partSearchHits.length || partSearchFindAll) {
         clearPartSearch({ keepInputs: true, keepQuery: true });
         partSearchQuery = el.partFindInput ? el.partFindInput.value : '';
