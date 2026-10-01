@@ -611,7 +611,6 @@
       renderGrid();
       renderMasterLibrary();
       renderCombinedPrompt();
-      if (initialized) autoCopyCombinedToClipboard();
       scheduleSave();
     } else {
       updateToolsChrome();
@@ -1012,40 +1011,10 @@
   function setPromptText(scope, text) {
     if (scope === 'global') state.combinedPrompt = text;
     else state.partPrompts[scope] = text;
-    // Every Combined edit copies the active prompt to the clipboard (Copy button kept).
-    if (initialized && scope === currentPromptScope()) scheduleCombinedAutoCopy();
   }
 
-  let combinedAutoCopyTimer = null;
+  // Click/focus Combined is the only auto clipboard path (Copy button + Ctrl/Cmd+C kept).
   let lastCombinedAutoCopyStatusAt = 0;
-
-  function scheduleCombinedAutoCopy() {
-    if (combinedAutoCopyTimer) clearTimeout(combinedAutoCopyTimer);
-    combinedAutoCopyTimer = setTimeout(function () {
-      combinedAutoCopyTimer = null;
-      autoCopyCombinedToClipboard();
-    }, 120);
-  }
-
-  function autoCopyCombinedToClipboard() {
-    const text = getCombinedPlainText();
-    const now = Date.now();
-    const showStatus = now - lastCombinedAutoCopyStatusAt > 700;
-    writeTextToClipboard(text == null ? '' : String(text)).then(function () {
-      if (showStatus) {
-        lastCombinedAutoCopyStatusAt = Date.now();
-        setStatus('Copied Combined', 'ok');
-      }
-    }).catch(function () {
-      // Fall back through the shared helper (may surface Copy failed).
-      if (showStatus) {
-        lastCombinedAutoCopyStatusAt = Date.now();
-        copyTextWithStatus(text, 'Copied Combined');
-      }
-    });
-  }
-
-  // Click/focus Combined copies current text (like cell click-copy). Edit + auto-copy-on-edit kept.
   let lastCombinedActivateCopyKey = '';
   let lastCombinedActivateCopyAt = 0;
   let combinedActivateSkipCopy = false;
@@ -4027,7 +3996,6 @@
   }
 
 
-
   function uniqueMasterLibCol1Values(master) {
     const seen = Object.create(null);
     const values = [];
@@ -5522,13 +5490,12 @@
               nestTa.addEventListener('input', onNestInput);
               nestTa.addEventListener('keydown', function (ev) {
                 if (ev.isComposing) return;
-                // Enter confirms (copy) / moves to next parent cell; Shift+Enter inserts newline (no copy).
+                // Enter moves to next parent cell (no auto-copy); Shift+Enter inserts newline.
                 if (ev.key === 'Enter' && !ev.shiftKey) {
                   ev.preventDefault();
                   if (stickyCellRange) clearStickyCellRange();
                   const active = activeTab();
                   if (!active || idx < 0 || idx >= active.cells.length) return;
-                  autoCopyCellToClipboard(ev.currentTarget);
                   if (idx < active.cells.length - 1) {
                     moveToNextCell(ev.currentTarget, idx + 1);
                     return;
@@ -5715,9 +5682,9 @@
     focusedCell = { tabId: tab.id, index: idx };
   }
 
-  // Click2Copy cells: short click/focus leaves the caret (no auto-copy). Enter confirms and
-  // copies the cell, then moves to the next (Shift+Enter = newline, no copy). Combined
-  // click-copy / Combined auto-clipboard stay separate. A fresh drag always selects/copies a
+  // Click2Copy cells: short click/focus leaves the caret (no auto-copy). Enter moves to
+  // the next cell without copying (Shift+Enter = newline). Combined click/focus copies
+  // Combined; Ctrl/Cmd+C copies cell or sticky multi-cell TSV. A fresh drag selects a
   // rectangle; only a later drag started inside that sticky selection moves/swaps the block.
   // Shift+Arrow extends the active cell into the same sticky multi-cell highlight.
   let lastAutoCopyKey = '';
@@ -5767,21 +5734,6 @@
         setStatus('Copy failed', 'err');
       }
     });
-  }
-
-  function autoCopyCellToClipboard(ta) {
-    if (suppressCellAutoCopy) return;
-    if (!ta || ta.tagName !== 'TEXTAREA') return;
-    const value = ta.value == null ? '' : String(ta.value);
-    if (!value) return;
-    const tab = activeTab();
-    const idx = parseInt(ta.dataset.idx, 10);
-    const key = (tab ? tab.id : '') + ':' + (Number.isNaN(idx) ? '' : idx) + ':' + value;
-    const now = Date.now();
-    if (key === lastAutoCopyKey && now - lastAutoCopyAt < 300) return;
-    lastAutoCopyKey = key;
-    lastAutoCopyAt = now;
-    copyTextWithStatus(value, 'Copied cell');
   }
 
   /** Snap selection to the whole cell (used after relocate; clicks leave the caret). */
@@ -6262,14 +6214,7 @@
       if (isMulti) {
         suppressCellAutoCopy = true;
         const tab = activeTab();
-        if (tab) {
-          const tsv = buildCellRangeTsv(tab, b.rMin, b.cMin, b.rMax, b.cMax);
-          const label = rows + '\u00d7' + cols + ' cells';
-          lastAutoCopyKey = (tab.id || '') + ':range:' + b.rMin + ',' + b.cMin + ':' + b.rMax + ',' + b.cMax;
-          lastAutoCopyAt = Date.now();
-          copyTextWithStatus(tsv, 'Copied ' + label);
-        }
-        // Keep Excel-ish sticky multi-cell highlight after copy until cleared.
+        // Sticky multi-cell selection only — copy via Ctrl/Cmd+C (no auto-copy on release).
         setStickyCellRange(b, tab && tab.id);
         window.setTimeout(function () {
           suppressCellAutoCopy = false;
@@ -6281,7 +6226,7 @@
       clearCellRangeHighlight();
       suppressCellAutoCopy = false;
       cellRangeDrag = null;
-      // Jittered drag that never left the cell — leave caret (copy on Enter confirm).
+      // Jittered drag that never left the cell — leave caret (no auto-copy).
       return;
     }
 
@@ -6398,7 +6343,7 @@
   }
 
   function onCellFocusSelect(e) {
-    // Leave caret where the user clicked / Tab landed; no activate auto-copy (Enter confirms).
+    // Leave caret where the user clicked / Tab landed; no activate auto-copy.
     rememberFocusedCell(e);
   }
 
@@ -6580,7 +6525,7 @@
       if (!nav && !modNav) {
         e.preventDefault();
         if (e.key === 'Enter' && !e.shiftKey) {
-          // Still allow Enter confirm-copy navigation on locked cells (no edit).
+          // Still allow Enter navigation on locked cells (no edit / no auto-copy).
         } else {
           setStatus('Locked Master cell — double-click to unlock before editing', 'err');
           return;
@@ -6622,10 +6567,8 @@
     if (stickyCellRange) clearStickyCellRange();
     clearKeyboardCellRange();
 
-    // Enter confirms edit + copies cell; Shift+Enter is newline (handled above via !isEnter).
-    // Tab navigates without copying.
-    if (isEnter) autoCopyCellToClipboard(e.currentTarget);
-
+    // Enter navigates to the next cell (no auto-copy). Shift+Enter is newline.
+    // Tab navigates without copying. Use Ctrl/Cmd+C or Combined click to copy.
     if (isTab && e.shiftKey) {
       if (idx > 0) moveToNextCell(e.currentTarget, idx - 1);
       return;
@@ -6668,8 +6611,6 @@
     // Repair/drop Combined links for this tab before Master-insert greens paint.
     renderCombinedPrompt();
     renderMasterLibrary();
-    // Same Combined clipboard behavior as Combined edit/activate for the tab landed on.
-    if (initialized && !sameTab) autoCopyCombinedToClipboard();
     scheduleSave();
   }
 
