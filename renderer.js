@@ -5570,6 +5570,8 @@
     renderGrid();
     renderMasterLibrary();
     renderCombinedPrompt();
+    // Same Combined clipboard behavior as Combined edit/activate for the tab landed on.
+    if (initialized) autoCopyCombinedToClipboard();
     scheduleSave();
   }
 
