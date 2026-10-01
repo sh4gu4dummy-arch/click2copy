@@ -1195,18 +1195,35 @@
     });
   }
 
-  /** True when this Master cell (or matching text) is in the *current tab’s* Combined. */
+  /**
+   * True when this Master cell’s text is represented as a confirmed Combined
+   * segment in the *current* Combined scope (active part / Global prompt).
+   * Uses the same bar as cell greens: a live confirmed link whose segment
+   * text exactly equals the Master cell (linkMatchesSource + link.text).
+   * Avoids false greens from: other tabs’ Combined scopes, other parts’
+   * segments in Global Combined, nest links whose parent happens to match,
+   * stale links that no longer match their source, or substring coincidence.
+   */
   function isMasterCellRepresentedInCombined(master, masterIdx) {
     if (!master || masterIdx < 0 || masterIdx >= master.cells.length) return false;
     const scope = currentPromptScope();
-    if (isCellConfirmedInScope(master.id, masterIdx, scope)) return true;
     const text = cellParentText(master, masterIdx);
     if (!text) return false;
-    // Match by source text only within the active Combined scope — not across tabs.
+    // Direct Master-cell confirmed link in this Combined scope.
+    if (isCellConfirmedInScope(master.id, masterIdx, scope)) return true;
+
+    const current = activeTab();
+    const activePartId = current && !isMasterTab(current) ? current.id : null;
+
     return state.confirmedLinks.some(function (link) {
       if (link.scope !== scope) return false;
-      const expected = sourceCellText(link.tabId, link.cellIndex);
-      return expected !== null && expected === text;
+      // When Global Combined is shared, only count segments from the active
+      // part (or Master itself) — not other tabs’ contributions.
+      if (activePartId && link.tabId !== activePartId && link.tabId !== master.id) {
+        return false;
+      }
+      if (!linkMatchesSource(link, link.text)) return false;
+      return String(link.text) === text;
     });
   }
 
@@ -3628,8 +3645,8 @@
     revalidateLinksForCell(tab.id, index, { silent: true });
     renderTabs();
     renderGrid();
-    renderMasterLibrary();
     renderCombinedPrompt();
+    renderMasterLibrary();
     scheduleSave();
     const cell = el.cellGrid.querySelector('textarea.cell[data-idx="' + index + '"]');
     if (cell) cell.focus();
@@ -5746,8 +5763,9 @@
     masterLibFilterMenuOpen = false;
     renderTabs();
     renderGrid();
-    renderMasterLibrary();
+    // Repair/drop Combined links for this tab before Master-insert greens paint.
     renderCombinedPrompt();
+    renderMasterLibrary();
     // Same Combined clipboard behavior as Combined edit/activate for the tab landed on.
     if (initialized && !sameTab) autoCopyCombinedToClipboard();
     scheduleSave();
