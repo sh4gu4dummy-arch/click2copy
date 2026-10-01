@@ -6240,15 +6240,9 @@
       return;
     }
 
-    // Short click / hold-without-drag: caret stays where clicked (copy on Enter confirm).
-    // Click inside sticky multi-cell range keeps the sticky highlight.
-    if (drag.fromStickyBlock && getStickyCellRange()) {
-      clearCellRelocateHighlight();
-      restoreStickyCellRangeHighlight();
-      suppressCellAutoCopy = false;
-      cellRangeDrag = null;
-      return;
-    }
+    // Short click / hold-without-drag: place the caret and clear any sticky
+    // multi-cell selection, including when the clicked cell is inside it.
+    // A real drag from inside the range was handled above as block relocation.
     clearStickyCellRange();
     clearCellRelocateHighlight();
     suppressCellAutoCopy = false;
@@ -7045,6 +7039,19 @@
   function onCellCopy(e) {
     const ta = e.currentTarget;
     if (!ta || ta.tagName !== 'TEXTAREA') return;
+    const tab = activeTab();
+    const sticky = getStickyCellRange();
+    if (tab && sticky && e.clipboardData) {
+      const value = buildCellRangeTsv(
+        tab, sticky.rMin, sticky.cMin, sticky.rMax, sticky.cMax
+      );
+      e.preventDefault();
+      e.clipboardData.setData('text/plain', value);
+      const rows = sticky.rMax - sticky.rMin + 1;
+      const cols = sticky.cMax - sticky.cMin + 1;
+      setStatus('Copied ' + rows + '×' + cols + ' cells', 'ok');
+      return;
+    }
     // If the user highlighted a substring, keep the browser's default copy.
     if (typeof ta.selectionStart === 'number' && typeof ta.selectionEnd === 'number' &&
         ta.selectionStart !== ta.selectionEnd) {
