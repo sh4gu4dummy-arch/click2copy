@@ -1168,8 +1168,8 @@ body.relocating-cell * {
   pointer-events: none;
 }
 
-/* Match Global Combined (.global-toggle input): outline + small teal check,
-   same accent-color treatment — no solid fill / dark chrome. */
+/* Match Global Combined (.global-toggle input): filled teal/green box +
+   BLACK checkmark (native accent-color look) — not outline + teal check. */
 .cell-append:hover {
   background: transparent;
   color: var(--accent);
@@ -1208,14 +1208,14 @@ body.relocating-cell * {
 }
 
 .cell-append.is-checked .cell-append-mark {
-  background: transparent;
+  background: var(--accent);
   border-color: var(--accent);
   box-shadow: none;
-  color: var(--accent);
+  color: #000;
 }
 
 .cell-append.is-checked .cell-append-mark::after {
-  border-color: var(--accent);
+  border-color: #000;
   opacity: 1;
 }
 
@@ -1230,13 +1230,13 @@ body.relocating-cell * {
 }
 
 .cell-append.is-checked:hover .cell-append-mark {
-  background: transparent;
+  background: var(--accent-hover);
   border-color: var(--accent-hover);
   filter: none;
 }
 
 .cell-append.is-checked:hover .cell-append-mark::after {
-  border-color: var(--accent-hover);
+  border-color: #000;
   opacity: 1;
 }
 
@@ -1247,32 +1247,34 @@ body.relocating-cell * {
   min-height: 18px;
 }
 
+/* Nest + is NOT a Combined checkbox — quiet Soft dark chrome control. */
 .cell-nest-add {
   appearance: none;
-  margin: 0;
+  margin: 2px 0 0;
   padding: 0;
-  flex: 0 0 22px;
-  height: 22px;
+  flex: 0 0 16px;
+  width: 16px;
+  height: 16px;
+  min-height: 16px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   border: 0;
-  border-top: 1px solid var(--border);
-  border-radius: 0;
-  background: rgba(var(--accent-rgb), 0.08);
+  border-radius: 3px;
+  background: transparent;
   color: var(--muted);
   cursor: pointer;
   transition: background 0.12s, color 0.12s;
 }
 
 .cell-nest-add:hover {
-  background: var(--accent);
-  color: #fff;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text);
 }
 
 .cell-nest-add-mark {
-  font-size: 14px;
-  font-weight: 700;
+  font-size: 12px;
+  font-weight: 600;
   line-height: 1;
   user-select: none;
 }
@@ -1992,7 +1994,7 @@ body.relocating-cell * {
   cursor: not-allowed;
 }
 
-/* Same Global Combined treatment as .cell-append-mark (outline + teal check). */
+/* Same Global Combined treatment as .cell-append-mark (filled teal + black check). */
 .row-append:hover {
   background: transparent;
   color: var(--accent);
@@ -2040,14 +2042,14 @@ body.relocating-cell * {
 }
 
 .row-append.is-checked .row-append-mark {
-  background: transparent;
+  background: var(--accent);
   border-color: var(--accent);
   box-shadow: none;
-  color: var(--accent);
+  color: #000;
 }
 
 .row-append.is-checked .row-append-mark::after {
-  border-color: var(--accent);
+  border-color: #000;
   opacity: 1;
 }
 
@@ -2057,13 +2059,13 @@ body.relocating-cell * {
 }
 
 .row-append.is-checked:hover .row-append-mark {
-  background: transparent;
+  background: var(--accent-hover);
   border-color: var(--accent-hover);
   filter: none;
 }
 
 .row-append.is-checked:hover .row-append-mark::after {
-  border-color: var(--accent-hover);
+  border-color: #000;
   opacity: 1;
 }
 
