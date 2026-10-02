@@ -5948,7 +5948,7 @@
     document.body.classList.add('resizing-sections');
 
     function onMove(moveEvent) {
-      resizeCombinedSection(startHeight - (moveEvent.clientY - startY));
+      resizeCombinedSection(startHeight + (moveEvent.clientY - startY));
     }
 
     function finish() {
@@ -8403,7 +8403,7 @@
   el.combinedResizer.addEventListener('keydown', function (event) {
     if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
     event.preventDefault();
-    resizeCombinedSectionByKeyboard(event.key === 'ArrowUp' ? 24 : -24);
+    resizeCombinedSectionByKeyboard(event.key === 'ArrowUp' ? -24 : 24);
   });
 
   function onSeparatorInput(key, input) {

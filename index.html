@@ -26,6 +26,46 @@
       <div class="document-bar" id="document-bar" role="tablist" aria-label="Open prompt documents"></div>
     </section>
 
+    <section class="combined-section panel-soft">
+      <div class="section-label-row">
+        <div class="combined-title">
+          <label class="section-label" for="combined-prompt">Combined prompt</label>
+          <label class="global-toggle" title="Share appended text across all parts">
+            <input type="checkbox" id="global-combined" checked />
+            <span>Global</span>
+          </label>
+          <label class="global-toggle" title="When adding or removing Combined parts, reorder green segments to match grid source order (row-major)">
+            <input type="checkbox" id="match-source-order" />
+            <span>Match source order</span>
+          </label>
+        </div>
+        <div class="combined-actions">
+          <button type="button" class="btn btn-secondary" id="btn-export" title="Export all tabs and prompt to a JSON file">Export</button>
+          <button type="button" class="btn btn-secondary" id="btn-import" title="Import tabs and prompt from a JSON backup">Import</button>
+          <div class="clear-undo-stack">
+            <button type="button" class="btn btn-secondary" id="btn-clear">Clear</button>
+            <button type="button" class="btn btn-secondary" id="btn-undo-clear" hidden>Undo last clear</button>
+          </div>
+          <button type="button" class="btn btn-primary" id="btn-copy">Copy</button>
+        </div>
+      </div>
+      <div id="combined-prompt" class="textarea textarea-combined is-empty" contenteditable="true" role="textbox" aria-multiline="true" aria-label="Combined prompt" data-placeholder="Combined prompt appears here…" spellcheck="false"></div>
+      <div class="status-row">
+        <button type="button" class="status" id="status" aria-live="polite" aria-expanded="false" aria-controls="status-panel" title="Click for event log and under-the-hood details"></button>
+        <div class="status-panel" id="status-panel" hidden>
+          <div class="status-panel-header">
+            <strong>Under the hood</strong>
+            <button type="button" class="btn btn-secondary status-panel-close" id="status-panel-close" title="Close details">Close</button>
+          </div>
+          <div class="status-snapshot" id="status-snapshot"></div>
+          <div class="status-events-label">Recent events</div>
+          <ol class="status-events" id="status-events" reversed></ol>
+        </div>
+      </div>
+    </section>
+
+    <div class="section-resizer" id="combined-resizer" role="separator" aria-orientation="horizontal" aria-label="Resize combined prompt height" tabindex="0" title="Drag to resize combined prompt"></div>
+
     <section class="tabs-section tabs-chrome">
       <div class="tab-bar" id="tab-bar" role="tablist">
         <button type="button" class="btn btn-icon" id="btn-add-tab" title="Add tab">+</button>
@@ -81,46 +121,6 @@
       </div>
       <div class="actions-row">
         <button type="button" class="btn btn-primary" id="btn-append" title="Append every non-empty cell not yet in Combined">Append all active</button>
-      </div>
-    </section>
-
-    <div class="section-resizer" id="combined-resizer" role="separator" aria-orientation="horizontal" aria-label="Resize combined prompt height" tabindex="0" title="Drag to resize combined prompt"></div>
-
-    <section class="combined-section panel-soft">
-      <div class="section-label-row">
-        <div class="combined-title">
-          <label class="section-label" for="combined-prompt">Combined prompt</label>
-          <label class="global-toggle" title="Share appended text across all parts">
-            <input type="checkbox" id="global-combined" checked />
-            <span>Global</span>
-          </label>
-          <label class="global-toggle" title="When adding or removing Combined parts, reorder green segments to match grid source order (row-major)">
-            <input type="checkbox" id="match-source-order" />
-            <span>Match source order</span>
-          </label>
-        </div>
-        <div class="combined-actions">
-          <button type="button" class="btn btn-secondary" id="btn-export" title="Export all tabs and prompt to a JSON file">Export</button>
-          <button type="button" class="btn btn-secondary" id="btn-import" title="Import tabs and prompt from a JSON backup">Import</button>
-          <div class="clear-undo-stack">
-            <button type="button" class="btn btn-secondary" id="btn-clear">Clear</button>
-            <button type="button" class="btn btn-secondary" id="btn-undo-clear" hidden>Undo last clear</button>
-          </div>
-          <button type="button" class="btn btn-primary" id="btn-copy">Copy</button>
-        </div>
-      </div>
-      <div id="combined-prompt" class="textarea textarea-combined is-empty" contenteditable="true" role="textbox" aria-multiline="true" aria-label="Combined prompt" data-placeholder="Combined prompt appears here…" spellcheck="false"></div>
-      <div class="status-row">
-        <button type="button" class="status" id="status" aria-live="polite" aria-expanded="false" aria-controls="status-panel" title="Click for event log and under-the-hood details"></button>
-        <div class="status-panel" id="status-panel" hidden>
-          <div class="status-panel-header">
-            <strong>Under the hood</strong>
-            <button type="button" class="btn btn-secondary status-panel-close" id="status-panel-close" title="Close details">Close</button>
-          </div>
-          <div class="status-snapshot" id="status-snapshot"></div>
-          <div class="status-events-label">Recent events</div>
-          <ol class="status-events" id="status-events" reversed></ol>
-        </div>
       </div>
     </section>
   </div>
