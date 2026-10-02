@@ -2227,23 +2227,27 @@
    * filter) plus each of those rows' Col B. Nest Combined checkboxes are
    * independent (not included). Master skipped. Parent grid cells only
    * (cellParentText).
+   *
+   * Cascade is the DEFAULT for part-tab Column A Combined toggles; pass
+   * opts.col1Cascade === false to opt out (Master insert).
    */
   function collectCol1CombinedCascadeIndices(tab, cellIndex) {
     const cols = tab.cols || 0;
-    const rows = tab.rows || 0;
+    const cellCount = tab.cells ? tab.cells.length : 0;
+    const rowsFromCells = cols > 0 ? Math.ceil(cellCount / cols) : 0;
+    const rows = Math.max(tab.rows || 0, rowsFromCells);
     const value = cellParentText(tab, cellIndex);
     const out = [];
     const seen = Object.create(null);
     function add(idx) {
-      if (!Number.isInteger(idx) || idx < 0 || idx >= tab.cells.length) return;
+      if (!Number.isInteger(idx) || idx < 0 || idx >= cellCount) return;
       if (seen[idx]) return;
       seen[idx] = true;
       out.push(idx);
     }
-    if (!value || cols < 2) {
-      add(cellIndex);
-      return out;
-    }
+    // Always keep the origin cell even when value/cols short-circuit.
+    add(cellIndex);
+    if (!value || cols < 2) return out;
     for (let r = 0; r < rows; r++) {
       const col1 = r * cols;
       if (cellParentText(tab, col1) !== value) continue;
@@ -2257,15 +2261,23 @@
     if (!tab || isMasterTab(tab)) return false;
     const cols = tab.cols || 0;
     if (cols < 2) return false;
-    if (cellIndex < 0 || cellIndex >= tab.cells.length) return false;
+    if (!Number.isInteger(cellIndex) || cellIndex < 0 || cellIndex >= tab.cells.length) return false;
     return (cellIndex % cols) === 0;
+  }
+
+  /** Resolve whether Col1 cascade applies. Default ON for Col1; false opts out. */
+  function resolveCol1Cascade(tab, cellIndex, opts) {
+    if (!shouldCol1CombinedCascade(tab, cellIndex)) return false;
+    if (opts && opts.col1Cascade === false) return false;
+    // Explicit true, or omitted (default on for Col1 Combined toggles).
+    return true;
   }
 
   function ensureCellConfirmedState(cellIndex, wantOn, opts) {
     const quiet = !!(opts && opts.quiet);
-    const col1Cascade = !!(opts && opts.col1Cascade);
     const tab = activeTab();
     if (!tab || cellIndex < 0 || cellIndex >= tab.cells.length) return false;
+    const col1Cascade = resolveCol1Cascade(tab, cellIndex, opts);
     const scope = currentPromptScope();
     const isOn = isCellConfirmedInScope(tab.id, cellIndex, scope);
     if (isOn === !!wantOn) return false;
@@ -2273,31 +2285,45 @@
       const value = cellParentText(tab, cellIndex);
       if (!value) return false;
       let indices = [cellIndex];
-      // Auto-batch on Combined checkbox check/uncheck (col1Cascade) for Col1
-      // only — other callers (e.g. Master insert) stay single-cell.
-      if (col1Cascade && shouldCol1CombinedCascade(tab, cellIndex)) {
+      // Auto-batch on Combined checkbox check/uncheck for Col1 — Master insert
+      // passes col1Cascade:false to stay single-cell.
+      if (col1Cascade) {
         indices = collectCol1CombinedCascadeIndices(tab, cellIndex);
       }
       const pieces = [];
+      const colSep = separatorValue(state.separators.column);
+      const rowSep = separatorValue(state.separators.row);
+      let lastRow = -1;
+      let lastHadPiece = false;
       for (let i = 0; i < indices.length; i++) {
         const idx = indices[i];
         if (isCellConfirmedInScope(tab.id, idx, scope)) continue;
         const text = cellParentText(tab, idx);
         if (!text) continue;
+        const row = Math.floor(idx / (tab.cols || 1));
+        if (lastHadPiece) {
+          if (row !== lastRow) {
+            if (rowSep) pieces.push({ type: 'plain', text: rowSep });
+          } else if (colSep) {
+            pieces.push({ type: 'plain', text: colSep });
+          }
+        }
         pieces.push({
           type: 'confirmed',
           text: text,
           tabId: tab.id,
           cellIndex: idx
         });
+        lastRow = row;
+        lastHadPiece = true;
       }
       if (!pieces.length) return false;
       appendPieces(pieces, quiet ? null : (tab.title + ' ' + cellAddressFromIndex(tab, cellIndex)), { quiet: quiet });
       return true;
     }
-    // Uncheck: reverse Col1 cascade when col1Cascade (same category + Col2s).
+    // Uncheck: reverse Col1 cascade (same category + Col2s) unless opted out.
     let indices = [cellIndex];
-    if (col1Cascade && shouldCol1CombinedCascade(tab, cellIndex)) {
+    if (col1Cascade) {
       indices = collectCol1CombinedCascadeIndices(tab, cellIndex);
     }
     const links = linksForCellsInScope(tab.id, indices, scope).filter(function (link) {
@@ -2309,13 +2335,25 @@
     return true;
   }
 
+  function markCol1CascadeVisited(cellIndex) {
+    if (!checkboxDrag) return;
+    const tab = activeTab();
+    if (!tab || !shouldCol1CombinedCascade(tab, cellIndex)) return;
+    const indices = collectCol1CombinedCascadeIndices(tab, cellIndex);
+    for (let i = 0; i < indices.length; i++) {
+      checkboxDrag.visited[indices[i]] = true;
+    }
+  }
+
   function applyCheckboxDragKey(kind, key) {
     if (!checkboxDrag || checkboxDrag.kind !== kind) return;
     if (checkboxDrag.visited[key]) return;
     checkboxDrag.visited[key] = true;
     const want = checkboxDrag.value;
-    if (kind === 'combined') ensureCellConfirmedState(key, want, { quiet: true, col1Cascade: true });
-    else if (kind === 'nest') {
+    if (kind === 'combined') {
+      ensureCellConfirmedState(key, want, { quiet: true, col1Cascade: true });
+      markCol1CascadeVisited(key);
+    } else if (kind === 'nest') {
       const parts = String(key).split(':');
       const cellIndex = parseInt(parts[0], 10);
       const nestIndex = parseInt(parts[1], 10);
@@ -2323,7 +2361,8 @@
         ensureNestConfirmedState(cellIndex, nestIndex, want, { quiet: true });
       }
     }
-    applyAppendCheckedState();
+    // Greens + checkbox marks — do not wait for pointerup refresh.
+    applyConfirmedCellHighlights();
   }
 
   function checkboxDragHit(clientX, clientY) {
@@ -2383,8 +2422,10 @@
     document.addEventListener('pointermove', onCheckboxDragMove);
     document.addEventListener('pointerup', endCheckboxDrag);
     document.addEventListener('pointercancel', endCheckboxDrag);
-    if (kind === 'combined') ensureCellConfirmedState(key, value, { quiet: true, col1Cascade: true });
-    else if (kind === 'nest') {
+    if (kind === 'combined') {
+      ensureCellConfirmedState(key, value, { quiet: true, col1Cascade: true });
+      markCol1CascadeVisited(key);
+    } else if (kind === 'nest') {
       const parts = String(key).split(':');
       const cellIndex = parseInt(parts[0], 10);
       const nestIndex = parseInt(parts[1], 10);
@@ -2392,7 +2433,8 @@
         ensureNestConfirmedState(cellIndex, nestIndex, value, { quiet: true });
       }
     }
-    applyAppendCheckedState();
+    // Greens + checkbox marks immediately (cascade uncheck must clear siblings now).
+    applyConfirmedCellHighlights();
   }
 
   function applyAppendCheckedState() {
@@ -2930,36 +2972,27 @@
     if (!tab || cellIndex < 0 || cellIndex >= tab.cells.length) return;
     const scope = currentPromptScope();
     if (scope !== 'global' && !tab) return;
-
-    if (isCellConfirmedInScope(tab.id, cellIndex, scope)) {
-      // Parent checkbox only removes the parent link — nests stay independent.
-      const links = linksForCellsInScope(tab.id, [cellIndex], scope).filter(function (link) {
-        return linkNestIndex(link) === null;
-      });
-      if (!links.length) {
-        applyAppendCheckedState();
+    const wantOn = !isCellConfirmedInScope(tab.id, cellIndex, scope);
+    // Route through ensureCellConfirmedState so Col1 Combined cascades on both
+    // check and uncheck (nests stay independent inside that helper).
+    if (!wantOn) {
+      pushHistory();
+      const changed = ensureCellConfirmedState(cellIndex, false, { col1Cascade: true });
+      if (!changed) {
+        applyConfirmedCellHighlights();
         return;
       }
-      pushHistory();
-      removeLinksFromCombined(links);
-      refreshAfterConfirmedChange();
       const row = Math.floor(cellIndex / tab.cols) + 1;
       const col = (cellIndex % tab.cols) + 1;
       setStatus('Removed ' + cellAddress(row - 1, col - 1) + ' from combined', 'ok');
       return;
     }
-
     const value = cellParentText(tab, cellIndex);
     if (!value) {
       setStatus('Nothing to append', 'err');
       return;
     }
-    appendPieces([{
-      type: 'confirmed',
-      text: value,
-      tabId: tab.id,
-      cellIndex: cellIndex
-    }], tab.title + ' ' + cellAddressFromIndex(tab, cellIndex));
+    ensureCellConfirmedState(cellIndex, true, { col1Cascade: true });
   }
 
   function toggleNestConfirmed(cellIndex, nestIndex) {
@@ -4694,7 +4727,7 @@
     // Auto-check Combined for the inserted cell (no-op if already included).
     historySuspended = true;
     try {
-      ensureCellConfirmedState(index, true, { quiet: true });
+      ensureCellConfirmedState(index, true, { quiet: true, col1Cascade: false });
     } finally {
       historySuspended = false;
     }
