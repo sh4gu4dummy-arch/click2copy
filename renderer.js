@@ -2811,19 +2811,14 @@
   }
 
   /**
-   * When Match source order is ON, rebuild Combined confirmed segments in
-   * grid/tab source order (row-major). Preserves plain text before the first
-   * and after the last confirmed segment; replaces the middle.
+   * Rebuild one scope's confirmed span by rejoining `ordered` links with the
+   * current part/column/row separators. Same plain-text rule as Match source
+   * order: keep text before the first and after the last confirmed segment;
+   * replace the middle. Link ids, text, and Master lock fields stay; ranges move.
    */
-  function reorderCombinedToSourceOrder(scope) {
-    if (!state.matchSourceOrder) return false;
+  function rejoinConfirmedLinks(scope, ordered) {
+    if (!ordered || !ordered.length) return false;
     const target = scope || currentPromptScope();
-    const links = state.confirmedLinks.filter(function (link) {
-      return link.scope === target;
-    });
-    if (links.length === 0) return false;
-
-    const ordered = links.slice().sort(compareLinksBySourceOrder);
     let middle = '';
     const updated = [];
     for (let i = 0; i < ordered.length; i++) {
@@ -2848,7 +2843,7 @@
       updated.push(next);
     }
 
-    const byStart = links.slice().sort(function (a, b) { return a.start - b.start; });
+    const byStart = ordered.slice().sort(function (a, b) { return a.start - b.start; });
     const current = getPromptText(target);
     const prefix = byStart.length ? current.slice(0, byStart[0].start) : '';
     const suffix = byStart.length ? current.slice(byStart[byStart.length - 1].end) : '';
@@ -2876,8 +2871,59 @@
       return link.scope !== target;
     }).concat(updated);
     setPromptText(target, nextText);
-    const caret = shift + middle.length;
-    lastCombinedCaret = { start: caret, end: caret, scope: target };
+    if (target === currentPromptScope()) {
+      const caret = shift + middle.length;
+      lastCombinedCaret = { start: caret, end: caret, scope: target };
+    }
+    return true;
+  }
+
+  /**
+   * When Match source order is ON, rebuild Combined confirmed segments in
+   * grid/tab source order (row-major). Preserves plain text before the first
+   * and after the last confirmed segment; replaces the middle.
+   */
+  function reorderCombinedToSourceOrder(scope) {
+    if (!state.matchSourceOrder) return false;
+    const target = scope || currentPromptScope();
+    const links = state.confirmedLinks.filter(function (link) {
+      return link.scope === target;
+    });
+    if (links.length === 0) return false;
+    return rejoinConfirmedLinks(target, links.slice().sort(compareLinksBySourceOrder));
+  }
+
+  /**
+   * After a Tools separator is committed, rejoin every scope that has confirmed
+   * links using the new part/column/row separators. Match source order also
+   * re-sorts; otherwise document order is kept so caret/append order is not wiped.
+   */
+  function rewriteCombinedForSeparators() {
+    const seen = Object.create(null);
+    const scopes = [];
+    for (let i = 0; i < state.confirmedLinks.length; i++) {
+      const scope = state.confirmedLinks[i].scope;
+      if (!scope || seen[scope]) continue;
+      seen[scope] = true;
+      scopes.push(scope);
+    }
+    let changed = false;
+    for (let i = 0; i < scopes.length; i++) {
+      const target = scopes[i];
+      if (state.matchSourceOrder) {
+        if (reorderCombinedToSourceOrder(target)) changed = true;
+        continue;
+      }
+      const links = state.confirmedLinks.filter(function (link) {
+        return link.scope === target;
+      });
+      if (!links.length) continue;
+      const ordered = links.slice().sort(function (a, b) { return a.start - b.start; });
+      if (rejoinConfirmedLinks(target, ordered)) changed = true;
+    }
+    if (!changed) return false;
+    renderCombinedPrompt();
+    scheduleSave();
     return true;
   }
 
@@ -8440,10 +8486,18 @@
   });
 
   function onSeparatorInput(key, input) {
+    // Live value so the next append uses what is on screen. Combined itself
+    // is rewritten only on commit (change/blur), not on each keystroke.
     input.addEventListener('input', function () {
       pushHistory({ coalesce: true });
       state.separators[key] = input.value;
       scheduleSave();
+    });
+    input.addEventListener('change', function () {
+      state.separators[key] = input.value;
+      if (rewriteCombinedForSeparators()) {
+        setStatus('Updated Combined separators', 'ok');
+      }
     });
   }
 
