@@ -8470,7 +8470,7 @@
     el.masterLibrary.addEventListener('scroll', function () {
       if (suppressMasterLibMenuScrollClose) return;
       closeMasterLibFilterMenu();
-    }, { passive: true });
+    }, { passive: true, capture: true });
   }
   el.btnAppend.addEventListener('click', appendAll);
   el.btnCopy.addEventListener('click', copyCombined);

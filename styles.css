@@ -1568,7 +1568,11 @@ body.relocating-cell * {
   flex: 0 1 auto;
   max-height: 30%;
   min-height: 0;
-  overflow: auto;
+  /* List scrolls inside .master-library-items so the summary stays put and
+     the Values / A–Z toolbar can stick to the top of that list. */
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   border: 1px solid rgba(var(--accent-rgb), 0.28);
   border-radius: var(--radius);
   background: var(--panel);
@@ -1584,6 +1588,7 @@ body.relocating-cell * {
   position: sticky;
   top: 0;
   z-index: 3;
+  flex-shrink: 0;
   padding: 8px 10px;
   color: #9fe8de;
   font-size: 0.8rem;
@@ -1600,6 +1605,9 @@ body.relocating-cell * {
 }
 
 .master-library-items {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
   padding: 0 8px 8px;
 }
 
@@ -1609,6 +1617,10 @@ body.relocating-cell * {
   align-items: center;
   gap: 6px;
   padding: 6px 2px 8px;
+  /* Frozen while the open Master insert list scrolls (part tabs only). */
+  position: sticky;
+  top: 0;
+  z-index: 2;
   background: var(--surface);
   border-bottom: 1px solid var(--border);
   margin-bottom: 6px;
