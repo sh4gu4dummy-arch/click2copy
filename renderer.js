@@ -181,6 +181,7 @@
     columnSeparator: document.getElementById('column-separator'),
     rowSeparator: document.getElementById('row-separator'),
     partSearchBar: document.getElementById('part-search-bar'),
+    partTabPageChrome: document.getElementById('part-tab-page-chrome'),
     partFindInput: document.getElementById('part-find-input'),
     partReplaceInput: document.getElementById('part-replace-input'),
     btnFind: document.getElementById('btn-find'),
@@ -323,12 +324,8 @@
     const out = [];
     for (let i = 0; i < needed; i++) {
       const fallback = typeof cellSrc[i] === 'string' ? cellSrc[i] : '';
-      const entry = normalizeCellPagesEntry(src[i], fallback);
-      // Current cells[i] wins for the visible page (Combined live-sync source).
-      if (typeof cellSrc[i] === 'string') {
-        entry.pages[entry.page] = cellSrc[i];
-      }
-      out.push(entry);
+      // Pages are canonical; cells[i] only seeds a missing entry (legacy / first create).
+      out.push(normalizeCellPagesEntry(src[i], fallback));
     }
     return out;
   }
@@ -771,17 +768,23 @@
   /** Boolean array parallel to cells; missing/short arrays pad with false. */
 
   function makeTab(id, title, icon) {
+    const cells = emptyCells(DEFAULT_COLS, DEFAULT_ROWS);
     const tab = {
       id: id,
       title: title,
       cols: DEFAULT_COLS,
       rows: DEFAULT_ROWS,
-      cells: emptyCells(DEFAULT_COLS, DEFAULT_ROWS),
+      cells: cells,
       nestedCells: emptyNestedCells(DEFAULT_COLS, DEFAULT_ROWS),
       cellLocks: emptyCellLocks(DEFAULT_COLS, DEFAULT_ROWS),
-      cellPages: normalizeCellPages(null, emptyCells(DEFAULT_COLS, DEFAULT_ROWS), DEFAULT_COLS * DEFAULT_ROWS),
-      cellShades: emptyCellShades(DEFAULT_COLS, DEFAULT_ROWS)
+      cellPages: normalizeCellPages(null, cells, DEFAULT_COLS * DEFAULT_ROWS),
+      cellShades: emptyCellShades(DEFAULT_COLS, DEFAULT_ROWS),
+      pages: null,
+      page: 0
     };
+    // Bootstrap default page from empty grid (Combined keys filled on first flush).
+    tab.pages = [captureTabPageGridOnly(tab)];
+    tab.page = 0;
     tab.icon = isTabIconId(icon) ? icon : defaultIconForTab(tab);
     return tab;
   }
@@ -881,8 +884,11 @@
         nestedCells: emptyNestedCells(DEFAULT_COLS, DEFAULT_ROWS),
         cellLocks: emptyCellLocks(DEFAULT_COLS, DEFAULT_ROWS),
         cellPages: normalizeCellPages(null, cells, DEFAULT_COLS * DEFAULT_ROWS),
-        cellShades: emptyCellShades(DEFAULT_COLS, DEFAULT_ROWS)
+        cellShades: emptyCellShades(DEFAULT_COLS, DEFAULT_ROWS),
+        pages: null,
+        page: 0
       };
+      ensureTabPages(legacy);
       legacy.icon = isTabIconId(t.icon) ? t.icon : defaultIconForTab(legacy);
       return legacy;
     }
@@ -928,11 +934,24 @@
       nestedCells: nestedCells,
       cellLocks: cellLocks,
       cellPages: cellPages,
-      cellShades: cellShades
+      cellShades: cellShades,
+      pages: Array.isArray(t.pages) ? t.pages : null,
+      page: Number.isInteger(t.page) ? t.page : 0
     };
     normalized.icon = isTabIconId(t.icon) ? t.icon : defaultIconForTab(normalized);
     if (columnWidths) normalized.columnWidths = columnWidths;
     if (rowHeights) normalized.rowHeights = rowHeights;
+    // Persist/migrate part-tab pages; hydrate working grid from active page.
+    ensureTabPages(normalized);
+    const masterLike = normalized.id === 'master' ||
+      (typeof normalized.title === 'string' && normalized.title.trim().toLowerCase() === 'master');
+    if (!masterLike && normalized.pages && normalized.pages[normalized.page]) {
+      applyTabPageGrid(normalized, normalized.pages[normalized.page]);
+    } else if (masterLike) {
+      // Keep Master as a single normalized page mirror of root fields.
+      normalized.pages = [captureTabPageGridOnly(normalized)];
+      normalized.page = 0;
+    }
     return normalized;
   }
 
@@ -1034,6 +1053,15 @@
   }
 
   function snapshot() {
+    // Flush each part tab's working grid + Combined keys into pages[page].
+    state.tabs.forEach(function (tab) {
+      if (!isMasterTab(tab)) flushTabPage(tab);
+      else {
+        ensureTabPages(tab);
+        tab.pages = [captureTabPageGridOnly(tab)];
+        tab.page = 0;
+      }
+    });
     return {
       tabs: state.tabs,
       activeTabId: state.activeTabId,
@@ -2505,8 +2533,7 @@
     const tab = activeTab();
     if (!tab || cellIndex < 0 || cellIndex >= tab.cells.length) return;
     ensureCellPages(tab);
-    const entry = tab.cellPages[cellIndex];
-    if (!entry || !entry.pages.length) return;
+    if (!tab.cellPages[cellIndex] || !tab.cellPages[cellIndex].pages.length) return;
     // Flush live textarea into the page we are leaving.
     const liveTa = el.cellGrid
       ? el.cellGrid.querySelector('textarea.cell[data-idx="' + cellIndex + '"]')
@@ -2517,6 +2544,9 @@
       // Keep cells[i] mirrored into current page before flip.
       writeCellCurrentPage(tab, cellIndex, tab.cells[cellIndex] || '');
     }
+    // writeCellCurrentPage → ensureCellPages replaces cellPages[]; re-fetch entry.
+    const entry = tab.cellPages[cellIndex];
+    if (!entry || !entry.pages.length) return;
     let next = pageIndex;
     if (next < 0) next = 0;
     if (next >= entry.pages.length) next = entry.pages.length - 1;
@@ -2546,10 +2576,12 @@
       return;
     }
     ensureCellPages(tab);
-    const entry = tab.cellPages[cellIndex];
-    if (!entry) return;
+    if (!tab.cellPages[cellIndex]) return;
     pushHistory();
     writeCellCurrentPage(tab, cellIndex, tab.cells[cellIndex] || '');
+    // writeCellCurrentPage → ensureCellPages replaces cellPages[]; re-fetch before mutate.
+    const entry = tab.cellPages[cellIndex];
+    if (!entry) return;
     entry.pages.push('');
     entry.page = entry.pages.length - 1;
     syncCellTextFromPages(tab, cellIndex);
@@ -2607,6 +2639,437 @@
     }
     setCellPage(cellIndex, next);
   }
+
+  /* ── Part-tab pages (full grid snapshots per part) ───────────────────── */
+
+  function captureTabConfirmedKeys(tabId) {
+    const keys = [];
+    const seen = Object.create(null);
+    state.confirmedLinks.forEach(function (link) {
+      if (!link || link.tabId !== tabId) return;
+      const nest = Number.isInteger(link.nestIndex) && link.nestIndex >= 0
+        ? link.nestIndex
+        : null;
+      const id = nest === null ? String(link.cellIndex) : (link.cellIndex + ':' + nest);
+      if (seen[id]) return;
+      seen[id] = true;
+      const item = { cellIndex: link.cellIndex };
+      if (nest !== null) item.nestIndex = nest;
+      keys.push(item);
+    });
+    return keys;
+  }
+
+  function normalizeTabConfirmedKeys(raw) {
+    if (!Array.isArray(raw)) return [];
+    const out = [];
+    const seen = Object.create(null);
+    for (let i = 0; i < raw.length; i++) {
+      const item = raw[i];
+      if (!item || typeof item !== 'object') continue;
+      if (!Number.isInteger(item.cellIndex) || item.cellIndex < 0) continue;
+      const nest = Number.isInteger(item.nestIndex) && item.nestIndex >= 0
+        ? item.nestIndex
+        : null;
+      const id = nest === null ? String(item.cellIndex) : (item.cellIndex + ':' + nest);
+      if (seen[id]) continue;
+      seen[id] = true;
+      const entry = { cellIndex: item.cellIndex };
+      if (nest !== null) entry.nestIndex = nest;
+      out.push(entry);
+    }
+    return out;
+  }
+
+  /** Snapshot of the part tab's editable grid + Combined membership for one page. */
+  function captureTabPage(tab) {
+    if (!tab) return null;
+    ensureNestedCells(tab);
+    ensureCellLocks(tab);
+    ensureCellPages(tab);
+    ensureCellShades(tab);
+    const needed = (tab.cols || 0) * (tab.rows || 0);
+    const snap = {
+      cols: tab.cols,
+      rows: tab.rows,
+      cells: tab.cells.map(function (c) { return typeof c === 'string' ? c : ''; }),
+      nestedCells: tab.nestedCells.map(function (list) { return cloneNestList(list); }),
+      cellLocks: normalizeCellLocks(tab.cellLocks, needed),
+      cellPages: tab.cellPages.map(function (entry) { return cloneCellPagesEntry(entry); }),
+      cellShades: normalizeCellShades(tab.cellShades, needed),
+      partPrompt: typeof state.partPrompts[tab.id] === 'string' ? state.partPrompts[tab.id] : '',
+      confirmed: captureTabConfirmedKeys(tab.id)
+    };
+    const cw = normalizeColumnWidths(tab.columnWidths, tab.cols);
+    const rh = normalizeRowHeights(tab.rowHeights, tab.rows);
+    if (cw) snap.columnWidths = cw.slice();
+    if (rh) snap.rowHeights = rh.slice();
+    return snap;
+  }
+
+  function normalizeTabPage(raw) {
+    if (!raw || typeof raw !== 'object') return null;
+    let cols = Number.isInteger(raw.cols) && raw.cols > 0 ? raw.cols : DEFAULT_COLS;
+    let rows = Number.isInteger(raw.rows) && raw.rows > 0 ? raw.rows : DEFAULT_ROWS;
+    let cells;
+    if (Array.isArray(raw.cells)) {
+      cells = raw.cells.map(function (c) { return typeof c === 'string' ? c : ''; });
+    } else {
+      cells = emptyCells(cols, rows);
+    }
+    const needed = cols * rows;
+    if (cells.length < needed) cells = cells.concat(Array(needed - cells.length).fill(''));
+    else if (cells.length > needed) cells = cells.slice(0, needed);
+    const nestedCells = normalizeNestedCells(raw.nestedCells, needed);
+    const cellLocks = normalizeCellLocks(raw.cellLocks, needed);
+    const cellPages = normalizeCellPages(raw.cellPages, cells, needed);
+    const cellShades = normalizeCellShades(raw.cellShades, needed);
+    for (let i = 0; i < needed; i++) {
+      const entry = cellPages[i];
+      if (entry && Array.isArray(entry.pages)) {
+        cells[i] = entry.pages[entry.page] == null ? '' : String(entry.pages[entry.page]);
+      }
+    }
+    const snap = {
+      cols: cols,
+      rows: rows,
+      cells: cells,
+      nestedCells: nestedCells,
+      cellLocks: cellLocks,
+      cellPages: cellPages,
+      cellShades: cellShades,
+      partPrompt: typeof raw.partPrompt === 'string' ? raw.partPrompt : '',
+      confirmed: normalizeTabConfirmedKeys(raw.confirmed)
+    };
+    const cw = normalizeColumnWidths(raw.columnWidths, cols);
+    const rh = normalizeRowHeights(raw.rowHeights, rows);
+    if (cw) snap.columnWidths = cw;
+    if (rh) snap.rowHeights = rh;
+    return snap;
+  }
+
+  /** Deep copy a page snapshot. opts.unlock clears Master cell locks on the copy. */
+  function cloneTabPage(snap, opts) {
+    const base = normalizeTabPage(snap);
+    if (!base) return null;
+    if (opts && opts.unlock) {
+      base.cellLocks = emptyCellLocks(base.cols, base.rows);
+    }
+    return base;
+  }
+
+  function applyTabPageGrid(tab, snap) {
+    if (!tab || !snap) return;
+    const page = normalizeTabPage(snap);
+    if (!page) return;
+    tab.cols = page.cols;
+    tab.rows = page.rows;
+    tab.cells = page.cells.slice();
+    tab.nestedCells = page.nestedCells.map(function (list) { return cloneNestList(list); });
+    tab.cellLocks = normalizeCellLocks(page.cellLocks, page.cols * page.rows);
+    tab.cellPages = page.cellPages.map(function (entry) { return cloneCellPagesEntry(entry); });
+    tab.cellShades = normalizeCellShades(page.cellShades, page.cols * page.rows);
+    if (page.columnWidths) tab.columnWidths = page.columnWidths.slice();
+    else delete tab.columnWidths;
+    if (page.rowHeights) tab.rowHeights = page.rowHeights.slice();
+    else delete tab.rowHeights;
+    ensureCellPages(tab);
+  }
+
+  function removeTabCombinedContribution(tabId) {
+    const doomed = state.confirmedLinks.filter(function (link) {
+      return link && link.tabId === tabId;
+    });
+    if (!doomed.length) return;
+    const byScope = {};
+    doomed.forEach(function (link) {
+      if (!byScope[link.scope]) byScope[link.scope] = [];
+      byScope[link.scope].push(link);
+    });
+    Object.keys(byScope).forEach(function (scope) {
+      removeLinksFromCombined(byScope[scope]);
+    });
+  }
+
+  function restoreTabCombinedFromPage(tab, snap) {
+    if (!tab || !snap) return;
+    removeTabCombinedContribution(tab.id);
+    if (typeof snap.partPrompt === 'string' && snap.partPrompt) {
+      state.partPrompts[tab.id] = snap.partPrompt;
+    } else {
+      delete state.partPrompts[tab.id];
+    }
+    const keys = normalizeTabConfirmedKeys(snap.confirmed);
+    // Parents first, then nests — preserves a sensible Combined order.
+    keys.sort(function (a, b) {
+      if (a.cellIndex !== b.cellIndex) return a.cellIndex - b.cellIndex;
+      const an = Number.isInteger(a.nestIndex) ? a.nestIndex : -1;
+      const bn = Number.isInteger(b.nestIndex) ? b.nestIndex : -1;
+      return an - bn;
+    });
+    for (let i = 0; i < keys.length; i++) {
+      const item = keys[i];
+      if (Number.isInteger(item.nestIndex)) {
+        ensureNestConfirmedState(item.cellIndex, item.nestIndex, true, { quiet: true });
+      } else {
+        ensureCellConfirmedState(item.cellIndex, true, { quiet: true, col1Cascade: false });
+      }
+    }
+  }
+
+  function flushLiveCellInputs(tab) {
+    if (!tab || !el.cellGrid) return;
+    const tas = el.cellGrid.querySelectorAll('textarea.cell[data-idx]');
+    for (let i = 0; i < tas.length; i++) {
+      const ta = tas[i];
+      const idx = parseInt(ta.dataset.idx, 10);
+      if (Number.isNaN(idx) || idx < 0 || idx >= tab.cells.length) continue;
+      if (document.activeElement === ta || (ta.value || '') !== (tab.cells[idx] || '')) {
+        writeCellCurrentPage(tab, idx, ta.value);
+      }
+    }
+  }
+
+  function flushTabPage(tab) {
+    if (!tab || isMasterTab(tab)) return;
+    ensureTabPages(tab);
+    if (tab === activeTab()) flushLiveCellInputs(tab);
+    tab.pages[tab.page] = captureTabPage(tab);
+  }
+
+  /** Grid-only page snapshot (no Combined keys) — safe during normalize/load. */
+  function captureTabPageGridOnly(tab) {
+    if (!tab) return null;
+    ensureNestedCells(tab);
+    ensureCellLocks(tab);
+    ensureCellPages(tab);
+    ensureCellShades(tab);
+    const needed = (tab.cols || 0) * (tab.rows || 0);
+    const snap = {
+      cols: tab.cols,
+      rows: tab.rows,
+      cells: tab.cells.map(function (c) { return typeof c === 'string' ? c : ''; }),
+      nestedCells: tab.nestedCells.map(function (list) { return cloneNestList(list); }),
+      cellLocks: normalizeCellLocks(tab.cellLocks, needed),
+      cellPages: tab.cellPages.map(function (entry) { return cloneCellPagesEntry(entry); }),
+      cellShades: normalizeCellShades(tab.cellShades, needed),
+      partPrompt: '',
+      confirmed: []
+    };
+    const cw = normalizeColumnWidths(tab.columnWidths, tab.cols);
+    const rh = normalizeRowHeights(tab.rowHeights, tab.rows);
+    if (cw) snap.columnWidths = cw.slice();
+    if (rh) snap.rowHeights = rh.slice();
+    return snap;
+  }
+
+  function ensureTabPages(tab) {
+    if (!tab) return;
+    // Master stays single-page (no chrome); still normalize shape for persist.
+    if (!Array.isArray(tab.pages) || !tab.pages.length) {
+      tab.pages = [captureTabPageGridOnly(tab)];
+      tab.page = 0;
+      return;
+    }
+    const normalized = [];
+    for (let i = 0; i < tab.pages.length; i++) {
+      const page = normalizeTabPage(tab.pages[i]);
+      if (page) normalized.push(page);
+    }
+    if (!normalized.length) normalized.push(captureTabPageGridOnly(tab));
+    tab.pages = normalized;
+    let page = Number.isInteger(tab.page) ? tab.page : 0;
+    if (page < 0) page = 0;
+    if (page >= tab.pages.length) page = tab.pages.length - 1;
+    tab.page = page;
+  }
+
+  function hydrateTabFromActivePage(tab) {
+    if (!tab || isMasterTab(tab)) return;
+    ensureTabPages(tab);
+    applyTabPageGrid(tab, tab.pages[tab.page]);
+  }
+
+  function setTabPage(pageIndex, opts) {
+    const tab = activeTab();
+    if (!tab || isMasterTab(tab) || toolsTabActive) return;
+    ensureTabPages(tab);
+    flushLiveCellInputs(tab);
+    tab.pages[tab.page] = captureTabPage(tab);
+    let next = pageIndex;
+    if (next < 0) next = 0;
+    if (next >= tab.pages.length) next = tab.pages.length - 1;
+    if (tab.page === next && !(opts && opts.forceRender)) {
+      renderPartTabPageChrome();
+      return;
+    }
+    tab.page = next;
+    applyTabPageGrid(tab, tab.pages[tab.page]);
+    restoreTabCombinedFromPage(tab, tab.pages[tab.page]);
+    focusedCell = null;
+    clearStickyCellRange();
+    clearKeyboardCellRange();
+    clearPartSearch({ keepInputs: true, keepQuery: true });
+    renderTabs();
+    renderGrid();
+    renderCombinedPrompt();
+    applyConfirmedCellHighlights();
+    applyAppendCheckedState();
+    renderMasterLibrary();
+    renderPartTabPageChrome();
+    scheduleSave();
+  }
+
+  function addTabPage() {
+    const tab = activeTab();
+    if (!tab || isMasterTab(tab) || toolsTabActive) return;
+    ensureTabPages(tab);
+    pushHistory();
+    flushLiveCellInputs(tab);
+    tab.pages[tab.page] = captureTabPage(tab);
+    // Ash: copy current but not locked — unlock Master cell locks on the copy.
+    const copy = cloneTabPage(tab.pages[tab.page], { unlock: true });
+    tab.pages.push(copy);
+    tab.page = tab.pages.length - 1;
+    applyTabPageGrid(tab, copy);
+    restoreTabCombinedFromPage(tab, copy);
+    focusedCell = null;
+    clearStickyCellRange();
+    clearKeyboardCellRange();
+    renderTabs();
+    renderGrid();
+    renderCombinedPrompt();
+    applyConfirmedCellHighlights();
+    applyAppendCheckedState();
+    renderMasterLibrary();
+    renderPartTabPageChrome();
+    scheduleSave();
+    setStatus('Added part page (' + tab.pages.length + ') — unlocked copy of previous');
+  }
+
+  function removeTabPage() {
+    const tab = activeTab();
+    if (!tab || isMasterTab(tab) || toolsTabActive) return;
+    ensureTabPages(tab);
+    if (tab.pages.length <= 1) {
+      setStatus('Part already has only one page', 'err');
+      return;
+    }
+    pushHistory();
+    flushLiveCellInputs(tab);
+    const removeAt = tab.page || 0;
+    tab.pages.splice(removeAt, 1);
+    if (tab.page >= tab.pages.length) tab.page = tab.pages.length - 1;
+    applyTabPageGrid(tab, tab.pages[tab.page]);
+    restoreTabCombinedFromPage(tab, tab.pages[tab.page]);
+    focusedCell = null;
+    clearStickyCellRange();
+    clearKeyboardCellRange();
+    renderTabs();
+    renderGrid();
+    renderCombinedPrompt();
+    applyConfirmedCellHighlights();
+    applyAppendCheckedState();
+    renderMasterLibrary();
+    renderPartTabPageChrome();
+    scheduleSave();
+    setStatus('Removed part page (' + tab.pages.length + ' left)');
+  }
+
+  function stepTabPage(delta) {
+    const tab = activeTab();
+    if (!tab || isMasterTab(tab)) return;
+    ensureTabPages(tab);
+    const cur = tab.page || 0;
+    const next = cur + delta;
+    if (next < 0) return;
+    if (next >= tab.pages.length) {
+      addTabPage();
+      return;
+    }
+    setTabPage(next);
+  }
+
+  function renderPartTabPageChrome() {
+    const host = el.partTabPageChrome;
+    if (!host) return;
+    const tab = activeTab();
+    const show = !!(tab && !isMasterTab(tab) && !toolsTabActive);
+    host.hidden = !show;
+    host.textContent = '';
+    if (!show) return;
+    ensureTabPages(tab);
+    const pageCount = tab.pages.length;
+    const page = Math.min(Math.max(tab.page || 0, 0), pageCount - 1);
+    tab.page = page;
+
+    const chrome = document.createElement('div');
+    chrome.className = 'part-tab-page-chrome-inner';
+    chrome.setAttribute('role', 'group');
+    chrome.setAttribute('aria-label', 'Part pages');
+
+    const prevBtn = document.createElement('button');
+    prevBtn.type = 'button';
+    prevBtn.className = 'part-tab-page-btn';
+    prevBtn.textContent = '◀';
+    prevBtn.title = 'Previous part page';
+    prevBtn.setAttribute('aria-label', 'Previous part page');
+    prevBtn.disabled = page <= 0;
+    prevBtn.addEventListener('click', function (ev) {
+      ev.preventDefault();
+      stepTabPage(-1);
+    });
+
+    const label = document.createElement('span');
+    label.className = 'part-tab-page-label';
+    label.textContent = (page + 1) + '/' + pageCount;
+    label.title = 'Part page ' + (page + 1) + ' of ' + pageCount;
+
+    const nextBtn = document.createElement('button');
+    nextBtn.type = 'button';
+    nextBtn.className = 'part-tab-page-btn';
+    nextBtn.textContent = '▶';
+    nextBtn.title = 'Next part page (adds a page at the end)';
+    nextBtn.setAttribute('aria-label', 'Next part page');
+    nextBtn.addEventListener('click', function (ev) {
+      ev.preventDefault();
+      stepTabPage(1);
+    });
+
+    const addBtn = document.createElement('button');
+    addBtn.type = 'button';
+    addBtn.className = 'part-tab-page-btn part-tab-page-add';
+    addBtn.textContent = '+';
+    addBtn.title = 'Add part page (copy current, unlocked)';
+    addBtn.setAttribute('aria-label', 'Add part page');
+    addBtn.addEventListener('click', function (ev) {
+      ev.preventDefault();
+      addTabPage();
+    });
+
+    chrome.appendChild(prevBtn);
+    chrome.appendChild(label);
+    chrome.appendChild(nextBtn);
+    chrome.appendChild(addBtn);
+
+    if (pageCount > 1) {
+      const removeBtn = document.createElement('button');
+      removeBtn.type = 'button';
+      removeBtn.className = 'part-tab-page-btn part-tab-page-remove';
+      removeBtn.textContent = '×';
+      removeBtn.title = 'Remove current part page';
+      removeBtn.setAttribute('aria-label', 'Remove current part page');
+      removeBtn.addEventListener('click', function (ev) {
+        ev.preventDefault();
+        removeTabPage();
+      });
+      chrome.appendChild(removeBtn);
+    }
+
+    host.appendChild(chrome);
+  }
+
+
 
   function closeCellShadePicker() {
     const open = document.querySelectorAll('.cell-shade-picker');
@@ -4730,6 +5193,7 @@
     el.btnDelete.disabled = !tab || isMasterTab(tab) || partTabs().length <= 1 || toolsTabActive;
     el.masterLibrary.hidden = toolsTabActive || isMasterTab(tab);
     updateToolsChrome();
+    renderPartTabPageChrome();
   }
 
   function masterRowHasContent(master, row) {

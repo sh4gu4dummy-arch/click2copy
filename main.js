@@ -325,14 +325,127 @@ function normalizeCellPages(raw, cells, length) {
   const out = [];
   for (let i = 0; i < needed; i++) {
     const fallback = typeof cellSrc[i] === 'string' ? cellSrc[i] : '';
-    const entry = normalizeCellPagesEntry(src[i], fallback);
-    // Keep cells[i] as the visible/current page text (Combined + live-sync).
-    if (typeof cellSrc[i] === 'string') {
-      entry.pages[entry.page] = cellSrc[i];
-    }
+    // Pages are canonical; cells[i] only seeds a missing entry.
+    out.push(normalizeCellPagesEntry(src[i], fallback));
+  }
+  return out;
+}
+
+function normalizeTabConfirmedKeys(raw) {
+  if (!Array.isArray(raw)) return [];
+  const out = [];
+  const seen = Object.create(null);
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue;
+    const cellIndex = toNonNegInt(item.cellIndex);
+    if (cellIndex === null) continue;
+    const nestIndex = toNonNegInt(item.nestIndex);
+    const id = nestIndex === null ? String(cellIndex) : `${cellIndex}:${nestIndex}`;
+    if (seen[id]) continue;
+    seen[id] = true;
+    const entry = { cellIndex };
+    if (nestIndex !== null) entry.nestIndex = nestIndex;
     out.push(entry);
   }
   return out;
+}
+
+/** One part-tab page: full grid snapshot + Combined membership keys. */
+function normalizeTabPage(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  let cols = Number.isInteger(raw.cols) && raw.cols > 0 ? raw.cols : DEFAULT_COLS;
+  let rows = Number.isInteger(raw.rows) && raw.rows > 0 ? raw.rows : DEFAULT_ROWS;
+  let cells;
+  if (Array.isArray(raw.cells)) {
+    cells = raw.cells.map((c) => (typeof c === 'string' ? c : ''));
+  } else {
+    cells = emptyCells(cols, rows);
+  }
+  const needed = cols * rows;
+  if (cells.length < needed) {
+    cells = cells.concat(emptyCells(needed - cells.length, 1));
+  } else if (cells.length > needed) {
+    cells = cells.slice(0, needed);
+  }
+  const nestedCells = normalizeNestedCells(raw.nestedCells, needed);
+  const cellLocks = normalizeCellLocks(raw.cellLocks, needed);
+  const cellPages = normalizeCellPages(raw.cellPages, cells, needed);
+  const cellShades = normalizeCellShades(raw.cellShades, needed);
+  for (let i = 0; i < needed; i++) {
+    const entry = cellPages[i];
+    if (entry && Array.isArray(entry.pages)) {
+      cells[i] = entry.pages[entry.page] == null ? '' : String(entry.pages[entry.page]);
+    }
+  }
+  const snap = {
+    cols,
+    rows,
+    cells,
+    nestedCells,
+    cellLocks,
+    cellPages,
+    cellShades,
+    partPrompt: typeof raw.partPrompt === 'string' ? raw.partPrompt : '',
+    confirmed: normalizeTabConfirmedKeys(raw.confirmed)
+  };
+  const columnWidths = normalizeColumnWidths(raw.columnWidths, cols);
+  const rowHeights = normalizeRowHeights(raw.rowHeights, rows);
+  if (columnWidths) snap.columnWidths = columnWidths;
+  if (rowHeights) snap.rowHeights = rowHeights;
+  return snap;
+}
+
+function wrapRootAsTabPage(tab) {
+  const needed = tab.cols * tab.rows;
+  const snap = {
+    cols: tab.cols,
+    rows: tab.rows,
+    cells: tab.cells.slice(),
+    nestedCells: normalizeNestedCells(tab.nestedCells, needed),
+    cellLocks: normalizeCellLocks(tab.cellLocks, needed),
+    cellPages: normalizeCellPages(tab.cellPages, tab.cells, needed),
+    cellShades: normalizeCellShades(tab.cellShades, needed),
+    partPrompt: '',
+    confirmed: []
+  };
+  if (tab.columnWidths) snap.columnWidths = tab.columnWidths;
+  if (tab.rowHeights) snap.rowHeights = tab.rowHeights;
+  return snap;
+}
+
+function attachTabPages(normalized, raw) {
+  const masterLike = normalized.id === 'master' ||
+    (typeof normalized.title === 'string' && normalized.title.trim().toLowerCase() === 'master');
+  let pages = [];
+  if (Array.isArray(raw && raw.pages)) {
+    for (const item of raw.pages) {
+      const page = normalizeTabPage(item);
+      if (page) pages.push(page);
+    }
+  }
+  if (!pages.length) pages = [wrapRootAsTabPage(normalized)];
+  let page = Number.isInteger(raw && raw.page) ? raw.page : 0;
+  if (page < 0) page = 0;
+  if (page >= pages.length) page = pages.length - 1;
+  if (masterLike) {
+    normalized.pages = [wrapRootAsTabPage(normalized)];
+    normalized.page = 0;
+    return;
+  }
+  const active = pages[page];
+  normalized.cols = active.cols;
+  normalized.rows = active.rows;
+  normalized.cells = active.cells.slice();
+  normalized.nestedCells = active.nestedCells;
+  normalized.cellLocks = active.cellLocks;
+  normalized.cellPages = active.cellPages;
+  normalized.cellShades = active.cellShades;
+  if (active.columnWidths) normalized.columnWidths = active.columnWidths;
+  else delete normalized.columnWidths;
+  if (active.rowHeights) normalized.rowHeights = active.rowHeights;
+  else delete normalized.rowHeights;
+  normalized.pages = pages;
+  normalized.page = page;
 }
 
 /**
@@ -365,6 +478,7 @@ function normalizeTab(t) {
     };
     normalized.icon = isTabIconId(t.icon) ? t.icon : defaultIconForTab(normalized);
     if (columnWidths) normalized.columnWidths = columnWidths;
+    attachTabPages(normalized, t);
     return normalized;
   }
 
@@ -421,6 +535,7 @@ function normalizeTab(t) {
   normalized.icon = isTabIconId(t.icon) ? t.icon : defaultIconForTab(normalized);
   if (columnWidths) normalized.columnWidths = columnWidths;
   if (rowHeights) normalized.rowHeights = rowHeights;
+  attachTabPages(normalized, t);
   return normalized;
 }
 

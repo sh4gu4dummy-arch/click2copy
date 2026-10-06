@@ -83,11 +83,25 @@ Each tab is stored as:
   "rows": 8,
   "cells": ["…", "…"],
   "nestedCells": [[{ "pages": ["…"], "page": 0 }], []],
-  "cellLocks": [null, { "masterOrigin": true, "locked": true, "masterCellIndex": 0 }]
+  "cellLocks": [null, { "masterOrigin": true, "locked": true, "masterCellIndex": 0 }],
+  "cellPages": [{ "pages": ["…", "…"], "page": 0 }],
+  "cellShades": [null, "green"],
+  "pages": [{
+    "cols": 3,
+    "rows": 8,
+    "cells": ["…"],
+    "nestedCells": [],
+    "cellLocks": [],
+    "cellPages": [],
+    "cellShades": [],
+    "partPrompt": "",
+    "confirmed": [{ "cellIndex": 0 }]
+  }],
+  "page": 0
 }
 ```
 
-`cells` is a flat row-major array of length `cols * rows`. Older documents may still carry a `sleptCells` array; it is ignored on load. Optional `icon` is one of `text` | `video` | `img` | `sparkle` | `tag` | `folder` | `layers` | `hash` (defaults: Master → `layers`, parts → `text`; Tools is UI-only wrench and is not stored). `nestedCells` is a parallel array of nest lists; each nest is `{ pages: string[], page: number }` (`page` is the current page index). Optional `cellLocks` is a parallel array (same length as `cells`) of `null` or `{ masterOrigin: true, locked: boolean, masterCellIndex?: number }` for Master-inserted part cells. When a cell is checked / Append all, Combined gets **parent text, then each nest’s pages in order** (all non-empty pages), joined by the row separator. Optional `columnWidths` / `rowHeights` arrays (lengths `cols` / `rows`) store resized column widths and auto-fitted row heights in pixels (autofit includes nested height).
+`cells` is a flat row-major array of length `cols * rows` (working copy of the active part page). Older documents may still carry a `sleptCells` array; it is ignored on load. Optional `icon` is one of `text` | `video` | `img` | `sparkle` | `tag` | `folder` | `layers` | `hash` (defaults: Master → `layers`, parts → `text`; Tools is UI-only wrench and is not stored). `nestedCells` is a parallel array of nest lists; each nest is `{ pages: string[], page: number }` (`page` is the current page index). Optional `cellPages` is a parallel array of parent-cell page entries `{ pages: string[], page }` (same shape as nests). Optional `cellShades` is a parallel array of `null` | `green` | `yellow` | `red`. Optional `cellLocks` is a parallel array (same length as `cells`) of `null` or `{ masterOrigin: true, locked: boolean, masterCellIndex?: number }` for Master-inserted part cells. Part tabs also store `pages` (array of full grid snapshots) and `page` (active index); adding a part page copies the current snapshot with Master locks cleared. Each part page may include `partPrompt` and `confirmed` (`[{ cellIndex, nestIndex? }]`) so switching pages swaps that part’s Combined membership. When a cell is checked / Append all, Combined gets **parent text, then each nest’s pages in order** (all non-empty pages), joined by the row separator. Optional `columnWidths` / `rowHeights` arrays (lengths `cols` / `rows`) store resized column widths and auto-fitted row heights in pixels (autofit includes nested height).
 
 Confirmed append links (ranges into the combined prompt tied to source tab/cell, with optional `nestIndex` for nested cells) are stored as `confirmedLinks` on the document. Master-origin segments also store `masterOrigin`, `locked`, and optional `masterCellIndex` so Combined Master locks restore on launch. Part-tab Master locks round-trip on `cellLocks`. They round-trip through session JSON, untitled autosave, named `.c2copy` files, and recoverable backups so cell greens and Master-insert greens restore on launch (offsets are repaired if Combined text still matches).
 
@@ -100,7 +114,8 @@ Confirmed append links (ranges into the combined prompt tied to source tab/cell,
 5. Open the shared **Tools** tab for **+ Row** / **+ Column** / **Rename** and separator settings (they still act on the active part tab). Use the part **Find** bar to search or replace text in cells (and nests).
 6. Click a cell to place the caret where you clicked (no copy yet). Press **Enter** to confirm, copy that cell, and move to the next (**Shift+Enter** = newline, no copy). Tab/arrows move without copying; **Shift+Arrow** extends a sticky multi-cell highlight. Click+drag inside one cell is native text selection; click+drag across cells selects/highlights a rectangle and copies it as TSV on mouseup; a later drag that leaves the starting cell while inside that sticky selection moves/swaps the block. Paste from Google Sheets or Excel into a focused cell — tab-separated or HTML table data fills the grid (expanding rows/columns as needed) instead of dumping into one cell. Copy/cut with no text selection copies the whole focused cell; Ctrl/Cmd+C while a multi-cell highlight is sticky copies its TSV range. Combined prompt still copies on click/focus/edit. Master-inserted part cells and Master-origin Combined segments stay locked (subtle green cue) until **double-click** unlock; finish with Overwrite Master / Keep local / Cancel.
 7. Click **Copy** when ready to paste elsewhere.
-8. Double-click a tab title to rename it (or use Tools → Rename); use **Delete** (with confirm if non-empty) to remove a tab. Right-click the tab to pick an icon (Master + parts); left-click selects the tab only. Tools stays wrench-only.
+8. Double-click a tab title to rename it (or use Tools → Rename); use **Delete** (with confirm if non-empty) to remove a tab. Right-click the tab to pick an icon (Master + parts); left-click selects the tab only. Tools stays wrench-only. Part tabs have pages (**◀ n/n ▶ +** in the part toolbar): **+** copies the current page’s grid (cells, nests, cell pages, shades, Combined checks) with Master locks cleared so the copy is editable.
+9. Parent cells also have pages (corner **◀ n/n ▶ +**, same idea as nest pages).
 
 Data is autosaved shortly after edits. Click the status line → under-the-hood panel to see the current autosave target and recoverable backup paths (`Documents/Click2Copy/latest-autosave.c2copy` and `userData/backups/latest-autosave.c2copy`).
 

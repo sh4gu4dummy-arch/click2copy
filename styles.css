@@ -545,6 +545,66 @@ body {
   padding: 0;
 }
 
+/* Part-tab pages — Soft dark compact chrome (◀ n/n ▶ +) near part toolbar */
+.part-tab-page-chrome {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+}
+.part-tab-page-chrome[hidden] {
+  display: none !important;
+}
+.part-tab-page-chrome-inner {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 2px;
+  padding: 2px 4px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: rgba(42, 48, 56, 0.92);
+  color: var(--muted);
+}
+.part-tab-page-btn {
+  appearance: none;
+  margin: 0;
+  padding: 0;
+  width: 20px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+}
+.part-tab-page-btn:hover:not(:disabled) {
+  background: var(--accent);
+  color: #fff;
+}
+.part-tab-page-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.part-tab-page-label {
+  flex: 0 0 auto;
+  min-width: 2.2em;
+  padding: 0 3px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.1;
+  text-align: center;
+  color: var(--muted);
+  user-select: none;
+  white-space: nowrap;
+}
+
 .part-search-input {
   flex: 1 1 140px;
   min-width: 120px;
