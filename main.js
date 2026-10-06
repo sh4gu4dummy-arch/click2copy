@@ -269,6 +269,72 @@ function normalizeSeparators(separators) {
   };
 }
 
+
+function emptyCellShades(length) {
+  return Array(Math.max(0, length)).fill(null);
+}
+
+function normalizeCellShade(value) {
+  if (value === 'green' || value === 'yellow' || value === 'red') return value;
+  return null;
+}
+
+function normalizeCellShades(shades, length) {
+  const needed = Math.max(0, length);
+  let out = Array.isArray(shades)
+    ? shades.map(normalizeCellShade)
+    : emptyCellShades(needed);
+  if (out.length < needed) {
+    while (out.length < needed) out.push(null);
+  } else if (out.length > needed) {
+    out = out.slice(0, needed);
+  }
+  return out;
+}
+
+function makeEmptyCellPages(text) {
+  return { pages: [typeof text === 'string' ? text : ''], page: 0 };
+}
+
+/** Parent-cell pages: same shape as a nest ({ pages, page }). */
+function normalizeCellPagesEntry(item, fallbackText) {
+  if (typeof item === 'string') return { pages: [item], page: 0 };
+  if (!item || typeof item !== 'object') {
+    return makeEmptyCellPages(typeof fallbackText === 'string' ? fallbackText : '');
+  }
+  let pages;
+  if (Array.isArray(item.pages) && item.pages.length) {
+    pages = item.pages.map((page) => (typeof page === 'string' ? page : ''));
+  } else if (typeof item.text === 'string') {
+    pages = [item.text];
+  } else if (typeof fallbackText === 'string') {
+    pages = [fallbackText];
+  } else {
+    pages = [''];
+  }
+  let page = Number.isInteger(item.page) ? item.page : 0;
+  if (page < 0) page = 0;
+  if (page >= pages.length) page = pages.length - 1;
+  return { pages, page };
+}
+
+function normalizeCellPages(raw, cells, length) {
+  const needed = Math.max(0, length);
+  const src = Array.isArray(raw) ? raw : [];
+  const cellSrc = Array.isArray(cells) ? cells : [];
+  const out = [];
+  for (let i = 0; i < needed; i++) {
+    const fallback = typeof cellSrc[i] === 'string' ? cellSrc[i] : '';
+    const entry = normalizeCellPagesEntry(src[i], fallback);
+    // Keep cells[i] as the visible/current page text (Combined + live-sync).
+    if (typeof cellSrc[i] === 'string') {
+      entry.pages[entry.page] = cellSrc[i];
+    }
+    out.push(entry);
+  }
+  return out;
+}
+
 /**
  * Normalize a single tab to the grid schema.
  * Migrates legacy { content: string } into cells[0] at 3×8.
@@ -293,7 +359,9 @@ function normalizeTab(t) {
       rows,
       cells,
       nestedCells: emptyNestedCells(cols * rows),
-      cellLocks: emptyNestedCells(cols * rows).map(() => null)
+      cellLocks: emptyNestedCells(cols * rows).map(() => null),
+      cellPages: normalizeCellPages(null, cells, cols * rows),
+      cellShades: emptyCellShades(cols * rows)
     };
     normalized.icon = isTabIconId(t.icon) ? t.icon : defaultIconForTab(normalized);
     if (columnWidths) normalized.columnWidths = columnWidths;
@@ -338,8 +406,18 @@ function normalizeTab(t) {
     rows,
     cells,
     nestedCells: normalizeNestedCells(t.nestedCells, needed),
-    cellLocks: normalizeCellLocks(t.cellLocks, needed)
+    cellLocks: normalizeCellLocks(t.cellLocks, needed),
+    cellPages: normalizeCellPages(t.cellPages, cells, needed),
+    cellShades: normalizeCellShades(t.cellShades, needed)
   };
+  // Mirror current page text into cells so Combined / library stay consistent.
+  for (let i = 0; i < needed; i++) {
+    const entry = normalized.cellPages[i];
+    if (entry && Array.isArray(entry.pages)) {
+      cells[i] = entry.pages[entry.page] == null ? '' : String(entry.pages[entry.page]);
+    }
+  }
+  normalized.cells = cells;
   normalized.icon = isTabIconId(t.icon) ? t.icon : defaultIconForTab(normalized);
   if (columnWidths) normalized.columnWidths = columnWidths;
   if (rowHeights) normalized.rowHeights = rowHeights;

@@ -258,6 +258,286 @@
     return true;
   }
 
+
+  const CELL_SHADE_IDS = ['green', 'yellow', 'red'];
+
+  function emptyCellShades(cols, rows) {
+    return Array((cols || 0) * (rows || 0)).fill(null);
+  }
+
+  function normalizeCellShade(value) {
+    if (value === 'green' || value === 'yellow' || value === 'red') return value;
+    return null;
+  }
+
+  function normalizeCellShades(shades, length) {
+    const needed = length > 0 ? length : 0;
+    let out;
+    if (Array.isArray(shades)) {
+      out = shades.map(normalizeCellShade);
+    } else {
+      out = Array(needed).fill(null);
+    }
+    if (out.length < needed) {
+      while (out.length < needed) out.push(null);
+    } else if (out.length > needed) {
+      out = out.slice(0, needed);
+    }
+    return out;
+  }
+
+  function makeEmptyCellPages(text) {
+    return { pages: [typeof text === 'string' ? text : ''], page: 0 };
+  }
+
+  /** Parent-cell pages — same shape as a nest: { pages: string[], page }. */
+  function normalizeCellPagesEntry(item, fallbackText) {
+    if (typeof item === 'string') return { pages: [item], page: 0 };
+    if (!item || typeof item !== 'object') {
+      return makeEmptyCellPages(typeof fallbackText === 'string' ? fallbackText : '');
+    }
+    let pages;
+    if (Array.isArray(item.pages) && item.pages.length) {
+      pages = item.pages.map(function (p) { return typeof p === 'string' ? p : ''; });
+    } else if (typeof item.text === 'string') {
+      pages = [item.text];
+    } else if (typeof fallbackText === 'string') {
+      pages = [fallbackText];
+    } else {
+      pages = [''];
+    }
+    let page = Number.isInteger(item.page) ? item.page : 0;
+    if (page < 0) page = 0;
+    if (page >= pages.length) page = pages.length - 1;
+    return { pages: pages, page: page };
+  }
+
+  function cloneCellPagesEntry(entry) {
+    return normalizeCellPagesEntry(entry, '');
+  }
+
+  function normalizeCellPages(raw, cells, length) {
+    const needed = length > 0 ? length : 0;
+    const src = Array.isArray(raw) ? raw : [];
+    const cellSrc = Array.isArray(cells) ? cells : [];
+    const out = [];
+    for (let i = 0; i < needed; i++) {
+      const fallback = typeof cellSrc[i] === 'string' ? cellSrc[i] : '';
+      const entry = normalizeCellPagesEntry(src[i], fallback);
+      // Current cells[i] wins for the visible page (Combined live-sync source).
+      if (typeof cellSrc[i] === 'string') {
+        entry.pages[entry.page] = cellSrc[i];
+      }
+      out.push(entry);
+    }
+    return out;
+  }
+
+  /** Compare page contents (ignore current page index — view state only). */
+  function cellPagesContentEqual(a, b) {
+    const aa = normalizeCellPagesEntry(a, '');
+    const bb = normalizeCellPagesEntry(b, '');
+    if (aa.pages.length !== bb.pages.length) return false;
+    for (let p = 0; p < aa.pages.length; p++) {
+      if (aa.pages[p] !== bb.pages[p]) return false;
+    }
+    return true;
+  }
+
+  function ensureCellShades(tab) {
+    if (!tab) return;
+    const needed = (tab.cols || 0) * (tab.rows || 0);
+    tab.cellShades = normalizeCellShades(tab.cellShades, needed);
+  }
+
+  function ensureCellPages(tab) {
+    if (!tab) return;
+    const needed = (tab.cols || 0) * (tab.rows || 0);
+    tab.cellPages = normalizeCellPages(tab.cellPages, tab.cells, needed);
+    // Mirror visible page into cells[].
+    for (let i = 0; i < needed; i++) {
+      const entry = tab.cellPages[i];
+      if (!entry || !entry.pages.length) continue;
+      tab.cells[i] = entry.pages[entry.page] == null ? '' : String(entry.pages[entry.page]);
+    }
+  }
+
+  function getCellPages(tab, cellIndex) {
+    if (!tab || cellIndex < 0) return makeEmptyCellPages('');
+    ensureCellPages(tab);
+    if (cellIndex >= tab.cellPages.length) return makeEmptyCellPages('');
+    return tab.cellPages[cellIndex];
+  }
+
+  function getCellShade(tab, cellIndex) {
+    if (!tab || cellIndex < 0) return null;
+    ensureCellShades(tab);
+    if (cellIndex >= tab.cellShades.length) return null;
+    return tab.cellShades[cellIndex];
+  }
+
+  function setCellShade(tab, cellIndex, shade) {
+    if (!tab || cellIndex < 0 || cellIndex >= tab.cells.length) return;
+    ensureCellShades(tab);
+    tab.cellShades[cellIndex] = normalizeCellShade(shade);
+  }
+
+  /** Write textarea/live value into the current page + cells[i]. */
+  function writeCellCurrentPage(tab, cellIndex, text) {
+    if (!tab || cellIndex < 0 || cellIndex >= tab.cells.length) return;
+    ensureCellPages(tab);
+    const entry = tab.cellPages[cellIndex];
+    const value = text == null ? '' : String(text);
+    tab.cells[cellIndex] = value;
+    if (entry && entry.pages && entry.pages.length) {
+      const page = entry.page || 0;
+      if (page >= 0 && page < entry.pages.length) entry.pages[page] = value;
+    }
+  }
+
+  /** After flipping page index, mirror pages[page] → cells[i]. */
+  function syncCellTextFromPages(tab, cellIndex) {
+    if (!tab || cellIndex < 0 || cellIndex >= tab.cells.length) return;
+    ensureCellPages(tab);
+    const entry = tab.cellPages[cellIndex];
+    if (!entry || !entry.pages.length) return;
+    const page = entry.page || 0;
+    tab.cells[cellIndex] = entry.pages[page] == null ? '' : String(entry.pages[page]);
+  }
+
+  function copyPagesFromMasterToCell(targetTab, targetIndex, masterIdx) {
+    if (!targetTab || targetIndex < 0) return;
+    ensureCellPages(targetTab);
+    if (targetIndex >= targetTab.cellPages.length) return;
+    const master = state.tabs.find(isMasterTab);
+    if (!master || !Number.isInteger(masterIdx) || masterIdx < 0 ||
+        masterIdx >= master.cells.length) {
+      targetTab.cellPages[targetIndex] = makeEmptyCellPages(targetTab.cells[targetIndex] || '');
+      return;
+    }
+    ensureCellPages(master);
+    targetTab.cellPages[targetIndex] = cloneCellPagesEntry(getCellPages(master, masterIdx));
+    syncCellTextFromPages(targetTab, targetIndex);
+  }
+
+  /**
+   * Push Master[masterIdx] pages onto every Master-origin part cell locked to that index.
+   * Skips an in-progress Master cell edit session on that cell.
+   */
+  function syncLockedPartPagesFromMaster(masterIdx) {
+    if (!Number.isInteger(masterIdx) || masterIdx < 0) return;
+    const master = state.tabs.find(isMasterTab);
+    if (!master || masterIdx >= master.cells.length) return;
+    ensureCellPages(master);
+    const source = cloneCellPagesEntry(getCellPages(master, masterIdx));
+    state.tabs.forEach(function (tab) {
+      if (!tab || isMasterTab(tab)) return;
+      ensureCellLocks(tab);
+      ensureCellPages(tab);
+      for (let i = 0; i < tab.cellLocks.length; i++) {
+        const lock = tab.cellLocks[i];
+        if (!lock || lock.masterOrigin !== true) continue;
+        if (!Number.isInteger(lock.masterCellIndex) || lock.masterCellIndex !== masterIdx) continue;
+        if (isMasterCellEditFor(tab, i)) continue;
+        if (cellPagesContentEqual(tab.cellPages[i], source) &&
+            (tab.cells[i] || '') === (source.pages[source.page] || '')) {
+          // Still sync page index (view state) if contents match.
+          if (tab.cellPages[i].page !== source.page) {
+            tab.cellPages[i].page = source.page;
+            syncCellTextFromPages(tab, i);
+            liveSyncConfirmedLinksForCell(tab.id, i, null, { silent: true });
+          }
+          continue;
+        }
+        tab.cellPages[i] = cloneCellPagesEntry(source);
+        syncCellTextFromPages(tab, i);
+        liveSyncConfirmedLinksForCell(tab.id, i, null, { silent: true });
+      }
+    });
+  }
+
+  function swapCellPagesIndices(tab, indexA, indexB) {
+    if (!tab || indexA === indexB) return;
+    ensureCellPages(tab);
+    if (indexA < 0 || indexB < 0 || indexA >= tab.cellPages.length || indexB >= tab.cellPages.length) return;
+    const tmp = tab.cellPages[indexA];
+    tab.cellPages[indexA] = tab.cellPages[indexB];
+    tab.cellPages[indexB] = tmp;
+  }
+
+  function swapCellShadeIndices(tab, indexA, indexB) {
+    if (!tab || indexA === indexB) return;
+    ensureCellShades(tab);
+    if (indexA < 0 || indexB < 0 || indexA >= tab.cellShades.length || indexB >= tab.cellShades.length) return;
+    const tmp = tab.cellShades[indexA];
+    tab.cellShades[indexA] = tab.cellShades[indexB];
+    tab.cellShades[indexB] = tmp;
+  }
+
+  function remapCellPagesAfterColumnAdd(tab, oldCols, newCols) {
+    const oldPages = Array.isArray(tab.cellPages) ? tab.cellPages : [];
+    const next = [];
+    for (let r = 0; r < tab.rows; r++) {
+      for (let c = 0; c < newCols; c++) {
+        if (c < oldCols) {
+          const oldIdx = r * oldCols + c;
+          next.push(oldIdx < oldPages.length
+            ? normalizeCellPagesEntry(oldPages[oldIdx], tab.cells[r * newCols + c] || '')
+            : makeEmptyCellPages(tab.cells[r * newCols + c] || ''));
+        } else {
+          next.push(makeEmptyCellPages(''));
+        }
+      }
+    }
+    tab.cellPages = next;
+  }
+
+  function remapCellShadesAfterColumnAdd(tab, oldCols, newCols) {
+    const oldShades = Array.isArray(tab.cellShades) ? tab.cellShades : [];
+    const next = [];
+    for (let r = 0; r < tab.rows; r++) {
+      for (let c = 0; c < newCols; c++) {
+        if (c < oldCols) {
+          const oldIdx = r * oldCols + c;
+          next.push(oldIdx < oldShades.length ? normalizeCellShade(oldShades[oldIdx]) : null);
+        } else {
+          next.push(null);
+        }
+      }
+    }
+    tab.cellShades = next;
+  }
+
+  function copyCellPagesRow(tab, fromRow, toRow) {
+    ensureCellPages(tab);
+    for (let col = 0; col < tab.cols; col++) {
+      tab.cellPages[toRow * tab.cols + col] = cloneCellPagesEntry(
+        tab.cellPages[fromRow * tab.cols + col]
+      );
+    }
+  }
+
+  function clearCellPagesRow(tab, rowIndex) {
+    ensureCellPages(tab);
+    for (let col = 0; col < tab.cols; col++) {
+      tab.cellPages[rowIndex * tab.cols + col] = makeEmptyCellPages('');
+    }
+  }
+
+  function copyCellShadeRow(tab, fromRow, toRow) {
+    ensureCellShades(tab);
+    for (let col = 0; col < tab.cols; col++) {
+      tab.cellShades[toRow * tab.cols + col] = tab.cellShades[fromRow * tab.cols + col];
+    }
+  }
+
+  function clearCellShadeRow(tab, rowIndex) {
+    ensureCellShades(tab);
+    for (let col = 0; col < tab.cols; col++) {
+      tab.cellShades[rowIndex * tab.cols + col] = null;
+    }
+  }
+
   function isMasterCellEditFor(tab, cellIndex) {
     return !!(isMasterCellEditSession() && tab &&
       masterSegmentEdit.tabId === tab.id &&
@@ -498,7 +778,9 @@
       rows: DEFAULT_ROWS,
       cells: emptyCells(DEFAULT_COLS, DEFAULT_ROWS),
       nestedCells: emptyNestedCells(DEFAULT_COLS, DEFAULT_ROWS),
-      cellLocks: emptyCellLocks(DEFAULT_COLS, DEFAULT_ROWS)
+      cellLocks: emptyCellLocks(DEFAULT_COLS, DEFAULT_ROWS),
+      cellPages: normalizeCellPages(null, emptyCells(DEFAULT_COLS, DEFAULT_ROWS), DEFAULT_COLS * DEFAULT_ROWS),
+      cellShades: emptyCellShades(DEFAULT_COLS, DEFAULT_ROWS)
     };
     tab.icon = isTabIconId(icon) ? icon : defaultIconForTab(tab);
     return tab;
@@ -597,7 +879,9 @@
         rows: DEFAULT_ROWS,
         cells: cells,
         nestedCells: emptyNestedCells(DEFAULT_COLS, DEFAULT_ROWS),
-        cellLocks: emptyCellLocks(DEFAULT_COLS, DEFAULT_ROWS)
+        cellLocks: emptyCellLocks(DEFAULT_COLS, DEFAULT_ROWS),
+        cellPages: normalizeCellPages(null, cells, DEFAULT_COLS * DEFAULT_ROWS),
+        cellShades: emptyCellShades(DEFAULT_COLS, DEFAULT_ROWS)
       };
       legacy.icon = isTabIconId(t.icon) ? t.icon : defaultIconForTab(legacy);
       return legacy;
@@ -627,6 +911,14 @@
     // sleptCells from older docs are ignored (sleep UI dropped).
     const nestedCells = normalizeNestedCells(t.nestedCells, needed);
     const cellLocks = normalizeCellLocks(t.cellLocks, needed);
+    const cellPages = normalizeCellPages(t.cellPages, cells, needed);
+    const cellShades = normalizeCellShades(t.cellShades, needed);
+    for (let i = 0; i < needed; i++) {
+      const entry = cellPages[i];
+      if (entry && Array.isArray(entry.pages)) {
+        cells[i] = entry.pages[entry.page] == null ? '' : String(entry.pages[entry.page]);
+      }
+    }
     const normalized = {
       id: t.id,
       title: t.title,
@@ -634,7 +926,9 @@
       rows: rows,
       cells: cells,
       nestedCells: nestedCells,
-      cellLocks: cellLocks
+      cellLocks: cellLocks,
+      cellPages: cellPages,
+      cellShades: cellShades
     };
     normalized.icon = isTabIconId(t.icon) ? t.icon : defaultIconForTab(normalized);
     if (columnWidths) normalized.columnWidths = columnWidths;
@@ -2206,6 +2500,178 @@
   }
 
 
+
+  function setCellPage(cellIndex, pageIndex, opts) {
+    const tab = activeTab();
+    if (!tab || cellIndex < 0 || cellIndex >= tab.cells.length) return;
+    ensureCellPages(tab);
+    const entry = tab.cellPages[cellIndex];
+    if (!entry || !entry.pages.length) return;
+    // Flush live textarea into the page we are leaving.
+    const liveTa = el.cellGrid
+      ? el.cellGrid.querySelector('textarea.cell[data-idx="' + cellIndex + '"]')
+      : null;
+    if (liveTa && document.activeElement === liveTa) {
+      writeCellCurrentPage(tab, cellIndex, liveTa.value);
+    } else {
+      // Keep cells[i] mirrored into current page before flip.
+      writeCellCurrentPage(tab, cellIndex, tab.cells[cellIndex] || '');
+    }
+    let next = pageIndex;
+    if (next < 0) next = 0;
+    if (next >= entry.pages.length) next = entry.pages.length - 1;
+    if (entry.page === next && !(opts && opts.forceRender)) return;
+    entry.page = next;
+    syncCellTextFromPages(tab, cellIndex);
+    liveSyncConfirmedLinksForCell(tab.id, cellIndex, null, { silent: true });
+    if (isMasterTab(tab)) syncLockedPartPagesFromMaster(cellIndex);
+    if (opts && opts.skipRender) {
+      scheduleSave();
+      return;
+    }
+    renderGrid();
+    renderCombinedPrompt();
+    applyConfirmedCellHighlights();
+    applyAppendCheckedState();
+    scheduleSave();
+    const ta = el.cellGrid.querySelector('textarea.cell[data-idx="' + cellIndex + '"]');
+    if (ta) ta.focus();
+  }
+
+  function addCellPage(cellIndex) {
+    const tab = activeTab();
+    if (!tab || cellIndex < 0 || cellIndex >= tab.cells.length) return;
+    if (isCellMasterEditBlocked(tab, cellIndex)) {
+      setStatus('Locked Master cell — double-click to unlock before editing', 'err');
+      return;
+    }
+    ensureCellPages(tab);
+    const entry = tab.cellPages[cellIndex];
+    if (!entry) return;
+    pushHistory();
+    writeCellCurrentPage(tab, cellIndex, tab.cells[cellIndex] || '');
+    entry.pages.push('');
+    entry.page = entry.pages.length - 1;
+    syncCellTextFromPages(tab, cellIndex);
+    liveSyncConfirmedLinksForCell(tab.id, cellIndex, null, { silent: true });
+    if (isMasterTab(tab)) syncLockedPartPagesFromMaster(cellIndex);
+    renderGrid();
+    refitRowHeightAt(Math.floor(cellIndex / tab.cols));
+    scheduleSave();
+    const ta = el.cellGrid.querySelector('textarea.cell[data-idx="' + cellIndex + '"]');
+    if (ta) ta.focus();
+    setStatus('Added cell page (' + entry.pages.length + ')');
+  }
+
+  function removeCellPage(cellIndex) {
+    const tab = activeTab();
+    if (!tab || cellIndex < 0 || cellIndex >= tab.cells.length) return;
+    if (isCellMasterEditBlocked(tab, cellIndex)) {
+      setStatus('Locked Master cell — double-click to unlock before editing', 'err');
+      return;
+    }
+    ensureCellPages(tab);
+    const entry = tab.cellPages[cellIndex];
+    if (!entry || entry.pages.length <= 1) {
+      setStatus('Cell already has only one page', 'err');
+      return;
+    }
+    pushHistory();
+    const removeAt = entry.page || 0;
+    entry.pages.splice(removeAt, 1);
+    if (entry.page >= entry.pages.length) entry.page = entry.pages.length - 1;
+    syncCellTextFromPages(tab, cellIndex);
+    liveSyncConfirmedLinksForCell(tab.id, cellIndex, null, { silent: true });
+    if (isMasterTab(tab)) syncLockedPartPagesFromMaster(cellIndex);
+    renderGrid();
+    renderCombinedPrompt();
+    applyConfirmedCellHighlights();
+    applyAppendCheckedState();
+    refitRowHeightAt(Math.floor(cellIndex / tab.cols));
+    scheduleSave();
+    setStatus('Removed cell page (' + entry.pages.length + ' left)');
+  }
+
+  function stepCellPage(cellIndex, delta) {
+    const tab = activeTab();
+    if (!tab) return;
+    ensureCellPages(tab);
+    const entry = tab.cellPages[cellIndex];
+    if (!entry) return;
+    const cur = entry.page || 0;
+    const next = cur + delta;
+    if (next < 0) return;
+    if (next >= entry.pages.length) {
+      addCellPage(cellIndex);
+      return;
+    }
+    setCellPage(cellIndex, next);
+  }
+
+  function closeCellShadePicker() {
+    const open = document.querySelectorAll('.cell-shade-picker');
+    for (let i = 0; i < open.length; i++) open[i].remove();
+    document.removeEventListener('pointerdown', onShadePickerOutside, true);
+  }
+
+  function onShadePickerOutside(ev) {
+    const t = ev.target;
+    if (t && typeof t.closest === 'function' &&
+        (t.closest('.cell-shade-picker') || t.closest('.cell-shade-btn'))) {
+      return;
+    }
+    closeCellShadePicker();
+  }
+
+  function openCellShadePicker(anchorBtn, cellIndex) {
+    const tab = activeTab();
+    if (!tab || cellIndex < 0 || cellIndex >= tab.cells.length) return;
+    closeCellShadePicker();
+    const picker = document.createElement('div');
+    picker.className = 'cell-shade-picker';
+    picker.setAttribute('role', 'listbox');
+    picker.setAttribute('aria-label', 'Cell shade');
+    const options = [
+      { id: null, label: 'None', swatch: 'none' },
+      { id: 'green', label: 'Light green', swatch: 'green' },
+      { id: 'yellow', label: 'Light yellow', swatch: 'yellow' },
+      { id: 'red', label: 'Light red', swatch: 'red' }
+    ];
+    const current = getCellShade(tab, cellIndex);
+    options.forEach(function (opt) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'cell-shade-option cell-shade-option-' + opt.swatch;
+      btn.title = opt.label;
+      btn.setAttribute('aria-label', opt.label);
+      btn.setAttribute('role', 'option');
+      if ((opt.id || null) === (current || null)) btn.classList.add('is-selected');
+      btn.addEventListener('click', function (ev) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        pushHistory();
+        setCellShade(tab, cellIndex, opt.id);
+        closeCellShadePicker();
+        const wrap = el.cellGrid
+          ? el.cellGrid.querySelector('.cell-wrap textarea.cell[data-idx="' + cellIndex + '"]')
+          : null;
+        const wrapEl = wrap && wrap.closest ? wrap.closest('.cell-wrap') : null;
+        if (wrapEl) {
+          wrapEl.classList.remove('cell-shade-green', 'cell-shade-yellow', 'cell-shade-red');
+          if (opt.id) wrapEl.classList.add('cell-shade-' + opt.id);
+        } else {
+          renderGrid();
+        }
+        scheduleSave();
+        setStatus(opt.id ? ('Cell shade: ' + opt.label) : 'Cell shade cleared', 'ok');
+      });
+      picker.appendChild(btn);
+    });
+    const host = anchorBtn.closest('.cell-corner-tools') || anchorBtn.parentNode;
+    host.appendChild(picker);
+    document.addEventListener('pointerdown', onShadePickerOutside, true);
+  }
+
   /**
    * Click+drag paint for Combined / nest checkboxes.
    * Kinds never mix: a drag started on Combined only paints Combined, etc.
@@ -3332,12 +3798,14 @@
     if (!isCellMasterLocked(tab, cellIndex)) return;
     const originalText = tab.cells[cellIndex] == null ? '' : String(tab.cells[cellIndex]);
     ensureNestedCells(tab);
+    ensureCellPages(tab);
     masterSegmentEdit = {
       kind: 'cell',
       tabId: tab.id,
       cellIndex: cellIndex,
       originalText: originalText,
-      originalNests: cloneNestList(getCellNests(tab, cellIndex))
+      originalNests: cloneNestList(getCellNests(tab, cellIndex)),
+      originalPages: cloneCellPagesEntry(getCellPages(tab, cellIndex))
     };
     // Keep cellLocks.locked true in data until dialog resolves.
     const parentTa = el.cellGrid
@@ -3409,7 +3877,13 @@
         liveNests,
         masterSegmentEdit.originalNests || []
       );
-      if (!opts.forceDialog && liveText === masterSegmentEdit.originalText && nestsUnchanged) {
+      const livePages = idx >= 0 ? getCellPages(tab, idx) : makeEmptyCellPages('');
+      const pagesUnchanged = cellPagesContentEqual(
+        livePages,
+        masterSegmentEdit.originalPages || makeEmptyCellPages('')
+      );
+      if (!opts.forceDialog && liveText === masterSegmentEdit.originalText &&
+          nestsUnchanged && pagesUnchanged) {
         ensureCellLocks(tab);
         if (tab.cellLocks[idx]) tab.cellLocks[idx].locked = true;
         masterSegmentEdit = null;
@@ -3458,6 +3932,11 @@
         tab.cells[edit.cellIndex] = edit.originalText;
         ensureNestedCells(tab);
         tab.nestedCells[edit.cellIndex] = cloneNestList(edit.originalNests || []);
+        ensureCellPages(tab);
+        tab.cellPages[edit.cellIndex] = cloneCellPagesEntry(
+          edit.originalPages || makeEmptyCellPages(edit.originalText)
+        );
+        syncCellTextFromPages(tab, edit.cellIndex);
         ensureCellLocks(tab);
         if (tab.cellLocks[edit.cellIndex]) {
           tab.cellLocks[edit.cellIndex].locked = true;
@@ -3486,7 +3965,7 @@
     setStatus('Master segment edit cancelled — locked again', 'ok');
   }
 
-  function applyMasterOverwriteText(oldText, newText, preferredMasterIdx, nestsFromEdit) {
+  function applyMasterOverwriteText(oldText, newText, preferredMasterIdx, nestsFromEdit, pagesFromEdit) {
     const master = state.tabs.find(isMasterTab);
     let masterIdx = Number.isInteger(preferredMasterIdx) ? preferredMasterIdx : -1;
     if (master) {
@@ -3496,8 +3975,15 @@
         masterIdx = found === null ? -1 : found;
       }
       if (masterIdx >= 0) {
-        master.cells[masterIdx] = newText;
-        // Optional nest payload from a part-cell Overwrite (parent + nests travel together).
+        // Optional nest/pages payload from a part-cell Overwrite (parent + nests + pages).
+        if (pagesFromEdit !== undefined) {
+          ensureCellPages(master);
+          master.cellPages[masterIdx] = cloneCellPagesEntry(pagesFromEdit);
+          // Prefer edited current-page text as the visible page.
+          writeCellCurrentPage(master, masterIdx, newText);
+        } else {
+          writeCellCurrentPage(master, masterIdx, newText);
+        }
         if (nestsFromEdit !== undefined) {
           ensureNestedCells(master);
           master.nestedCells[masterIdx] = cloneNestList(nestsFromEdit);
@@ -3511,7 +3997,7 @@
       for (let i = 0; i < tab.cells.length; i++) {
         if (master && tab.id === master.id && i === masterIdx) continue;
         if (cellParentText(tab, i) === oldText) {
-          tab.cells[i] = newText;
+          writeCellCurrentPage(tab, i, newText);
           if (!isMasterTab(tab)) {
             setCellMasterLock(tab, i, masterIdx >= 0 ? masterIdx : null);
           }
@@ -3532,8 +4018,11 @@
       if (masterIdx >= 0) other.masterCellIndex = masterIdx;
     });
 
-    // Locked inserted cells: sync nests from Master (same index), not only parent text.
-    if (masterIdx >= 0) syncLockedPartNestsFromMaster(masterIdx);
+    // Locked inserted cells: sync nests + pages from Master (same index).
+    if (masterIdx >= 0) {
+      syncLockedPartNestsFromMaster(masterIdx);
+      syncLockedPartPagesFromMaster(masterIdx);
+    }
 
     return masterIdx;
   }
@@ -3558,12 +4047,13 @@
       const lock = getCellLock(tab, edit.cellIndex);
       const preferred = lock && Number.isInteger(lock.masterCellIndex) ? lock.masterCellIndex : -1;
       const nestsFromEdit = cloneNestList(getCellNests(tab, edit.cellIndex));
+      const pagesFromEdit = cloneCellPagesEntry(getCellPages(tab, edit.cellIndex));
       pushHistory();
-      const masterIdx = applyMasterOverwriteText(oldText, newText, preferred, nestsFromEdit);
+      const masterIdx = applyMasterOverwriteText(oldText, newText, preferred, nestsFromEdit, pagesFromEdit);
       setCellMasterLock(tab, edit.cellIndex, masterIdx >= 0 ? masterIdx : null);
       masterSegmentEdit = null;
       refreshAfterMasterSegmentChange();
-      setStatus('Overwrote Master (text + nests) and synced matching cells/segments', 'ok');
+      setStatus('Overwrote Master (text + nests + pages) and synced matching cells/segments', 'ok');
       return;
     }
 
@@ -3645,7 +4135,7 @@
     if (tab) {
       if (nestIdx === null) {
         if (link.cellIndex >= 0 && link.cellIndex < tab.cells.length) {
-          tab.cells[link.cellIndex] = newText;
+          writeCellCurrentPage(tab, link.cellIndex, newText);
           if (!isMasterTab(tab)) clearCellMasterLock(tab, link.cellIndex);
         }
       } else {
@@ -4765,8 +5255,9 @@
       : findMasterCellIndexByText(text);
     if (masterIdx === null) masterIdx = -1;
     setCellMasterLock(tab, index, masterIdx >= 0 ? masterIdx : null);
-    // Replace/sync nests from the Master cell (Ash): parent + nest pages travel together.
+    // Replace/sync nests + parent pages from the Master cell (Ash).
     copyNestsFromMasterToCell(tab, index, masterIdx);
+    copyPagesFromMasterToCell(tab, index, masterIdx);
     syncNestLinksAfterNestReplace(tab.id, index);
     focusedCell = { tabId: tab.id, index: index };
     revalidateLinksForCell(tab.id, index, { silent: true });
@@ -5608,6 +6099,8 @@
           masterSegmentEdit.tabId === tab.id && masterSegmentEdit.cellIndex === idx;
         if (cellEditing) wrap.classList.add('master-cell-editing');
         else if (cellLocked) wrap.classList.add('master-cell-locked');
+        const shade = getCellShade(tab, idx);
+        if (shade) wrap.classList.add('cell-shade-' + shade);
         const gutter = document.createElement('div');
         gutter.className = 'cell-gutter';
 
@@ -5657,6 +6150,104 @@
 
         const stack = document.createElement('div');
         stack.className = 'cell-stack';
+
+        // Top-right corner: shade picker + parent-cell page chrome (compact).
+        ensureCellPages(tab);
+        const pagesEntry = getCellPages(tab, idx);
+        const pageCount = pagesEntry.pages.length;
+        const page = Math.min(Math.max(pagesEntry.page || 0, 0), pageCount - 1);
+        pagesEntry.page = page;
+
+        const corner = document.createElement('div');
+        corner.className = 'cell-corner-tools';
+        corner.dataset.idx = String(idx);
+
+        const shadeBtn = document.createElement('button');
+        shadeBtn.type = 'button';
+        shadeBtn.className = 'cell-shade-btn' + (shade ? ' cell-shade-btn-' + shade : '');
+        shadeBtn.title = 'Cell shade';
+        shadeBtn.setAttribute('aria-label', 'Cell shade');
+        shadeBtn.innerHTML = '<span class="cell-shade-btn-mark" aria-hidden="true"></span>';
+        shadeBtn.addEventListener('pointerdown', function (ev) {
+          ev.preventDefault();
+          ev.stopPropagation();
+        });
+        shadeBtn.addEventListener('click', function (ev) {
+          ev.preventDefault();
+          ev.stopPropagation();
+          openCellShadePicker(shadeBtn, idx);
+        });
+        corner.appendChild(shadeBtn);
+
+        const pageChrome = document.createElement('div');
+        pageChrome.className = 'cell-page-chrome';
+
+        const prevBtn = document.createElement('button');
+        prevBtn.type = 'button';
+        prevBtn.className = 'cell-page-btn';
+        prevBtn.textContent = '◀';
+        prevBtn.title = 'Previous cell page';
+        prevBtn.setAttribute('aria-label', 'Previous cell page');
+        prevBtn.disabled = page <= 0;
+        prevBtn.addEventListener('click', function (ev) {
+          ev.preventDefault();
+          ev.stopPropagation();
+          stepCellPage(idx, -1);
+        });
+
+        const pageLabel = document.createElement('span');
+        pageLabel.className = 'cell-page-label';
+        pageLabel.textContent = (page + 1) + '/' + pageCount;
+        pageLabel.title = 'Cell page ' + (page + 1) + ' of ' + pageCount;
+
+        const nextBtn = document.createElement('button');
+        nextBtn.type = 'button';
+        nextBtn.className = 'cell-page-btn';
+        nextBtn.textContent = '▶';
+        nextBtn.title = 'Next cell page (adds a page at the end)';
+        nextBtn.setAttribute('aria-label', 'Next cell page');
+        nextBtn.addEventListener('click', function (ev) {
+          ev.preventDefault();
+          ev.stopPropagation();
+          stepCellPage(idx, 1);
+        });
+
+        const addPageBtn = document.createElement('button');
+        addPageBtn.type = 'button';
+        addPageBtn.className = 'cell-page-btn cell-page-add';
+        addPageBtn.textContent = '+';
+        addPageBtn.title = 'Add cell page';
+        addPageBtn.setAttribute('aria-label', 'Add cell page');
+        addPageBtn.disabled = cellLocked && !cellEditing;
+        addPageBtn.addEventListener('click', function (ev) {
+          ev.preventDefault();
+          ev.stopPropagation();
+          addCellPage(idx);
+        });
+
+        pageChrome.appendChild(prevBtn);
+        pageChrome.appendChild(pageLabel);
+        pageChrome.appendChild(nextBtn);
+        pageChrome.appendChild(addPageBtn);
+
+        if (pageCount > 1) {
+          const removePageBtn = document.createElement('button');
+          removePageBtn.type = 'button';
+          removePageBtn.className = 'cell-page-btn cell-page-remove';
+          removePageBtn.textContent = '×';
+          removePageBtn.title = 'Remove current cell page';
+          removePageBtn.setAttribute('aria-label', 'Remove current cell page');
+          removePageBtn.disabled = cellLocked && !cellEditing;
+          removePageBtn.addEventListener('click', function (ev) {
+            ev.preventDefault();
+            ev.stopPropagation();
+            removeCellPage(idx);
+          });
+          pageChrome.appendChild(removePageBtn);
+        }
+
+        corner.appendChild(pageChrome);
+        stack.appendChild(corner);
 
         const ta = document.createElement('textarea');
         ta.className = 'cell';
@@ -6329,12 +6920,18 @@
 
     ensureNestedCells(tab);
     ensureCellLocks(tab);
+    ensureCellPages(tab);
+    ensureCellShades(tab);
     const srcCells = srcIndices.map(function (i) { return tab.cells[i]; });
     const srcNested = srcIndices.map(function (i) { return normalizeNestList(tab.nestedCells[i]); });
     const srcLocks = srcIndices.map(function (i) { return tab.cellLocks[i]; });
+    const srcPages = srcIndices.map(function (i) { return cloneCellPagesEntry(tab.cellPages[i]); });
+    const srcShades = srcIndices.map(function (i) { return tab.cellShades[i] || null; });
     const dstCells = dstIndices.map(function (i) { return tab.cells[i]; });
     const dstNested = dstIndices.map(function (i) { return normalizeNestList(tab.nestedCells[i]); });
     const dstLocks = dstIndices.map(function (i) { return tab.cellLocks[i]; });
+    const dstPages = dstIndices.map(function (i) { return cloneCellPagesEntry(tab.cellPages[i]); });
+    const dstShades = dstIndices.map(function (i) { return tab.cellShades[i] || null; });
 
     let destHadContent = false;
     if (!overlap) {
@@ -6356,9 +6953,13 @@
         tab.cells[dstIndices[i]] = srcCells[i];
         tab.nestedCells[dstIndices[i]] = srcNested[i];
         tab.cellLocks[dstIndices[i]] = srcLocks[i];
+        tab.cellPages[dstIndices[i]] = srcPages[i];
+        tab.cellShades[dstIndices[i]] = srcShades[i];
         tab.cells[srcIndices[i]] = dstCells[i];
         tab.nestedCells[srcIndices[i]] = dstNested[i];
         tab.cellLocks[srcIndices[i]] = dstLocks[i];
+        tab.cellPages[srcIndices[i]] = dstPages[i];
+        tab.cellShades[srcIndices[i]] = dstShades[i];
         indexMap[srcIndices[i]] = dstIndices[i];
         indexMap[dstIndices[i]] = srcIndices[i];
       }
@@ -6372,11 +6973,15 @@
         tab.cells[srcIndices[i]] = '';
         tab.nestedCells[srcIndices[i]] = [];
         tab.cellLocks[srcIndices[i]] = null;
+        tab.cellPages[srcIndices[i]] = makeEmptyCellPages('');
+        tab.cellShades[srcIndices[i]] = null;
       }
       for (let i = 0; i < srcIndices.length; i++) {
         tab.cells[dstIndices[i]] = srcCells[i];
         tab.nestedCells[dstIndices[i]] = srcNested[i];
         tab.cellLocks[dstIndices[i]] = srcLocks[i];
+        tab.cellPages[dstIndices[i]] = srcPages[i];
+        tab.cellShades[dstIndices[i]] = srcShades[i];
         indexMap[srcIndices[i]] = dstIndices[i];
       }
     }
@@ -6891,14 +7496,18 @@
     if (stickyCellRange) clearStickyCellRange();
     clearKeyboardCellRange();
     pushHistory({ coalesce: true });
-    tab.cells[idx] = e.target.value;
+    writeCellCurrentPage(tab, idx, e.target.value);
     liveSyncConfirmedLinksForCell(tab.id, idx, null);
     const confirmed = isCellConfirmed(tab.id, idx);
     e.target.classList.toggle('cell-confirmed', confirmed);
     const wrap = e.target.closest ? e.target.closest('.cell-wrap') : null;
     if (wrap) wrap.classList.toggle('cell-confirmed', confirmed);
     applyAppendCheckedState();
-    if (isMasterTab(tab)) renderMasterLibrary();
+    // Master parent-page edits push pages (all pages + current text) to locked parts.
+    if (isMasterTab(tab)) {
+      syncLockedPartPagesFromMaster(idx);
+      renderMasterLibrary();
+    }
     const row = Math.floor(idx / tab.cols);
     maybeLiveRefitRowFromInput(row);
     scheduleSave();
@@ -7016,7 +7625,14 @@
         extendKeyboardCellRange(e.currentTarget, e.key);
         return;
       }
-      // Leave Ctrl/Alt/Meta+arrow for text selection / OS shortcuts.
+      // Alt+Left/Right flips parent-cell pages (same idea as nest pages).
+      if (e.altKey && (e.key === 'ArrowLeft' || e.key === 'ArrowRight') &&
+          !e.ctrlKey && !e.metaKey) {
+        e.preventDefault();
+        stepCellPage(idx, e.key === 'ArrowRight' ? 1 : -1);
+        return;
+      }
+      // Leave Ctrl/Meta+arrow for text selection / OS shortcuts.
       if (e.altKey || e.ctrlKey || e.metaKey) return;
       const ta = e.currentTarget;
       // Whole-cell select (e.g. after relocate), or caret at edge → move cells.
@@ -7443,15 +8059,21 @@
       tab.cells = newCells;
       remapNestedAfterColumnAdd(tab, oldCols, tab.cols);
       remapCellLocksAfterColumnAdd(tab, oldCols, tab.cols);
+      remapCellPagesAfterColumnAdd(tab, oldCols, tab.cols);
+      remapCellShadesAfterColumnAdd(tab, oldCols, tab.cols);
       remapConfirmedAfterColumnAdd(tab.id, oldCols, tab.cols);
     }
     while (tab.rows < rows) {
       ensureNestedCells(tab);
       ensureCellLocks(tab);
+      ensureCellPages(tab);
+      ensureCellShades(tab);
       for (let c = 0; c < tab.cols; c++) {
         tab.cells.push('');
         tab.nestedCells.push([]);
         tab.cellLocks.push(null);
+        tab.cellPages.push(makeEmptyCellPages(''));
+        tab.cellShades.push(null);
       }
       tab.rows += 1;
       ensureRowHeightsLength(tab);
@@ -7466,7 +8088,7 @@
     for (let r = 0; r < pasteRows; r++) {
       for (let c = 0; c < pasteCols; c++) {
         const idx = (startRow + r) * tab.cols + (startCol + c);
-        tab.cells[idx] = matrix[r][c] == null ? '' : String(matrix[r][c]);
+        writeCellCurrentPage(tab, idx, matrix[r][c] == null ? '' : String(matrix[r][c]));
         // Sheet paste replaces cell text — drop Master lock on overwritten cells.
         if (!isMasterTab(tab)) clearCellMasterLock(tab, idx);
         revalidateLinksForCell(tab.id, idx, { silent: true });
@@ -7593,7 +8215,7 @@
     e.clipboardData.setData('text/plain', value);
     if (!Number.isNaN(idx) && idx >= 0 && idx < tab.cells.length) {
       pushHistory();
-      tab.cells[idx] = '';
+      writeCellCurrentPage(tab, idx, '');
       ta.value = '';
       clearCellMasterLock(tab, idx);
       revalidateLinksForCell(tab.id, idx);
@@ -7614,10 +8236,14 @@
     pushHistory();
     ensureNestedCells(tab);
     ensureCellLocks(tab);
+    ensureCellPages(tab);
+    ensureCellShades(tab);
     for (let c = 0; c < tab.cols; c++) {
       tab.cells.push('');
       tab.nestedCells.push([]);
       tab.cellLocks.push(null);
+      tab.cellPages.push(makeEmptyCellPages(''));
+      tab.cellShades.push(null);
     }
     tab.rows += 1;
     ensureRowHeightsLength(tab);
@@ -7668,9 +8294,13 @@
     });
 
     ensureCellLocks(tab);
+    ensureCellPages(tab);
+    ensureCellShades(tab);
     const newCells = [];
     const newNested = [];
     const newLocks = [];
+    const newPages = [];
+    const newShades = [];
     for (let i = 0; i < order.length; i++) {
       const src = order[i];
       for (let c = 0; c < cols; c++) {
@@ -7678,6 +8308,8 @@
         newCells.push(tab.cells[idx] || '');
         newNested.push(normalizeNestList(tab.nestedCells[idx]));
         newLocks.push(tab.cellLocks[idx] || null);
+        newPages.push(cloneCellPagesEntry(tab.cellPages[idx]));
+        newShades.push(tab.cellShades[idx] || null);
       }
     }
 
@@ -7689,6 +8321,8 @@
     tab.cells = newCells;
     tab.nestedCells = newNested;
     tab.cellLocks = newLocks;
+    tab.cellPages = newPages;
+    tab.cellShades = newShades;
     if (Array.isArray(tab.rowHeights) && tab.rowHeights.length === rows) {
       tab.rowHeights = order.map(function (src) { return tab.rowHeights[src]; });
     }
@@ -7738,9 +8372,13 @@
       order.splice(destination, 0, rowIndex);
 
       ensureCellLocks(tab);
+      ensureCellPages(tab);
+      ensureCellShades(tab);
       const newCells = [];
       const newNested = [];
       const newLocks = [];
+      const newPages = [];
+      const newShades = [];
       for (let i = 0; i < order.length; i++) {
         const src = order[i];
         for (let c = 0; c < cols; c++) {
@@ -7748,6 +8386,8 @@
           newCells.push(tab.cells[idx] || '');
           newNested.push(normalizeNestList(tab.nestedCells[idx]));
           newLocks.push(tab.cellLocks[idx] || null);
+          newPages.push(cloneCellPagesEntry(tab.cellPages[idx]));
+          newShades.push(tab.cellShades[idx] || null);
         }
       }
 
@@ -7759,6 +8399,8 @@
       tab.cells = newCells;
       tab.nestedCells = newNested;
       tab.cellLocks = newLocks;
+      tab.cellPages = newPages;
+      tab.cellShades = newShades;
       if (Array.isArray(tab.rowHeights) && tab.rowHeights.length === rows) {
         tab.rowHeights = order.map(function (src) { return tab.rowHeights[src]; });
       }
@@ -7767,9 +8409,15 @@
     } else {
       // ↓ Grow by one, push everything below further down, move this row into the gap.
       ensureCellLocks(tab);
+      ensureCellPages(tab);
+      ensureCellShades(tab);
       tab.cells.push.apply(tab.cells, emptyCells(cols, 1));
       tab.nestedCells.push.apply(tab.nestedCells, emptyNestedCells(cols, 1));
       tab.cellLocks.push.apply(tab.cellLocks, emptyCellLocks(cols, 1));
+      for (let c = 0; c < cols; c++) {
+        tab.cellPages.push(makeEmptyCellPages(''));
+        tab.cellShades.push(null);
+      }
       tab.rows += 1;
       ensureRowHeightsLength(tab);
 
@@ -7780,6 +8428,8 @@
         }
         copyNestedRow(tab, row - 1, row);
         copyCellLockRow(tab, row - 1, row);
+        copyCellPagesRow(tab, row - 1, row);
+        copyCellShadeRow(tab, row - 1, row);
         if (Array.isArray(tab.rowHeights) && tab.rowHeights.length === tab.rows) {
           tab.rowHeights[row] = tab.rowHeights[row - 1];
         }
@@ -7793,6 +8443,10 @@
       clearNestedRow(tab, rowIndex);
       copyCellLockRow(tab, rowIndex, rowIndex + 1);
       clearCellLockRow(tab, rowIndex);
+      copyCellPagesRow(tab, rowIndex, rowIndex + 1);
+      clearCellPagesRow(tab, rowIndex);
+      copyCellShadeRow(tab, rowIndex, rowIndex + 1);
+      clearCellShadeRow(tab, rowIndex);
       if (Array.isArray(tab.rowHeights) && tab.rowHeights.length === tab.rows) {
         tab.rowHeights[rowIndex + 1] = tab.rowHeights[rowIndex];
         tab.rowHeights[rowIndex] = MIN_ROW_HEIGHT;
@@ -7830,6 +8484,8 @@
     tab.cells = newCells;
     remapNestedAfterColumnAdd(tab, oldCols, tab.cols);
     remapCellLocksAfterColumnAdd(tab, oldCols, tab.cols);
+    remapCellPagesAfterColumnAdd(tab, oldCols, tab.cols);
+    remapCellShadesAfterColumnAdd(tab, oldCols, tab.cols);
     remapConfirmedAfterColumnAdd(tab.id, oldCols, tab.cols);
     renderTabs();
     renderGrid();
@@ -8034,22 +8690,27 @@
     const qLower = q.toLowerCase();
     if (!qLower) return hits;
     ensureNestedCells(tab);
+    ensureCellPages(tab);
     const n = tab.cols * tab.rows;
     for (let i = 0; i < n; i++) {
-      const cellText = tab.cells[i] == null ? '' : String(tab.cells[i]);
-      const cellLower = cellText.toLowerCase();
-      let from = 0;
-      while (from <= cellLower.length) {
-        const at = cellLower.indexOf(qLower, from);
-        if (at < 0) break;
-        hits.push({
-          cellIndex: i,
-          nestIndex: null,
-          pageIndex: null,
-          start: at,
-          end: at + q.length
-        });
-        from = at + Math.max(1, qLower.length);
+      const pagesEntry = tab.cellPages[i] || makeEmptyCellPages(tab.cells[i] || '');
+      const pages = pagesEntry.pages || [tab.cells[i] || ''];
+      for (let cpi = 0; cpi < pages.length; cpi++) {
+        const cellText = pages[cpi] == null ? '' : String(pages[cpi]);
+        const cellLower = cellText.toLowerCase();
+        let from = 0;
+        while (from <= cellLower.length) {
+          const at = cellLower.indexOf(qLower, from);
+          if (at < 0) break;
+          hits.push({
+            cellIndex: i,
+            nestIndex: null,
+            pageIndex: cpi,
+            start: at,
+            end: at + q.length
+          });
+          from = at + Math.max(1, qLower.length);
+        }
       }
       const nests = tab.nestedCells[i] || [];
       for (let ni = 0; ni < nests.length; ni++) {
@@ -8089,6 +8750,13 @@
   function getHitText(tab, hit) {
     if (!tab || !hit) return '';
     if (hit.nestIndex == null) {
+      ensureCellPages(tab);
+      const entry = tab.cellPages[hit.cellIndex];
+      if (entry && Array.isArray(entry.pages) && Number.isInteger(hit.pageIndex) &&
+          hit.pageIndex >= 0 && hit.pageIndex < entry.pages.length) {
+        const page = entry.pages[hit.pageIndex];
+        return page == null ? '' : String(page);
+      }
       return tab.cells[hit.cellIndex] == null ? '' : String(tab.cells[hit.cellIndex]);
     }
     ensureNestedCells(tab);
@@ -8102,7 +8770,19 @@
     if (!tab || !hit) return;
     if (hit.nestIndex == null) {
       if (!isMasterTab(tab) && isCellMasterLocked(tab, hit.cellIndex)) return;
-      tab.cells[hit.cellIndex] = text;
+      ensureCellPages(tab);
+      const entry = tab.cellPages[hit.cellIndex];
+      if (entry && Array.isArray(entry.pages) && Number.isInteger(hit.pageIndex) &&
+          hit.pageIndex >= 0 && hit.pageIndex < entry.pages.length) {
+        entry.pages[hit.pageIndex] = text;
+        if ((entry.page || 0) === hit.pageIndex) {
+          tab.cells[hit.cellIndex] = text;
+        }
+        if (isMasterTab(tab)) syncLockedPartPagesFromMaster(hit.cellIndex);
+        return;
+      }
+      writeCellCurrentPage(tab, hit.cellIndex, text);
+      if (isMasterTab(tab)) syncLockedPartPagesFromMaster(hit.cellIndex);
       return;
     }
     ensureNestedCells(tab);
@@ -8130,18 +8810,23 @@
     const seen = Object.create(null);
     function markHit(hit, isCurrent) {
       if (!hit) return;
-      const key = hit.cellIndex + ':' + (hit.nestIndex == null ? 'c' : hit.nestIndex + ':' + hit.pageIndex);
+      const key = hit.cellIndex + ':' + (hit.nestIndex == null
+        ? ('c:' + (hit.pageIndex == null ? 'x' : hit.pageIndex))
+        : (hit.nestIndex + ':' + hit.pageIndex));
       const ta = queryHitTextarea(hit);
-      // Only highlight nest textarea when its visible page matches (or parent cell).
-      if (hit.nestIndex != null) {
-        const tab = currentPartSearchTab();
-        if (tab) {
-          ensureNestedCells(tab);
-          const nest = (tab.nestedCells[hit.cellIndex] || [])[hit.nestIndex];
-          if (!nest || nest.page !== hit.pageIndex) {
-            // Still mark the nest row wrap if find-all, via nest row if present for other page? skip ta
-            if (!isCurrent && !markAll) return;
-          }
+      // Only highlight textarea when its visible page matches.
+      const tab = currentPartSearchTab();
+      if (tab && hit.nestIndex != null) {
+        ensureNestedCells(tab);
+        const nest = (tab.nestedCells[hit.cellIndex] || [])[hit.nestIndex];
+        if (!nest || nest.page !== hit.pageIndex) {
+          if (!isCurrent && !markAll) return;
+        }
+      } else if (tab && hit.nestIndex == null && Number.isInteger(hit.pageIndex)) {
+        ensureCellPages(tab);
+        const entry = tab.cellPages[hit.cellIndex];
+        if (!entry || entry.page !== hit.pageIndex) {
+          if (!isCurrent && !markAll) return;
         }
       }
       if (ta) {
@@ -8170,6 +8855,12 @@
       if (nest && nest.page !== hit.pageIndex) {
         setNestPage(hit.cellIndex, hit.nestIndex, hit.pageIndex, { forceRender: true });
       }
+    } else if (Number.isInteger(hit.pageIndex) && hit.pageIndex >= 0) {
+      ensureCellPages(tab);
+      const entry = tab.cellPages[hit.cellIndex];
+      if (entry && entry.page !== hit.pageIndex) {
+        setCellPage(hit.cellIndex, hit.pageIndex, { forceRender: true });
+      }
     }
     applyPartSearchHighlights();
     const ta = queryHitTextarea(hit);
@@ -8189,7 +8880,7 @@
       const i = partSearchHitIndex + 1;
       const addr = cellAddressFromIndex(tab, hit.cellIndex);
       const where = hit.nestIndex == null
-        ? addr
+        ? (addr + (Number.isInteger(hit.pageIndex) ? (' p' + (hit.pageIndex + 1)) : ''))
         : (addr + ' nest ' + (hit.nestIndex + 1) + ' p' + (hit.pageIndex + 1));
       setPartSearchStatus(n ? (i + ' / ' + n) : '0');
       setStatus('Find: ' + where + (n ? (' (' + i + '/' + n + ')') : ''));
@@ -8305,7 +8996,9 @@
       const touchedCells = Object.create(null);
       for (let h = 0; h < partSearchHits.length; h++) {
         const hit = partSearchHits[h];
-        const key = hit.cellIndex + ':' + (hit.nestIndex == null ? 'c' : (hit.nestIndex + ':' + hit.pageIndex));
+        const key = hit.cellIndex + ':' + (hit.nestIndex == null
+          ? ('c:' + (hit.pageIndex == null ? 'x' : hit.pageIndex))
+          : (hit.nestIndex + ':' + hit.pageIndex));
         if (keysDone[key]) continue;
         keysDone[key] = true;
         const before = getHitText(tab, hit);
@@ -8366,8 +9059,14 @@
         if (ta) ta.value = after;
       }
     } else {
-      const ta = queryHitTextarea(hit);
-      if (ta) ta.value = after;
+      ensureCellPages(tab);
+      const entry = tab.cellPages[hit.cellIndex];
+      if (entry && Number.isInteger(hit.pageIndex) && entry.page !== hit.pageIndex) {
+        setCellPage(hit.cellIndex, hit.pageIndex, { forceRender: true });
+      } else {
+        const ta = queryHitTextarea(hit);
+        if (ta) ta.value = after;
+      }
     }
     applyAppendCheckedState();
     if (isMasterTab(tab)) renderMasterLibrary();
@@ -8386,6 +9085,10 @@
       if (h.cellIndex > resumeCell) { nextIdx = i; break; }
       if (resumeNest == null) {
         if (h.nestIndex != null) { nextIdx = i; break; }
+        if (Number.isInteger(resumePage) && Number.isInteger(h.pageIndex)) {
+          if (h.pageIndex < resumePage) continue;
+          if (h.pageIndex > resumePage) { nextIdx = i; break; }
+        }
         if (h.start >= resumeStart) { nextIdx = i; break; }
         continue;
       }
