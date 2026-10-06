@@ -1507,6 +1507,8 @@ body.relocating-cell * {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   word-break: break-word;
+  /* Ash: native bar only when Combined overflows — never overflow-y: scroll */
+  overflow-x: hidden;
   overflow-y: auto;
 }
 
@@ -2211,6 +2213,25 @@ body.painting-checkboxes .cell-append {
 .cell-shade-option:hover {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
+}
+
+/* Soft dark Draft A — Combined native scrollbar (only paints when overflowing) */
+.theme-soft-dark .textarea-combined {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(154, 163, 176, 0.45) transparent;
+}
+.theme-soft-dark .textarea-combined::-webkit-scrollbar {
+  width: 8px;
+}
+.theme-soft-dark .textarea-combined::-webkit-scrollbar-track {
+  background: transparent;
+}
+.theme-soft-dark .textarea-combined::-webkit-scrollbar-thumb {
+  background: rgba(154, 163, 176, 0.4);
+  border-radius: 6px;
+}
+.theme-soft-dark .textarea-combined::-webkit-scrollbar-thumb:hover {
+  background: rgba(154, 163, 176, 0.62);
 }
 
 /* Soft dark Draft A — light structural polish hooks */

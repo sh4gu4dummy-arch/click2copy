@@ -4678,6 +4678,7 @@
     el.globalCombined.checked = state.globalCombined;
     if (el.matchSourceOrder) el.matchSourceOrder.checked = !!state.matchSourceOrder;
     applyConfirmedCellHighlights();
+    syncCombinedOverflowY();
   }
 
   function mergePartPrompts() {
@@ -7062,6 +7063,20 @@
     }
   }
 
+  /**
+   * Combined native scrollbar only when text overflows the box.
+   * Measure with overflow hidden so a classic Windows gutter cannot create
+   * false overflow (Ash: bar showed even when prompt was shorter than the box).
+   * CSS uses overflow-y: auto (never scroll); this toggles hidden when content fits.
+   */
+  function syncCombinedOverflowY() {
+    const node = el.combined;
+    if (!node) return;
+    node.style.overflowY = 'hidden';
+    const overflows = node.scrollHeight > node.clientHeight + 1;
+    node.style.overflowY = overflows ? 'auto' : 'hidden';
+  }
+
   function resizeCombinedSection(height) {
     const available = el.combinedSection.parentElement.clientHeight;
     const minimum = 150;
@@ -7073,6 +7088,7 @@
     } catch (err) {
       console.warn('Could not save combined prompt height:', err);
     }
+    syncCombinedOverflowY();
   }
 
   function beginSectionResize(event) {
@@ -9803,6 +9819,7 @@
     pushHistory({ coalesce: true });
     syncConfirmedFromCombinedDom();
     rememberCombinedCaretFromDom();
+    syncCombinedOverflowY();
     scheduleSave();
   });
 
@@ -9956,6 +9973,14 @@
     } catch (err) {
       console.warn('Could not load combined prompt height:', err);
     }
+
+    if (typeof ResizeObserver === 'function' && el.combined) {
+      const combinedOverflowObserver = new ResizeObserver(function () {
+        syncCombinedOverflowY();
+      });
+      combinedOverflowObserver.observe(el.combined);
+    }
+    syncCombinedOverflowY();
 
     if (window.click2copy && window.click2copy.getAppVersion) {
       try {
