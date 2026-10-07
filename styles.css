@@ -550,10 +550,17 @@ body {
      Do NOT give .part-actions flex-basis:100% — that forced a second row (Ash). */
 }
 
-/* Find/Replace + filters/Fit/Delete stay on ONE Soft dark line with page chrome */
-.part-search-bar > .btn {
+/* Find / Find All / Replace — compact cluster on the Soft-dark Find bar */
+.part-find-actions {
+  display: inline-flex;
+  flex: 0 0 auto;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 1px;
+}
+.part-find-actions > .btn {
   padding: 2px 5px;
-  font-size: 10px;
+  font-size: 11px;
   line-height: 1.1;
   flex: 0 0 auto;
   white-space: nowrap;
@@ -659,10 +666,15 @@ body {
   border: 1px solid var(--border);
   border-radius: calc(var(--radius) - 2px);
   background: var(--cell-bg);
-  color: var(--text);
+  color: #f0f3f7; /* slightly brighter than --text for Find bar eye-care */
   font: inherit;
-  font-size: 10px;
+  font-size: 11px;
   outline: none;
+}
+
+.part-search-input::placeholder {
+  color: #c5ccd6; /* soft readable gray on dark fields (not near-invisible) */
+  opacity: 1;
 }
 
 .part-search-input:focus {
@@ -844,7 +856,7 @@ body.resizing-sections * {
   border-right: 1px solid var(--border) !important;
   margin: 0;
   padding: 2px 5px;
-  font-size: 10px;
+  font-size: 11px;
   line-height: 1.1;
   white-space: nowrap;
   height: 24px;
@@ -852,6 +864,11 @@ body.resizing-sections * {
 
 .row-filter-btn:last-child {
   border-right: 0 !important;
+}
+
+/* Inactive All/Filled/Combined — lighter gray for Find-bar eye-care */
+.part-search-bar .row-filter-btn:not(.is-active) {
+  color: #c8d0dc;
 }
 
 .row-filter-btn.is-active {
@@ -875,7 +892,7 @@ body.resizing-sections * {
 }
 .part-actions > .btn {
   padding: 2px 5px;
-  font-size: 10px;
+  font-size: 11px;
   line-height: 1.1;
   flex: 0 0 auto;
   white-space: nowrap;

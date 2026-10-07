@@ -75,19 +75,21 @@
     <section class="part-section panel-soft">
       <div class="part-search-bar" id="part-search-bar" role="search" aria-label="Find, replace, and part filters">
         <div class="part-tab-page-chrome" id="part-tab-page-chrome" hidden aria-label="Part pages"></div>
-        <input type="search" id="part-find-input" class="part-search-input" placeholder="Find in this part…" spellcheck="false" aria-label="Find in current part" />
-        <input type="search" id="part-replace-input" class="part-search-input" placeholder="Replace with…" spellcheck="false" aria-label="Replace with" />
-        <button type="button" class="btn btn-secondary" id="btn-find" title="Find next match in this part (Ctrl+F)">Find</button>
-        <button type="button" class="btn btn-secondary" id="btn-find-all" title="Highlight all matches in this part">Find All</button>
-        <button type="button" class="btn btn-secondary" id="btn-replace" title="Replace current match (Shift+click = replace all)">Replace</button>
+        <input type="search" id="part-find-input" class="part-search-input" placeholder="Find…" spellcheck="false" aria-label="Find in current part" />
+        <input type="search" id="part-replace-input" class="part-search-input" placeholder="Replace…" spellcheck="false" aria-label="Replace with" />
+        <div class="part-find-actions" role="group" aria-label="Find and replace">
+          <button type="button" class="btn btn-secondary" id="btn-find" title="Find next match in this part (Ctrl+F)">Find</button>
+          <button type="button" class="btn btn-secondary" id="btn-find-all" title="Highlight all matches in this part">Find All</button>
+          <button type="button" class="btn btn-secondary" id="btn-replace" title="Replace current match (Shift+click = replace all)">Replace</button>
+        </div>
         <span class="part-search-status" id="part-search-status" aria-live="polite"></span>
         <div class="part-actions" role="group" aria-label="Part filters and actions">
           <div class="row-filter-buttons" role="group" aria-label="Row filters">
             <button type="button" class="btn btn-secondary row-filter-btn is-active" id="btn-filter-all" data-filter="all" title="Show all rows">All</button>
-            <button type="button" class="btn btn-secondary row-filter-btn" id="btn-filter-nonempty" data-filter="nonempty" title="Hide empty rows">Non-empty</button>
-            <button type="button" class="btn btn-secondary row-filter-btn" id="btn-filter-included" data-filter="included" title="Show only rows included in Combined">In Combined</button>
+            <button type="button" class="btn btn-secondary row-filter-btn" id="btn-filter-nonempty" data-filter="nonempty" title="Hide empty rows (Non-empty)">Filled</button>
+            <button type="button" class="btn btn-secondary row-filter-btn" id="btn-filter-included" data-filter="included" title="Show only rows included in Combined">Combined</button>
           </div>
-          <button type="button" class="btn btn-secondary" id="btn-fit-rows" title="Size every row to fit its tallest cell content (wrap)">Fit row heights</button>
+          <button type="button" class="btn btn-secondary" id="btn-fit-rows" title="Size every row to fit its tallest cell content (wrap)">Fit</button>
           <button type="button" class="btn btn-danger" id="btn-delete-tab" title="Delete active tab (all pages)">Delete</button>
         </div>
       </div>
