@@ -1690,6 +1690,15 @@
     var text = getPromptText(target);
     state.confirmedLinks = state.confirmedLinks.filter(function (link) {
       if (link.scope !== target) return true;
+      // Col1 filter-only: keep for checkbox UX; never re-anchor into Combined text.
+      if (isCol1FilterOnlyLink(link)) {
+        var expectedCol1 = sourceLinkText(link);
+        if (expectedCol1 === null || expectedCol1 === '') return false;
+        link.text = expectedCol1;
+        link.start = 0;
+        link.end = 0;
+        return true;
+      }
       if (!linkMatchesSource(link, link.text)) return false;
       return repairConfirmedLinkOffset(link, text);
     });
@@ -1800,6 +1809,8 @@
 
     return state.confirmedLinks.some(function (link) {
       if (link.scope !== scope) return false;
+      // Col1 filter-only links are not Combined segments.
+      if (isCol1FilterOnlyLink(link)) return false;
       // When Global Combined is shared, only count segments from the active
       // part (or Master itself) — not other tabs’ contributions.
       if (activePartId && link.tabId !== activePartId && link.tabId !== master.id) {
@@ -2178,7 +2189,9 @@
     const rowSep = separatorValue(state.separators.row);
 
     const parent = cellParentText(tab, cellIndex);
-    if (parent && !(skipConfirmed && isCellConfirmedInScope(tab.id, cellIndex, scope))) {
+    // Part-tab Column A is filter-only — never emit parent text into Combined.
+    if (parent && !isPartTabCol1Cell(tab, cellIndex) &&
+        !(skipConfirmed && isCellConfirmedInScope(tab.id, cellIndex, scope))) {
       pieces.push({
         type: 'confirmed',
         text: parent,
@@ -3345,11 +3358,11 @@
 
   /**
    * Ash Col1 Combined cascade (part tabs only): when checking or unchecking
-   * Column A into Combined, also (un)check same-row Col B and every other Col A
-   * cell with the same trimmed value V (exact string match, same as Values
-   * filter) plus each of those rows' Col B. Nest Combined checkboxes are
-   * independent (not included). Master skipped. Parent grid cells only
-   * (cellParentText).
+   * Column A, also (un)check same-row Col B and every other Col A cell with
+   * the same trimmed value V (exact string match, same as Values filter) plus
+   * each of those rows' Col B. Column A is filter-only — its text never enters
+   * Combined (zero-length confirmed links for checkbox UX); Col B text still
+   * appends. Nest Combined checkboxes are independent. Master skipped.
    *
    * Cascade is the DEFAULT for part-tab Column A Combined toggles; pass
    * opts.col1Cascade === false to opt out (Master insert).
@@ -3388,6 +3401,89 @@
     return (cellIndex % cols) === 0;
   }
 
+
+  /** Part-tab Column A (filter-only): never contributes text to Combined. */
+  function isPartTabCol1Cell(tab, cellIndex) {
+    if (!tab || isMasterTab(tab)) return false;
+    const cols = tab.cols || 0;
+    if (cols < 1) return false;
+    if (!Number.isInteger(cellIndex) || cellIndex < 0 || cellIndex >= (tab.cells ? tab.cells.length : 0)) {
+      return false;
+    }
+    return (cellIndex % cols) === 0;
+  }
+
+  /**
+   * Confirmed parent link on part-tab Column A — checkbox / cascade UX only.
+   * Nest links on Col1 are normal Combined content (not filter-only).
+   */
+  function isCol1FilterOnlyLink(link) {
+    if (!link || linkNestIndex(link) !== null) return false;
+    const tab = state.tabs.find(function (t) { return t.id === link.tabId; });
+    return isPartTabCol1Cell(tab, link.cellIndex);
+  }
+
+  /** Mark Col1 confirmed for filter UX without inserting cell text into Combined. */
+  function ensureCol1FilterLink(tab, cellIndex, scope) {
+    const target = scope || currentPromptScope();
+    if (!tab || !isPartTabCol1Cell(tab, cellIndex)) return false;
+    if (isCellConfirmedInScope(tab.id, cellIndex, target)) return false;
+    const text = cellParentText(tab, cellIndex);
+    if (!text) return false;
+    state.confirmedLinks.push({
+      id: linkUid(),
+      tabId: tab.id,
+      cellIndex: cellIndex,
+      text: text,
+      start: 0,
+      end: 0,
+      scope: target
+    });
+    return true;
+  }
+
+  /**
+   * Rebuild Combined scopes so legacy Col1 confirmed segments leave the prompt
+   * text while keeping zero-length filter links for checkbox state.
+   */
+  function stripCol1TextFromAllCombinedScopes() {
+    const seen = Object.create(null);
+    const scopes = [];
+    for (let i = 0; i < state.confirmedLinks.length; i++) {
+      const link = state.confirmedLinks[i];
+      if (!isCol1FilterOnlyLink(link)) continue;
+      if (!link.scope || seen[link.scope]) continue;
+      seen[link.scope] = true;
+      scopes.push(link.scope);
+    }
+    let changed = false;
+    for (let i = 0; i < scopes.length; i++) {
+      const target = scopes[i];
+      const links = state.confirmedLinks.filter(function (link) {
+        return link.scope === target;
+      });
+      if (!links.length) continue;
+      const ordered = state.matchSourceOrder
+        ? links.slice().sort(compareLinksBySourceOrder)
+        : links.slice().sort(function (a, b) { return a.start - b.start; });
+      if (rejoinConfirmedLinks(target, ordered)) changed = true;
+      else {
+        // Even when text unchanged, pin Col1 filter links to zero-length.
+        for (let j = 0; j < state.confirmedLinks.length; j++) {
+          const link = state.confirmedLinks[j];
+          if (link.scope !== target || !isCol1FilterOnlyLink(link)) continue;
+          if (link.start !== 0 || link.end !== 0) {
+            link.start = 0;
+            link.end = 0;
+            changed = true;
+          }
+        }
+      }
+    }
+    return changed;
+  }
+
+
   /** Resolve whether Col1 cascade applies. Default ON for Col1; false opts out. */
   function resolveCol1Cascade(tab, cellIndex, opts) {
     if (!shouldCol1CombinedCascade(tab, cellIndex)) return false;
@@ -3418,11 +3514,17 @@
       const rowSep = separatorValue(state.separators.row);
       let lastRow = -1;
       let lastHadPiece = false;
+      let addedFilter = false;
       for (let i = 0; i < indices.length; i++) {
         const idx = indices[i];
         if (isCellConfirmedInScope(tab.id, idx, scope)) continue;
         const text = cellParentText(tab, idx);
         if (!text) continue;
+        // Part-tab Col1: filter checkbox only — never append cell text to Combined.
+        if (isPartTabCol1Cell(tab, idx)) {
+          if (ensureCol1FilterLink(tab, idx, scope)) addedFilter = true;
+          continue;
+        }
         const row = Math.floor(idx / (tab.cols || 1));
         if (lastHadPiece) {
           if (row !== lastRow) {
@@ -3440,8 +3542,13 @@
         lastRow = row;
         lastHadPiece = true;
       }
-      if (!pieces.length) return false;
-      appendPieces(pieces, quiet ? null : (tab.title + ' ' + cellAddressFromIndex(tab, cellIndex)), { quiet: quiet });
+      if (pieces.length) {
+        appendPieces(pieces, quiet ? null : (tab.title + ' ' + cellAddressFromIndex(tab, cellIndex)), { quiet: quiet });
+        return true;
+      }
+      if (!addedFilter) return false;
+      if (!quiet) refreshAfterConfirmedChange();
+      else scheduleSave();
       return true;
     }
     // Uncheck: reverse Col1 cascade (same category + Col2s) unless opted out.
@@ -3794,8 +3901,23 @@
 
     const toRemove = [];
     const toRewrite = [];
+    let filterMetaChanged = false;
     candidates.forEach(function (link) {
       const expected = sourceLinkText(link);
+      // Col1 filter-only: sync metadata / drop when empty — never rewrite Combined.
+      if (isCol1FilterOnlyLink(link)) {
+        if (expected === null || expected === '') {
+          toRemove.push(link);
+          return;
+        }
+        if (link.text !== expected) {
+          link.text = expected;
+          filterMetaChanged = true;
+        }
+        link.start = 0;
+        link.end = 0;
+        return;
+      }
       if (expected === null || expected === '') {
         toRemove.push(link);
         return;
@@ -3864,17 +3986,28 @@
       });
     }
 
-    if (changed && !silent) {
+    if ((changed || filterMetaChanged) && !silent) {
       renderCombinedPrompt();
       applyConfirmedCellHighlights();
     }
-    return changed;
+    return changed || filterMetaChanged;
   }
 
   function revalidateLinksForCell(tabId, cellIndex, opts) {
     let removed = false;
     state.confirmedLinks = state.confirmedLinks.filter(function (link) {
       if (link.tabId !== tabId || link.cellIndex !== cellIndex) return true;
+      if (isCol1FilterOnlyLink(link)) {
+        const expected = sourceLinkText(link);
+        if (expected === null || expected === '') {
+          removed = true;
+          return false;
+        }
+        link.text = expected;
+        link.start = 0;
+        link.end = 0;
+        return true;
+      }
       if (linkMatchesSource(link, link.text)) return true;
       removed = true;
       return false;
@@ -3889,6 +4022,17 @@
   function revalidateAllConfirmedLinks() {
     let removed = false;
     state.confirmedLinks = state.confirmedLinks.filter(function (link) {
+      if (isCol1FilterOnlyLink(link)) {
+        const expected = sourceLinkText(link);
+        if (expected === null || expected === '') {
+          removed = true;
+          return false;
+        }
+        link.text = expected;
+        link.start = 0;
+        link.end = 0;
+        return true;
+      }
       if (linkMatchesSource(link, link.text)) return true;
       removed = true;
       return false;
@@ -3942,11 +4086,18 @@
   function rejoinConfirmedLinks(scope, ordered) {
     if (!ordered || !ordered.length) return false;
     const target = scope || currentPromptScope();
+    // Col1 filter-only links stay confirmed for checkbox UX but never enter Combined text.
+    const contentOrdered = [];
+    const filterLinks = [];
+    for (let i = 0; i < ordered.length; i++) {
+      if (isCol1FilterOnlyLink(ordered[i])) filterLinks.push(ordered[i]);
+      else contentOrdered.push(ordered[i]);
+    }
     let middle = '';
     const updated = [];
-    for (let i = 0; i < ordered.length; i++) {
-      const link = ordered[i];
-      if (i > 0) middle += separatorBetweenSourceLinks(ordered[i - 1], link);
+    for (let i = 0; i < contentOrdered.length; i++) {
+      const link = contentOrdered[i];
+      if (i > 0) middle += separatorBetweenSourceLinks(contentOrdered[i - 1], link);
       const start = middle.length;
       middle += link.text || '';
       const end = middle.length;
@@ -3966,6 +4117,8 @@
       updated.push(next);
     }
 
+    // Prefix/suffix from the full ordered set so legacy Col1 spans are sliced out
+    // of the replaced middle when content is rebuilt without them.
     const byStart = ordered.slice().sort(function (a, b) { return a.start - b.start; });
     const current = getPromptText(target);
     const prefix = byStart.length ? current.slice(0, byStart[0].start) : '';
@@ -3975,14 +4128,36 @@
       updated[i].start += shift;
       updated[i].end += shift;
     }
+    // Pin filter-only Col1 links at zero-length (not painted in Combined).
+    const filterAnchor = shift + middle.length;
+    for (let i = 0; i < filterLinks.length; i++) {
+      const link = filterLinks[i];
+      const expected = sourceLinkText(link);
+      if (expected === null || expected === '') continue;
+      const next = {
+        id: link.id,
+        tabId: link.tabId,
+        cellIndex: link.cellIndex,
+        text: expected,
+        start: filterAnchor,
+        end: filterAnchor,
+        scope: target
+      };
+      copyLinkMasterFields(link, next);
+      updated.push(next);
+    }
     const nextText = prefix + middle + suffix;
 
-    let unchanged = nextText === current && updated.length === byStart.length;
+    let unchanged = nextText === current && updated.length === ordered.length;
     if (unchanged) {
+      const prevById = Object.create(null);
+      for (let i = 0; i < ordered.length; i++) prevById[ordered[i].id] = ordered[i];
       for (let i = 0; i < updated.length; i++) {
-        if (updated[i].id !== byStart[i].id ||
-            updated[i].start !== byStart[i].start ||
-            updated[i].end !== byStart[i].end) {
+        const prev = prevById[updated[i].id];
+        if (!prev ||
+            updated[i].start !== prev.start ||
+            updated[i].end !== prev.end ||
+            updated[i].text !== prev.text) {
           unchanged = false;
           break;
         }
@@ -4268,14 +4443,42 @@
     for (let i = 0; i < pieces.length; i++) toAdd.push(pieces[i]);
 
     // Preview that we will actually add something before snapshotting undo.
+    // Col1 filter-only parents contribute no Combined text (handled below).
     let willAdd = '';
+    let willAddFilterOnly = false;
     for (let i = 0; i < toAdd.length; i++) {
       const piece = toAdd[i];
       const text = piece.text || '';
       if (!text && piece.type !== 'plain') continue;
+      if (piece.type === 'confirmed') {
+        const pieceTab = state.tabs.find(function (t) { return t.id === piece.tabId; });
+        const nestIdx = Number.isInteger(piece.nestIndex) && piece.nestIndex >= 0
+          ? piece.nestIndex
+          : null;
+        if (nestIdx === null && isPartTabCol1Cell(pieceTab, piece.cellIndex)) {
+          willAddFilterOnly = true;
+          continue;
+        }
+      }
       willAdd += text;
     }
     if (!willAdd) {
+      if (willAddFilterOnly) {
+        for (let i = 0; i < toAdd.length; i++) {
+          const piece = toAdd[i];
+          if (piece.type !== 'confirmed') continue;
+          const pieceTab = state.tabs.find(function (t) { return t.id === piece.tabId; });
+          const nestIdx = Number.isInteger(piece.nestIndex) && piece.nestIndex >= 0
+            ? piece.nestIndex
+            : null;
+          if (nestIdx === null && isPartTabCol1Cell(pieceTab, piece.cellIndex)) {
+            ensureCol1FilterLink(pieceTab, piece.cellIndex, scope);
+          }
+        }
+        if (!quiet) refreshAfterConfirmedChange();
+        else scheduleSave();
+        return;
+      }
       if (!quiet) setStatus('Nothing to append', 'err');
       return;
     }
@@ -4315,6 +4518,17 @@
       const text = piece.text || '';
       if (!text && piece.type !== 'plain') continue;
       if (piece.type === 'confirmed') {
+        const pieceTab = state.tabs.find(function (t) { return t.id === piece.tabId; });
+        const nestIdx = Number.isInteger(piece.nestIndex) && piece.nestIndex >= 0
+          ? piece.nestIndex
+          : null;
+        // Part-tab Col1 parent: filter-only link, no Combined text.
+        if (nestIdx === null && isPartTabCol1Cell(pieceTab, piece.cellIndex)) {
+          if (!isCellConfirmedInScope(piece.tabId, piece.cellIndex, scope)) {
+            ensureCol1FilterLink(pieceTab, piece.cellIndex, scope);
+          }
+          continue;
+        }
         const id = linkUid();
         const link = {
           id: id,
@@ -4325,9 +4539,7 @@
           end: offset + text.length,
           scope: scope
         };
-        if (Number.isInteger(piece.nestIndex) && piece.nestIndex >= 0) {
-          link.nestIndex = piece.nestIndex;
-        }
+        if (nestIdx !== null) link.nestIndex = nestIdx;
         applyMasterOriginToNewLink(link, piece);
         state.confirmedLinks.push(link);
       }
@@ -4822,6 +5034,8 @@
     repairConfirmedLinksForScope(scope);
     const text = getPromptText(scope);
     const links = linksForScope(scope).filter(function (link) {
+      // Col1 filter-only: keep for checkbox state; never paint into Combined.
+      if (isCol1FilterOnlyLink(link)) return true;
       if (link.start < 0 || link.end > text.length || link.start > link.end) return false;
       return text.slice(link.start, link.end) === link.text;
     });
@@ -4837,6 +5051,7 @@
     el.combined.replaceChildren();
     let pos = 0;
     links.forEach(function (link) {
+      if (isCol1FilterOnlyLink(link)) return;
       if (link.start > pos) {
         el.combined.appendChild(document.createTextNode(text.slice(pos, link.start)));
       }
@@ -4949,6 +5164,8 @@
     if (state.globalCombined) mergePartPrompts();
     // Re-anchor Combined ranges after merge so cell + Master-insert greens restore.
     repairAllConfirmedLinks();
+    // Col1 is filter-only: drop any legacy Column A text from Combined prompts.
+    stripCol1TextFromAllCombinedScopes();
     if (el.partSeparator) el.partSeparator.value = state.separators.part;
     if (el.columnSeparator) el.columnSeparator.value = state.separators.column;
     if (el.rowSeparator) el.rowSeparator.value = state.separators.row;
