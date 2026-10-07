@@ -3387,6 +3387,11 @@
    * Combined (zero-length confirmed links for checkbox UX); Col B text still
    * appends. Nest Combined checkboxes are independent. Master skipped.
    *
+   * Exclusive filter (Ash): checking a Col1 option also unchecks every other
+   * Col1 value (≠ V) and those rows' Col B — radio-style across categories.
+   * Same-value ON cascade and exclusive OFF run together on check; uncheck
+   * only reverses the same-value set.
+   *
    * Cascade is the DEFAULT for part-tab Column A Combined toggles; pass
    * opts.col1Cascade === false to opt out (Master insert).
    */
@@ -3412,6 +3417,36 @@
       if (cellParentText(tab, col1) !== value) continue;
       add(col1);
       add(col1 + 1);
+    }
+    return out;
+  }
+
+  /**
+   * Exclusive Col1 filter OFF set: every Column A cell whose trimmed value
+   * differs from the origin option, plus those rows' Column B. Same-value
+   * rows are left for the ON cascade. Empty Col1 rows skipped.
+   */
+  function collectCol1ExclusiveOffIndices(tab, cellIndex) {
+    const cols = tab.cols || 0;
+    const cellCount = tab.cells ? tab.cells.length : 0;
+    const rowsFromCells = cols > 0 ? Math.ceil(cellCount / cols) : 0;
+    const rows = Math.max(tab.rows || 0, rowsFromCells);
+    const value = cellParentText(tab, cellIndex);
+    const out = [];
+    const seen = Object.create(null);
+    function add(idx) {
+      if (!Number.isInteger(idx) || idx < 0 || idx >= cellCount) return;
+      if (seen[idx]) return;
+      seen[idx] = true;
+      out.push(idx);
+    }
+    if (!value || cols < 1) return out;
+    for (let r = 0; r < rows; r++) {
+      const col1 = r * cols;
+      const other = cellParentText(tab, col1);
+      if (!other || other === value) continue;
+      add(col1);
+      if (cols >= 2) add(col1 + 1);
     }
     return out;
   }
@@ -3522,7 +3557,24 @@
     const col1Cascade = resolveCol1Cascade(tab, cellIndex, opts);
     const scope = currentPromptScope();
     const isOn = isCellConfirmedInScope(tab.id, cellIndex, scope);
-    if (isOn === !!wantOn) return false;
+    if (isOn === !!wantOn) {
+      // Already desired — still exclusive-clear rival Col1 categories on check.
+      if (wantOn && col1Cascade) {
+        const offIndices = collectCol1ExclusiveOffIndices(tab, cellIndex);
+        if (offIndices.length) {
+          const offLinks = linksForCellsInScope(tab.id, offIndices, scope).filter(function (link) {
+            return linkNestIndex(link) === null;
+          });
+          if (offLinks.length) {
+            removeLinksFromCombined(offLinks);
+            if (!quiet) refreshAfterConfirmedChange();
+            else scheduleSave();
+            return true;
+          }
+        }
+      }
+      return false;
+    }
     if (wantOn) {
       const value = cellParentText(tab, cellIndex);
       if (!value) return false;
@@ -3530,6 +3582,15 @@
       // Auto-batch on Combined checkbox check/uncheck for Col1 — Master insert
       // passes col1Cascade:false to stay single-cell.
       if (col1Cascade) {
+        // Exclusive filter: clear other Col1 options (+ their Col B) first so
+        // cascade ON for this value cannot leave rival categories checked.
+        const offIndices = collectCol1ExclusiveOffIndices(tab, cellIndex);
+        if (offIndices.length) {
+          const offLinks = linksForCellsInScope(tab.id, offIndices, scope).filter(function (link) {
+            return linkNestIndex(link) === null;
+          });
+          if (offLinks.length) removeLinksFromCombined(offLinks);
+        }
         indices = collectCol1CombinedCascadeIndices(tab, cellIndex);
       }
       const pieces = [];
@@ -3595,6 +3656,14 @@
     const indices = collectCol1CombinedCascadeIndices(tab, cellIndex);
     for (let i = 0; i < indices.length; i++) {
       checkboxDrag.visited[indices[i]] = true;
+    }
+    // Exclusive OFF targets: mark visited so drag-paint does not re-check rivals
+    // after this Col1 option cleared them.
+    if (checkboxDrag.value) {
+      const off = collectCol1ExclusiveOffIndices(tab, cellIndex);
+      for (let i = 0; i < off.length; i++) {
+        checkboxDrag.visited[off[i]] = true;
+      }
     }
   }
 
