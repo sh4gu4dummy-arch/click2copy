@@ -538,18 +538,22 @@ body {
 
 .part-search-bar {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
-  gap: 5px;
+  gap: 4px;
   flex-shrink: 0;
   padding: 0;
+  overflow-x: auto;
+  min-width: 0;
 }
 
-/* Find/Replace slightly smaller so page chrome + name fit on the same line */
+/* Find/Replace + filters/Fit/Delete stay on ONE Soft dark line with page chrome */
 .part-search-bar > .btn {
-  padding: 4px 9px;
-  font-size: 12px;
-  line-height: 1.2;
+  padding: 3px 7px;
+  font-size: 11px;
+  line-height: 1.15;
+  flex: 0 0 auto;
+  white-space: nowrap;
 }
 
 /* Part-tab pages — Soft dark chrome (◀ n/n ▶ +) + editable page name */
@@ -614,19 +618,19 @@ body {
   white-space: nowrap;
 }
 .part-tab-page-name {
-  flex: 0 0 auto;
-  width: 108px;
-  min-width: 72px;
-  max-width: 140px;
-  height: 26px;
+  flex: 0 1 auto;
+  width: 88px;
+  min-width: 56px;
+  max-width: 110px;
+  height: 24px;
   margin: 0;
-  padding: 2px 8px;
+  padding: 2px 6px;
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--cell-bg);
   color: var(--text);
   font: inherit;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 600;
   line-height: 1.2;
   outline: none;
@@ -641,17 +645,17 @@ body {
 }
 
 .part-search-input {
-  flex: 1 1 110px;
-  min-width: 90px;
-  max-width: 180px;
-  height: 26px;
-  padding: 3px 8px;
+  flex: 0 1 100px;
+  min-width: 72px;
+  max-width: 130px;
+  height: 24px;
+  padding: 2px 6px;
   border: 1px solid var(--border);
   border-radius: calc(var(--radius) - 2px);
   background: var(--cell-bg);
   color: var(--text);
   font: inherit;
-  font-size: 12px;
+  font-size: 11px;
   outline: none;
 }
 
@@ -661,8 +665,9 @@ body {
 
 .part-search-status {
   color: var(--muted);
-  font-size: 0.72rem;
-  min-width: 3.5em;
+  font-size: 0.68rem;
+  min-width: 2.5em;
+  flex: 0 0 auto;
   white-space: nowrap;
 }
 
@@ -826,8 +831,10 @@ body.resizing-sections * {
   border: 0 !important;
   border-right: 1px solid var(--border) !important;
   margin: 0;
-  padding: 4px 8px;
-  font-size: 12px;
+  padding: 3px 6px;
+  font-size: 11px;
+  line-height: 1.15;
+  white-space: nowrap;
 }
 
 .row-filter-btn:last-child {
@@ -846,16 +853,18 @@ body.resizing-sections * {
 
 .part-actions {
   display: flex;
-  gap: 5px;
-  flex-wrap: wrap;
+  gap: 4px;
+  flex-wrap: nowrap;
   align-items: center;
   margin-left: auto;
-  flex: 1 1 100%;
+  flex: 0 0 auto;
 }
 .part-actions > .btn {
-  padding: 4px 9px;
-  font-size: 12px;
-  line-height: 1.2;
+  padding: 3px 7px;
+  font-size: 11px;
+  line-height: 1.15;
+  flex: 0 0 auto;
+  white-space: nowrap;
 }
 
 .combined-actions {
@@ -1719,7 +1728,9 @@ body.relocating-cell * {
 .master-library-items {
   flex: 1 1 auto;
   min-height: 0;
-  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   padding: 0 8px 8px;
 }
 
@@ -1729,13 +1740,19 @@ body.relocating-cell * {
   align-items: center;
   gap: 6px;
   padding: 6px 2px 8px;
-  /* Frozen while the open Master insert list scrolls (part tabs only). */
-  position: sticky;
-  top: 0;
+  /* Outside the results scrollpane — stays put without sticky jank. */
+  flex-shrink: 0;
+  position: relative;
   z-index: 2;
   background: var(--surface);
   border-bottom: 1px solid var(--border);
   margin-bottom: 6px;
+}
+
+.master-library-results {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
 }
 
 .master-library-grid {
