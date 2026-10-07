@@ -5675,15 +5675,28 @@
     );
   }
 
+  /** Scrollable Master-insert results pane (toolbar stays outside it). */
+  function masterLibraryResultsEl() {
+    if (!el.masterLibraryItems) return null;
+    let results = el.masterLibraryItems.querySelector('.master-library-results');
+    if (!results) {
+      results = document.createElement('div');
+      results.className = 'master-library-results';
+      el.masterLibraryItems.appendChild(results);
+    }
+    return results;
+  }
+
   /** Replace Master-insert result grid/empty only — leave Values toolbar/menu intact. */
   function refreshMasterLibraryResults(master, current) {
     if (!el.masterLibraryItems) return;
     if (!master || !current || isMasterTab(current)) return;
+    const results = masterLibraryResultsEl();
+    if (!results) return;
 
     suppressMasterLibMenuScrollClose = true;
     try {
-      const stale = el.masterLibraryItems.querySelectorAll('.master-library-grid, .master-library-empty');
-      for (let i = 0; i < stale.length; i++) stale[i].remove();
+      results.innerHTML = '';
 
       let hasContent = false;
       for (let i = 0; i < master.cells.length; i++) {
@@ -5696,7 +5709,7 @@
         const empty = document.createElement('span');
         empty.className = 'master-library-empty';
         empty.textContent = 'Add reusable text in the Master part first.';
-        el.masterLibraryItems.appendChild(empty);
+        results.appendChild(empty);
         return;
       }
 
@@ -5733,7 +5746,7 @@
         empty.textContent = prefs.valueFilter !== null
           ? 'No Master parts match the Column A Values filter.'
           : 'Add reusable text in the Master part first.';
-        el.masterLibraryItems.appendChild(empty);
+        results.appendChild(empty);
         return;
       }
 
@@ -5773,7 +5786,7 @@
           }
         }
       }
-      el.masterLibraryItems.appendChild(grid);
+      results.appendChild(grid);
     } finally {
       requestAnimationFrame(function () {
         suppressMasterLibMenuScrollClose = false;
@@ -5877,6 +5890,10 @@
     filterWrap.appendChild(filterMenu);
     toolbar.appendChild(filterWrap);
     el.masterLibraryItems.appendChild(toolbar);
+    // Results scroll independently so Values / A–Z never leave the viewport.
+    const results = document.createElement('div');
+    results.className = 'master-library-results';
+    el.masterLibraryItems.appendChild(results);
 
     refreshMasterLibraryResults(master, current);
 
@@ -9949,9 +9966,20 @@
     el.cellGrid.parentElement.addEventListener('scroll', closeCol1FilterMenu, { passive: true });
   }
   if (el.masterLibrary) {
-    el.masterLibrary.addEventListener('scroll', function () {
+    // Capture scroll from the results pane (or legacy items scroll). Do not close
+    // when the user scrolls inside the fixed Values dropdown itself — that was the
+    // "scroll down Values glitch" (menu closed / jumped mid-scroll).
+    el.masterLibrary.addEventListener('scroll', function (e) {
       if (suppressMasterLibMenuScrollClose) return;
-      closeMasterLibFilterMenu();
+      const t = e.target;
+      if (!t || !t.classList) return;
+      const menu = el.masterLibraryItems && el.masterLibraryItems.querySelector('.master-library-filter-menu');
+      if (menu && (t === menu || menu.contains(t))) return;
+      if (t.classList.contains('master-library-results') ||
+          t.classList.contains('master-library-items') ||
+          t === el.masterLibrary) {
+        closeMasterLibFilterMenu();
+      }
     }, { passive: true, capture: true });
   }
   el.btnAppend.addEventListener('click', appendAll);
