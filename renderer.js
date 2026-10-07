@@ -2685,6 +2685,7 @@
     ensureCellPages(tab);
     ensureCellShades(tab);
     const needed = (tab.cols || 0) * (tab.rows || 0);
+    const prev = (Array.isArray(tab.pages) && tab.pages[tab.page]) ? tab.pages[tab.page] : null;
     const snap = {
       cols: tab.cols,
       rows: tab.rows,
@@ -2694,7 +2695,8 @@
       cellPages: tab.cellPages.map(function (entry) { return cloneCellPagesEntry(entry); }),
       cellShades: normalizeCellShades(tab.cellShades, needed),
       partPrompt: typeof state.partPrompts[tab.id] === 'string' ? state.partPrompts[tab.id] : '',
-      confirmed: captureTabConfirmedKeys(tab.id)
+      confirmed: captureTabConfirmedKeys(tab.id),
+      name: (prev && typeof prev.name === 'string') ? prev.name : ''
     };
     const cw = normalizeColumnWidths(tab.columnWidths, tab.cols);
     const rh = normalizeRowHeights(tab.rowHeights, tab.rows);
@@ -2735,7 +2737,8 @@
       cellPages: cellPages,
       cellShades: cellShades,
       partPrompt: typeof raw.partPrompt === 'string' ? raw.partPrompt : '',
-      confirmed: normalizeTabConfirmedKeys(raw.confirmed)
+      confirmed: normalizeTabConfirmedKeys(raw.confirmed),
+      name: typeof raw.name === 'string' ? raw.name : ''
     };
     const cw = normalizeColumnWidths(raw.columnWidths, cols);
     const rh = normalizeRowHeights(raw.rowHeights, rows);
@@ -2841,6 +2844,7 @@
     ensureCellPages(tab);
     ensureCellShades(tab);
     const needed = (tab.cols || 0) * (tab.rows || 0);
+    const prev = (Array.isArray(tab.pages) && tab.pages[tab.page]) ? tab.pages[tab.page] : null;
     const snap = {
       cols: tab.cols,
       rows: tab.rows,
@@ -2850,7 +2854,8 @@
       cellPages: tab.cellPages.map(function (entry) { return cloneCellPagesEntry(entry); }),
       cellShades: normalizeCellShades(tab.cellShades, needed),
       partPrompt: '',
-      confirmed: []
+      confirmed: [],
+      name: (prev && typeof prev.name === 'string') ? prev.name : ''
     };
     const cw = normalizeColumnWidths(tab.columnWidths, tab.cols);
     const rh = normalizeRowHeights(tab.rowHeights, tab.rows);
@@ -2925,6 +2930,8 @@
     tab.pages[tab.page] = captureTabPage(tab);
     // Ash: copy current but not locked — unlock Master cell locks on the copy.
     const copy = cloneTabPage(tab.pages[tab.page], { unlock: true });
+    // Fresh page name — do not reuse the source page's label.
+    copy.name = 'Page ' + (tab.pages.length + 1);
     tab.pages.push(copy);
     tab.page = tab.pages.length - 1;
     applyTabPageGrid(tab, copy);
@@ -2982,18 +2989,52 @@
     setTabPage(next);
   }
 
+  function defaultTabPageName(pageIndex) {
+    return 'Page ' + (pageIndex + 1);
+  }
+
+  function tabPageDisplayName(snap, pageIndex) {
+    if (snap && typeof snap.name === 'string' && snap.name.trim()) return snap.name.trim();
+    return defaultTabPageName(pageIndex);
+  }
+
+  function setTabPageName(name, opts) {
+    const tab = activeTab();
+    if (!tab || isMasterTab(tab) || toolsTabActive) return;
+    ensureTabPages(tab);
+    const page = tab.pages[tab.page];
+    if (!page) return;
+    const next = typeof name === 'string' ? name.trim() : '';
+    if ((page.name || '') === next) {
+      if (opts && opts.forceRender) renderPartTabPageChrome();
+      return;
+    }
+    pushHistory();
+    page.name = next;
+    renderPartTabPageChrome();
+    scheduleSave();
+  }
+
   function renderPartTabPageChrome() {
     const host = el.partTabPageChrome;
     if (!host) return;
     const tab = activeTab();
     const show = !!(tab && !isMasterTab(tab) && !toolsTabActive);
     host.hidden = !show;
+    // Keep focus in the name field across re-renders when the user is typing.
+    const active = document.activeElement;
+    const keepNameFocus = !!(active && active.classList &&
+      active.classList.contains('part-tab-page-name') && host.contains(active));
+    const keepSelStart = keepNameFocus ? active.selectionStart : null;
+    const keepSelEnd = keepNameFocus ? active.selectionEnd : null;
+    const keepValue = keepNameFocus ? active.value : null;
     host.textContent = '';
     if (!show) return;
     ensureTabPages(tab);
     const pageCount = tab.pages.length;
     const page = Math.min(Math.max(tab.page || 0, 0), pageCount - 1);
     tab.page = page;
+    const snap = tab.pages[page];
 
     const chrome = document.createElement('div');
     chrome.className = 'part-tab-page-chrome-inner';
@@ -3015,7 +3056,7 @@
     const label = document.createElement('span');
     label.className = 'part-tab-page-label';
     label.textContent = (page + 1) + '/' + pageCount;
-    label.title = 'Part page ' + (page + 1) + ' of ' + pageCount;
+    label.title = tabPageDisplayName(snap, page) + ' — page ' + (page + 1) + ' of ' + pageCount;
 
     const nextBtn = document.createElement('button');
     nextBtn.type = 'button';
@@ -3059,7 +3100,44 @@
       chrome.appendChild(removeBtn);
     }
 
+    const nameInput = document.createElement('input');
+    nameInput.type = 'text';
+    nameInput.className = 'part-tab-page-name';
+    nameInput.value = keepNameFocus && keepValue != null
+      ? keepValue
+      : (snap && typeof snap.name === 'string' ? snap.name : '');
+    nameInput.placeholder = defaultTabPageName(page);
+    nameInput.title = 'Name this part page';
+    nameInput.setAttribute('aria-label', 'Part page name');
+    nameInput.spellcheck = false;
+    nameInput.addEventListener('keydown', function (ev) {
+      if (ev.key === 'Enter') {
+        ev.preventDefault();
+        nameInput.blur();
+      } else if (ev.key === 'Escape') {
+        ev.preventDefault();
+        nameInput.value = snap && typeof snap.name === 'string' ? snap.name : '';
+        nameInput.blur();
+      }
+    });
+    nameInput.addEventListener('blur', function () {
+      setTabPageName(nameInput.value);
+    });
+    // Typing should not steal focus via other key handlers / save churn.
+    nameInput.addEventListener('mousedown', function (ev) { ev.stopPropagation(); });
+    nameInput.addEventListener('click', function (ev) { ev.stopPropagation(); });
+
     host.appendChild(chrome);
+    host.appendChild(nameInput);
+
+    if (keepNameFocus) {
+      nameInput.focus();
+      try {
+        if (keepSelStart != null && keepSelEnd != null) {
+          nameInput.setSelectionRange(keepSelStart, keepSelEnd);
+        }
+      } catch (err) { /* ignore */ }
+    }
   }
 
 

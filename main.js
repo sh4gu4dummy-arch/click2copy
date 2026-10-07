@@ -386,7 +386,8 @@ function normalizeTabPage(raw) {
     cellPages,
     cellShades,
     partPrompt: typeof raw.partPrompt === 'string' ? raw.partPrompt : '',
-    confirmed: normalizeTabConfirmedKeys(raw.confirmed)
+    confirmed: normalizeTabConfirmedKeys(raw.confirmed),
+    name: typeof raw.name === 'string' ? raw.name : ''
   };
   const columnWidths = normalizeColumnWidths(raw.columnWidths, cols);
   const rowHeights = normalizeRowHeights(raw.rowHeights, rows);
@@ -406,7 +407,8 @@ function wrapRootAsTabPage(tab) {
     cellPages: normalizeCellPages(tab.cellPages, tab.cells, needed),
     cellShades: normalizeCellShades(tab.cellShades, needed),
     partPrompt: '',
-    confirmed: []
+    confirmed: [],
+    name: ''
   };
   if (tab.columnWidths) snap.columnWidths = tab.columnWidths;
   if (tab.rowHeights) snap.rowHeights = tab.rowHeights;
