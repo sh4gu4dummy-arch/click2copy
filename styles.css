@@ -2257,6 +2257,42 @@ body.painting-checkboxes .cell-append {
   outline-offset: 1px;
 }
 
+/* Add blank / Copy current choice for cell-page + and part-tab page + */
+.add-page-choice-menu {
+  position: absolute;
+  top: 18px;
+  right: 0;
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 124px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.45);
+}
+.add-page-choice-option {
+  appearance: none;
+  margin: 0;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.add-page-choice-option:hover {
+  background: var(--accent-soft);
+  color: var(--text);
+}
+
 /* Soft dark Draft A — Combined native scrollbar (only paints when overflowing) */
 .theme-soft-dark .textarea-combined {
   scrollbar-width: thin;

@@ -2568,13 +2568,14 @@
     if (ta) ta.focus();
   }
 
-  function addCellPage(cellIndex) {
+  function addCellPage(cellIndex, mode) {
     const tab = activeTab();
     if (!tab || cellIndex < 0 || cellIndex >= tab.cells.length) return;
     if (isCellMasterEditBlocked(tab, cellIndex)) {
       setStatus('Locked Master cell — double-click to unlock before editing', 'err');
       return;
     }
+    const copyMode = mode === 'copy';
     ensureCellPages(tab);
     if (!tab.cellPages[cellIndex]) return;
     pushHistory();
@@ -2582,7 +2583,8 @@
     // writeCellCurrentPage → ensureCellPages replaces cellPages[]; re-fetch before mutate.
     const entry = tab.cellPages[cellIndex];
     if (!entry) return;
-    entry.pages.push('');
+    const cur = entry.pages[entry.page] == null ? '' : String(entry.pages[entry.page]);
+    entry.pages.push(copyMode ? cur : '');
     entry.page = entry.pages.length - 1;
     syncCellTextFromPages(tab, cellIndex);
     liveSyncConfirmedLinksForCell(tab.id, cellIndex, null, { silent: true });
@@ -2592,7 +2594,9 @@
     scheduleSave();
     const ta = el.cellGrid.querySelector('textarea.cell[data-idx="' + cellIndex + '"]');
     if (ta) ta.focus();
-    setStatus('Added cell page (' + entry.pages.length + ')');
+    setStatus(copyMode
+      ? ('Added cell page — copy of current (' + entry.pages.length + ')')
+      : ('Added cell page — blank (' + entry.pages.length + ')'));
   }
 
   function removeCellPage(cellIndex) {
@@ -2921,21 +2925,51 @@
     scheduleSave();
   }
 
-  function addTabPage() {
+  function makeBlankTabPage(tab) {
+    if (!tab) return null;
+    const cols = tab.cols > 0 ? tab.cols : DEFAULT_COLS;
+    const rows = tab.rows > 0 ? tab.rows : DEFAULT_ROWS;
+    const cells = emptyCells(cols, rows);
+    const snap = {
+      cols: cols,
+      rows: rows,
+      cells: cells,
+      nestedCells: emptyNestedCells(cols, rows),
+      cellLocks: emptyCellLocks(cols, rows),
+      cellPages: normalizeCellPages(null, cells, cols * rows),
+      cellShades: emptyCellShades(cols, rows),
+      partPrompt: '',
+      confirmed: [],
+      name: ''
+    };
+    // Keep column widths so blank page matches the current grid layout.
+    const cw = normalizeColumnWidths(tab.columnWidths, cols);
+    if (cw) snap.columnWidths = cw.slice();
+    return normalizeTabPage(snap);
+  }
+
+  function addTabPage(mode) {
     const tab = activeTab();
     if (!tab || isMasterTab(tab) || toolsTabActive) return;
+    const copyMode = mode === 'copy';
     ensureTabPages(tab);
     pushHistory();
     flushLiveCellInputs(tab);
     tab.pages[tab.page] = captureTabPage(tab);
-    // Ash: copy current but not locked — unlock Master cell locks on the copy.
-    const copy = cloneTabPage(tab.pages[tab.page], { unlock: true });
+    let nextPage;
+    if (copyMode) {
+      // Ash: copy current but not locked — unlock Master cell locks on the copy.
+      nextPage = cloneTabPage(tab.pages[tab.page], { unlock: true });
+    } else {
+      nextPage = makeBlankTabPage(tab);
+    }
+    if (!nextPage) return;
     // Fresh page name — do not reuse the source page's label.
-    copy.name = 'Page ' + (tab.pages.length + 1);
-    tab.pages.push(copy);
+    nextPage.name = 'Page ' + (tab.pages.length + 1);
+    tab.pages.push(nextPage);
     tab.page = tab.pages.length - 1;
-    applyTabPageGrid(tab, copy);
-    restoreTabCombinedFromPage(tab, copy);
+    applyTabPageGrid(tab, nextPage);
+    restoreTabCombinedFromPage(tab, nextPage);
     focusedCell = null;
     clearStickyCellRange();
     clearKeyboardCellRange();
@@ -2947,7 +2981,9 @@
     renderMasterLibrary();
     renderPartTabPageChrome();
     scheduleSave();
-    setStatus('Added part page (' + tab.pages.length + ') — unlocked copy of previous');
+    setStatus(copyMode
+      ? ('Added part page (' + tab.pages.length + ') — unlocked copy of previous')
+      : ('Added part page (' + tab.pages.length + ') — blank'));
   }
 
   function removeTabPage() {
@@ -3074,11 +3110,11 @@
     addBtn.type = 'button';
     addBtn.className = 'part-tab-page-btn part-tab-page-add';
     addBtn.textContent = '+';
-    addBtn.title = 'Add part page (copy current, unlocked)';
+    addBtn.title = 'Add part page';
     addBtn.setAttribute('aria-label', 'Add part page');
     addBtn.addEventListener('click', function (ev) {
       ev.preventDefault();
-      addTabPage();
+      openAddPageChoiceMenu(addBtn, { kind: 'part' });
     });
 
     chrome.appendChild(prevBtn);
@@ -3161,6 +3197,7 @@
     const tab = activeTab();
     if (!tab || cellIndex < 0 || cellIndex >= tab.cells.length) return;
     closeCellShadePicker();
+    closeAddPageChoiceMenu();
     const picker = document.createElement('div');
     picker.className = 'cell-shade-picker';
     picker.setAttribute('role', 'listbox');
@@ -3204,6 +3241,92 @@
     const host = anchorBtn.closest('.cell-corner-tools') || anchorBtn.parentNode;
     host.appendChild(picker);
     document.addEventListener('pointerdown', onShadePickerOutside, true);
+  }
+
+  function closeAddPageChoiceMenu() {
+    const open = document.querySelectorAll('.add-page-choice-menu');
+    for (let i = 0; i < open.length; i++) open[i].remove();
+    document.removeEventListener('pointerdown', onAddPageChoiceOutside, true);
+  }
+
+  function onAddPageChoiceOutside(ev) {
+    const t = ev.target;
+    if (t && typeof t.closest === 'function' &&
+        (t.closest('.add-page-choice-menu') ||
+         t.closest('.cell-page-add') ||
+         t.closest('.part-tab-page-add'))) {
+      return;
+    }
+    closeAddPageChoiceMenu();
+  }
+
+  /**
+   * Shared "Add blank" / "Copy current" menu for cell-page + and part-tab page +.
+   * Matches the compact picker UX used elsewhere (shade / tab actions).
+   */
+  function openAddPageChoiceMenu(anchorBtn, opts) {
+    if (!anchorBtn) return;
+    opts = opts || {};
+    const kind = opts.kind === 'part' ? 'part' : 'cell';
+    const cellIndex = Number.isInteger(opts.cellIndex) ? opts.cellIndex : -1;
+    if (kind === 'cell') {
+      const tab = activeTab();
+      if (!tab || cellIndex < 0 || cellIndex >= tab.cells.length) return;
+      if (isCellMasterEditBlocked(tab, cellIndex)) {
+        setStatus('Locked Master cell — double-click to unlock before editing', 'err');
+        return;
+      }
+    } else {
+      const tab = activeTab();
+      if (!tab || isMasterTab(tab) || toolsTabActive) return;
+    }
+    closeAddPageChoiceMenu();
+    closeCellShadePicker();
+    const menu = document.createElement('div');
+    menu.className = 'add-page-choice-menu';
+    menu.setAttribute('role', 'menu');
+    menu.setAttribute('aria-label', kind === 'part' ? 'Add part page' : 'Add cell page');
+
+    function addChoice(label, mode) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'add-page-choice-option';
+      btn.setAttribute('role', 'menuitem');
+      btn.textContent = label;
+      btn.addEventListener('click', function (ev) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        closeAddPageChoiceMenu();
+        if (kind === 'part') addTabPage(mode);
+        else addCellPage(cellIndex, mode);
+      });
+      menu.appendChild(btn);
+    }
+    addChoice('Add blank', 'blank');
+    addChoice('Copy current', 'copy');
+
+    if (kind === 'cell') {
+      const host = anchorBtn.closest('.cell-corner-tools') ||
+        anchorBtn.closest('.cell-page-chrome') ||
+        anchorBtn.parentNode;
+      host.appendChild(menu);
+    } else {
+      document.body.appendChild(menu);
+      const rect = anchorBtn.getBoundingClientRect();
+      const pad = 6;
+      menu.style.position = 'fixed';
+      menu.style.left = '0px';
+      menu.style.top = '0px';
+      const size = menu.getBoundingClientRect();
+      let left = rect.left;
+      let top = rect.bottom + 4;
+      left = Math.max(pad, Math.min(left, window.innerWidth - size.width - pad));
+      top = Math.max(pad, Math.min(top, window.innerHeight - size.height - pad));
+      menu.style.left = left + 'px';
+      menu.style.top = top + 'px';
+      menu.style.zIndex = '1200';
+    }
+    document.addEventListener('pointerdown', onAddPageChoiceOutside, true);
   }
 
   /**
@@ -6759,7 +6882,7 @@
         addPageBtn.addEventListener('click', function (ev) {
           ev.preventDefault();
           ev.stopPropagation();
-          addCellPage(idx);
+          openAddPageChoiceMenu(addPageBtn, { kind: 'cell', cellIndex: idx });
         });
 
         pageChrome.appendChild(prevBtn);
