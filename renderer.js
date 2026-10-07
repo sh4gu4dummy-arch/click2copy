@@ -402,9 +402,22 @@
     tab.cells[cellIndex] = entry.pages[page] == null ? '' : String(entry.pages[page]);
   }
 
+  /**
+   * Grow/normalize cellPages length without mirroring pages→cells.
+   * ensureCellPages() mirrors and can wipe a pending cells[] write (Master insert
+   * on an empty part page is the common case).
+   */
+  function ensureCellPagesArray(tab) {
+    if (!tab) return;
+    const needed = (tab.cols || 0) * (tab.rows || 0);
+    tab.cellPages = normalizeCellPages(tab.cellPages, tab.cells, needed);
+  }
+
   function copyPagesFromMasterToCell(targetTab, targetIndex, masterIdx) {
     if (!targetTab || targetIndex < 0) return;
-    ensureCellPages(targetTab);
+    // Do not ensureCellPages() here — it mirrors stale empty page snapshots onto
+    // cells[] and can blank a Master insert before the clone lands.
+    ensureCellPagesArray(targetTab);
     if (targetIndex >= targetTab.cellPages.length) return;
     const master = state.tabs.find(isMasterTab);
     if (!master || !Number.isInteger(masterIdx) || masterIdx < 0 ||
@@ -412,8 +425,18 @@
       targetTab.cellPages[targetIndex] = makeEmptyCellPages(targetTab.cells[targetIndex] || '');
       return;
     }
-    ensureCellPages(master);
-    targetTab.cellPages[targetIndex] = cloneCellPagesEntry(getCellPages(master, masterIdx));
+    // Normalize Master page array without mirroring (avoids wiping Master.cells
+    // when cellPages desynced from the visible library text).
+    ensureCellPagesArray(master);
+    const live = master.cells[masterIdx] == null ? '' : String(master.cells[masterIdx]);
+    let entry = cloneCellPagesEntry(
+      master.cellPages[masterIdx] || makeEmptyCellPages(live)
+    );
+    // Master library paints master.cells — trust that for the active page slot.
+    if (live !== (entry.pages[entry.page] || '')) {
+      entry.pages[entry.page] = live;
+    }
+    targetTab.cellPages[targetIndex] = entry;
     syncCellTextFromPages(targetTab, targetIndex);
   }
 
@@ -6141,16 +6164,20 @@
       }
     }
 
+    const insertText = text == null ? '' : String(text);
     pushHistory();
-    tab.cells[index] = text;
     let masterIdx = Number.isInteger(masterCellIndex) && masterCellIndex >= 0
       ? masterCellIndex
-      : findMasterCellIndexByText(text);
+      : findMasterCellIndexByText(insertText);
     if (masterIdx === null) masterIdx = -1;
     setCellMasterLock(tab, index, masterIdx >= 0 ? masterIdx : null);
     // Replace/sync nests + parent pages from the Master cell (Ash).
     copyNestsFromMasterToCell(tab, index, masterIdx);
     copyPagesFromMasterToCell(tab, index, masterIdx);
+    // Clicked Master-library text is authoritative for the active page slot.
+    // (copyPages alone can leave the cell blank when Master cellPages desyncs
+    // from master.cells, especially after part-page switches / empty page 2.)
+    writeCellCurrentPage(tab, index, insertText);
     syncNestLinksAfterNestReplace(tab.id, index);
     focusedCell = { tabId: tab.id, index: index };
     revalidateLinksForCell(tab.id, index, { silent: true });
@@ -6163,12 +6190,23 @@
     }
     renderTabs();
     renderGrid();
+    // Flush AFTER renderGrid — flushLiveCellInputs would otherwise re-read the
+    // pre-insert empty textarea and wipe the Master text on page 2+.
+    flushTabPage(tab);
     renderCombinedPrompt();
     applyConfirmedCellHighlights();
     renderMasterLibrary();
     scheduleSave();
     const cell = el.cellGrid.querySelector('textarea.cell[data-idx="' + index + '"]');
     if (cell) cell.focus();
+    if (!(tab.cells[index] || '').trim() && !insertText.trim()) {
+      setStatus('Master insert skipped — that Master cell has no text', 'err');
+      return;
+    }
+    if (!(tab.cells[index] || '').trim()) {
+      setStatus('Master insert failed — cell stayed empty (page/cellPages)', 'err');
+      return;
+    }
     setStatus(
       usedFirstCellFallback
         ? 'Added Master text (+ nests) to ' + tab.title + ' (replaced the first cell; Combined checked; locked until double-click unlock)'
