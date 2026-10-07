@@ -537,6 +537,7 @@ body {
 }
 
 .part-search-bar {
+  --find-bar-ctrl-h: 24px; /* one fixed height for ALL Find-bar controls (Ash) */
   display: flex;
   flex-wrap: nowrap;
   align-items: center;
@@ -550,6 +551,33 @@ body {
      Do NOT give .part-actions flex-basis:100% — that forced a second row (Ash). */
 }
 
+/* Lock every Find-bar control to the same height (no mismatched button heights). */
+.part-search-bar .part-search-input,
+.part-search-bar .part-tab-page-name,
+.part-search-bar .part-find-actions > .btn,
+.part-search-bar .part-actions > .btn,
+.part-search-bar .row-filter-btn,
+.part-search-bar .row-filter-buttons,
+.part-search-bar .part-tab-page-chrome-inner {
+  box-sizing: border-box;
+  height: var(--find-bar-ctrl-h);
+  min-height: var(--find-bar-ctrl-h);
+  max-height: var(--find-bar-ctrl-h);
+}
+
+.part-search-bar .part-find-actions > .btn,
+.part-search-bar .part-actions > .btn,
+.part-search-bar .row-filter-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 5px;
+  font-size: 11px;
+  line-height: 1;
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
 /* Find / Find All / Replace — compact cluster on the Soft-dark Find bar */
 .part-find-actions {
   display: inline-flex;
@@ -557,14 +585,6 @@ body {
   flex-wrap: nowrap;
   align-items: center;
   gap: 1px;
-}
-.part-find-actions > .btn {
-  padding: 2px 5px;
-  font-size: 11px;
-  line-height: 1.1;
-  flex: 0 0 auto;
-  white-space: nowrap;
-  height: 24px;
 }
 
 /* Part-tab pages — Soft dark chrome (◀ n/n ▶ +) + editable page name */
@@ -584,12 +604,12 @@ body {
   flex-wrap: nowrap;
   align-items: center;
   gap: 2px;
-  padding: 1px 4px;
+  padding: 0 4px;
   border: 1px solid var(--border);
   border-radius: 6px;
   background: rgba(42, 48, 56, 0.92);
   color: var(--muted);
-  height: 26px;
+  height: var(--find-bar-ctrl-h, 24px);
   box-sizing: border-box;
 }
 .part-tab-page-btn {
@@ -597,7 +617,7 @@ body {
   margin: 0;
   padding: 0;
   width: 20px;
-  height: 22px;
+  height: 20px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -631,13 +651,13 @@ body {
   white-space: nowrap;
 }
 .part-tab-page-name {
-  flex: 0 1 auto;
-  width: 72px;
-  min-width: 48px;
-  max-width: 96px;
-  height: 22px;
+  flex: 0 0 auto; /* fixed width — no grow/shrink bounce */
+  width: 52px;
+  min-width: 52px;
+  max-width: 52px;
+  height: var(--find-bar-ctrl-h, 24px);
   margin: 0;
-  padding: 1px 5px;
+  padding: 0 5px;
   border: 1px solid var(--border);
   border-radius: 5px;
   background: var(--cell-bg);
@@ -645,7 +665,7 @@ body {
   font: inherit;
   font-size: 10px;
   font-weight: 600;
-  line-height: 1.2;
+  line-height: 1;
   outline: none;
 }
 .part-tab-page-name:focus {
@@ -661,14 +681,15 @@ body {
   flex: 0 1 84px;
   min-width: 56px;
   max-width: 110px;
-  height: 24px;
-  padding: 1px 5px;
+  height: var(--find-bar-ctrl-h, 24px);
+  padding: 0 5px;
   border: 1px solid var(--border);
   border-radius: calc(var(--radius) - 2px);
   background: var(--cell-bg);
   color: #f0f3f7; /* slightly brighter than --text for Find bar eye-care */
   font: inherit;
   font-size: 11px;
+  line-height: 1;
   outline: none;
 }
 
@@ -843,23 +864,26 @@ body.resizing-sections * {
 
 .row-filter-buttons {
   display: inline-flex;
+  align-items: stretch;
   gap: 0;
   margin-right: 0;
   border: 1px solid var(--border);
   border-radius: var(--radius);
   overflow: hidden;
+  height: var(--find-bar-ctrl-h, 24px);
+  box-sizing: border-box;
 }
 
-.row-filter-btn {
+.part-search-bar .row-filter-btn {
   border-radius: 0 !important;
   border: 0 !important;
   border-right: 1px solid var(--border) !important;
   margin: 0;
-  padding: 2px 5px;
-  font-size: 11px;
-  line-height: 1.1;
+  /* padding/font/height from equal-height rules; beat later .btn (Ash height mismatch) */
+  height: 100%;
+  min-height: 0;
+  max-height: none;
   white-space: nowrap;
-  height: 24px;
 }
 
 .row-filter-btn:last-child {
@@ -891,12 +915,8 @@ body.resizing-sections * {
   /* Must NOT use flex-basis 100% — that forced a second row under Find (pre-v0.120). */
 }
 .part-actions > .btn {
-  padding: 2px 5px;
-  font-size: 11px;
-  line-height: 1.1;
   flex: 0 0 auto;
   white-space: nowrap;
-  height: 24px;
 }
 
 .combined-actions {
