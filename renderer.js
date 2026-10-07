@@ -2632,11 +2632,7 @@
     if (!entry) return;
     const cur = entry.page || 0;
     const next = cur + delta;
-    if (next < 0) return;
-    if (next >= entry.pages.length) {
-      addCellPage(cellIndex);
-      return;
-    }
+    if (next < 0 || next >= entry.pages.length) return;
     setCellPage(cellIndex, next);
   }
 
@@ -2982,11 +2978,7 @@
     ensureTabPages(tab);
     const cur = tab.page || 0;
     const next = cur + delta;
-    if (next < 0) return;
-    if (next >= tab.pages.length) {
-      addTabPage();
-      return;
-    }
+    if (next < 0 || next >= tab.pages.length) return;
     setTabPage(next);
   }
 
@@ -3029,8 +3021,9 @@
     nextBtn.type = 'button';
     nextBtn.className = 'part-tab-page-btn';
     nextBtn.textContent = '▶';
-    nextBtn.title = 'Next part page (adds a page at the end)';
+    nextBtn.title = 'Next part page';
     nextBtn.setAttribute('aria-label', 'Next part page');
+    nextBtn.disabled = page >= pageCount - 1;
     nextBtn.addEventListener('click', function (ev) {
       ev.preventDefault();
       stepTabPage(1);
@@ -6669,8 +6662,9 @@
         nextBtn.type = 'button';
         nextBtn.className = 'cell-page-btn';
         nextBtn.textContent = '▶';
-        nextBtn.title = 'Next cell page (adds a page at the end)';
+        nextBtn.title = 'Next cell page';
         nextBtn.setAttribute('aria-label', 'Next cell page');
+        nextBtn.disabled = page >= pageCount - 1;
         nextBtn.addEventListener('click', function (ev) {
           ev.preventDefault();
           ev.stopPropagation();
