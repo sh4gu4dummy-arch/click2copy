@@ -7124,6 +7124,7 @@
   // click/focus copies Combined; Ctrl/Cmd+C copies cell or sticky multi-cell TSV. A
   // fresh drag selects a rectangle; only a later drag started inside that sticky
   // selection moves/swaps the block. Shift+Arrow extends the sticky multi-cell highlight.
+  // Delete/Backspace clears every cell in the sticky multi-cell range (current page).
   let lastAutoCopyKey = '';
   let lastAutoCopyAt = 0;
   let suppressCellAutoCopy = false;
@@ -7284,6 +7285,78 @@
     const b = getStickyCellRange();
     if (!b) return;
     applyCellRangeHighlight(b.rMin, b.cMin, b.rMax, b.cMax);
+  }
+
+  /**
+   * Delete/Backspace on a sticky multi-cell selection: clear current-page text in
+   * every cell in the rectangle (same scope as Cut). Other pages, nests, and shades
+   * stay. Locked Master cells block the whole clear (same as multi-cell paste).
+   * Selection highlight stays so the user can keep working the block.
+   */
+  function clearStickyMultiCellContents() {
+    const tab = activeTab();
+    const b = getStickyCellRange();
+    if (!tab || !b) return false;
+
+    const indices = [];
+    for (let r = b.rMin; r <= b.rMax; r++) {
+      for (let c = b.cMin; c <= b.cMax; c++) {
+        indices.push(r * tab.cols + c);
+      }
+    }
+
+    if (!isMasterTab(tab)) {
+      for (let i = 0; i < indices.length; i++) {
+        const idx = indices[i];
+        if (isCellMasterLocked(tab, idx) &&
+            !(isMasterCellEditSession() &&
+              masterSegmentEdit.tabId === tab.id &&
+              masterSegmentEdit.cellIndex === idx)) {
+          setStatus('Locked Master cell in selection — double-click to unlock first', 'err');
+          return false;
+        }
+      }
+    }
+
+    let anyContent = false;
+    for (let i = 0; i < indices.length; i++) {
+      if ((tab.cells[indices[i]] || '') !== '') {
+        anyContent = true;
+        break;
+      }
+    }
+    if (!anyContent) return true;
+
+    pushHistory();
+    ensureCellPages(tab);
+    for (let i = 0; i < indices.length; i++) {
+      const idx = indices[i];
+      writeCellCurrentPage(tab, idx, '');
+      if (!isMasterTab(tab)) clearCellMasterLock(tab, idx);
+      revalidateLinksForCell(tab.id, idx, { silent: true });
+    }
+    renderCombinedPrompt();
+    applyConfirmedCellHighlights();
+    applyAppendCheckedState();
+    if (el.cellGrid) {
+      for (let i = 0; i < indices.length; i++) {
+        const idx = indices[i];
+        const ta = el.cellGrid.querySelector('textarea.cell[data-idx="' + idx + '"]');
+        if (!ta) continue;
+        ta.value = '';
+        const confirmed = isCellConfirmed(tab.id, idx);
+        ta.classList.toggle('cell-confirmed', confirmed);
+        const wrap = ta.closest ? ta.closest('.cell-wrap') : null;
+        if (wrap) wrap.classList.toggle('cell-confirmed', confirmed);
+      }
+    }
+    restoreStickyCellRangeHighlight();
+    if (isMasterTab(tab)) renderMasterLibrary();
+    scheduleSave();
+    const rows = b.rMax - b.rMin + 1;
+    const cols = b.cMax - b.cMin + 1;
+    setStatus('Cleared ' + rows + '\u00d7' + cols + ' cells', 'ok');
+    return true;
   }
 
   function clearKeyboardCellRange() {
@@ -8061,6 +8134,18 @@
         requestMasterSegmentFinish();
         return;
       }
+    }
+
+    // Sticky multi-cell Delete/Backspace clears the whole rectangle. Must run
+    // before the locked-cell guard (focus may be on a locked cell in the range)
+    // and before the Enter/Tab/Arrow-only early return (that return was why
+    // Delete previously did nothing for a multi-cell selection).
+    const isClearKey = (e.key === 'Delete' || e.key === 'Backspace') &&
+      !e.ctrlKey && !e.metaKey && !e.altKey;
+    if (isClearKey && getStickyCellRange()) {
+      e.preventDefault();
+      clearStickyMultiCellContents();
+      return;
     }
 
     if (!isMasterTab(tab) && isCellMasterLocked(tab, idx) &&
@@ -9627,6 +9712,25 @@
       if (partSearchHits.length || partSearchFindAll) {
         clearPartSearch({ keepInputs: true, keepQuery: true });
         partSearchQuery = el.partFindInput ? el.partFindInput.value : '';
+      }
+    }
+    // Fallback: sticky multi-cell Delete when focus left the cell textarea
+    // (e.g. after chrome click) but the rectangle is still highlighted.
+    if ((e.key === 'Delete' || e.key === 'Backspace') &&
+        !e.ctrlKey && !e.metaKey && !e.altKey && getStickyCellRange()) {
+      const t = e.target;
+      if (t && t.tagName === 'TEXTAREA' && t.classList && t.classList.contains('cell')) {
+        // onCellKeydown already handles this path.
+      } else if (t && (
+          t.tagName === 'INPUT' ||
+          t.tagName === 'TEXTAREA' ||
+          t.isContentEditable ||
+          (t.closest && (t.closest('#combined-prompt') || t.closest('.combined-section') ||
+            t.closest('.master-segment-dialog') || t.closest('.part-search-bar'))))) {
+        // Leave typing surfaces alone.
+      } else {
+        e.preventDefault();
+        clearStickyMultiCellContents();
       }
     }
     if ((e.key === 'f' || e.key === 'F') && (e.ctrlKey || e.metaKey) && !e.altKey) {
