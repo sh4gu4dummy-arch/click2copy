@@ -540,20 +540,24 @@ body {
   display: flex;
   flex-wrap: nowrap;
   align-items: center;
-  gap: 4px;
+  gap: 3px;
   flex-shrink: 0;
   padding: 0;
   overflow-x: auto;
+  overflow-y: hidden;
   min-width: 0;
+  /* Single Soft-dark toolbar row: chrome + Find/Replace + filters/Fit/Delete.
+     Do NOT give .part-actions flex-basis:100% — that forced a second row (Ash). */
 }
 
 /* Find/Replace + filters/Fit/Delete stay on ONE Soft dark line with page chrome */
 .part-search-bar > .btn {
-  padding: 3px 7px;
-  font-size: 11px;
-  line-height: 1.15;
+  padding: 2px 5px;
+  font-size: 10px;
+  line-height: 1.1;
   flex: 0 0 auto;
   white-space: nowrap;
+  height: 24px;
 }
 
 /* Part-tab pages — Soft dark chrome (◀ n/n ▶ +) + editable page name */
@@ -572,27 +576,29 @@ body {
   flex-direction: row;
   flex-wrap: nowrap;
   align-items: center;
-  gap: 3px;
-  padding: 3px 6px;
+  gap: 2px;
+  padding: 1px 4px;
   border: 1px solid var(--border);
-  border-radius: 7px;
+  border-radius: 6px;
   background: rgba(42, 48, 56, 0.92);
   color: var(--muted);
+  height: 26px;
+  box-sizing: border-box;
 }
 .part-tab-page-btn {
   appearance: none;
   margin: 0;
   padding: 0;
-  width: 24px;
-  height: 26px;
+  width: 20px;
+  height: 22px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   border: 0;
-  border-radius: 5px;
+  border-radius: 4px;
   background: transparent;
   color: var(--muted);
-  font-size: 13px;
+  font-size: 12px;
   line-height: 1;
   cursor: pointer;
 }
@@ -606,9 +612,9 @@ body {
 }
 .part-tab-page-label {
   flex: 0 0 auto;
-  min-width: 2.4em;
-  padding: 0 4px;
-  font-size: 12px;
+  min-width: 2em;
+  padding: 0 2px;
+  font-size: 11px;
   font-weight: 700;
   letter-spacing: -0.02em;
   line-height: 1.1;
@@ -619,18 +625,18 @@ body {
 }
 .part-tab-page-name {
   flex: 0 1 auto;
-  width: 88px;
-  min-width: 56px;
-  max-width: 110px;
-  height: 24px;
+  width: 72px;
+  min-width: 48px;
+  max-width: 96px;
+  height: 22px;
   margin: 0;
-  padding: 2px 6px;
+  padding: 1px 5px;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 5px;
   background: var(--cell-bg);
   color: var(--text);
   font: inherit;
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 600;
   line-height: 1.2;
   outline: none;
@@ -645,17 +651,17 @@ body {
 }
 
 .part-search-input {
-  flex: 0 1 100px;
-  min-width: 72px;
-  max-width: 130px;
+  flex: 0 1 84px;
+  min-width: 56px;
+  max-width: 110px;
   height: 24px;
-  padding: 2px 6px;
+  padding: 1px 5px;
   border: 1px solid var(--border);
   border-radius: calc(var(--radius) - 2px);
   background: var(--cell-bg);
   color: var(--text);
   font: inherit;
-  font-size: 11px;
+  font-size: 10px;
   outline: none;
 }
 
@@ -665,10 +671,16 @@ body {
 
 .part-search-status {
   color: var(--muted);
-  font-size: 0.68rem;
-  min-width: 2.5em;
-  flex: 0 0 auto;
+  font-size: 0.62rem;
+  min-width: 0;
+  max-width: 3.5em;
+  flex: 0 1 auto;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.part-search-status:empty {
+  display: none;
 }
 
 .cell.search-hit,
@@ -831,10 +843,11 @@ body.resizing-sections * {
   border: 0 !important;
   border-right: 1px solid var(--border) !important;
   margin: 0;
-  padding: 3px 6px;
-  font-size: 11px;
-  line-height: 1.15;
+  padding: 2px 5px;
+  font-size: 10px;
+  line-height: 1.1;
   white-space: nowrap;
+  height: 24px;
 }
 
 .row-filter-btn:last-child {
@@ -853,18 +866,20 @@ body.resizing-sections * {
 
 .part-actions {
   display: flex;
-  gap: 4px;
+  gap: 3px;
   flex-wrap: nowrap;
   align-items: center;
-  margin-left: auto;
+  margin-left: 2px;
   flex: 0 0 auto;
+  /* Must NOT use flex-basis 100% — that forced a second row under Find (pre-v0.120). */
 }
 .part-actions > .btn {
-  padding: 3px 7px;
-  font-size: 11px;
-  line-height: 1.15;
+  padding: 2px 5px;
+  font-size: 10px;
+  line-height: 1.1;
   flex: 0 0 auto;
   white-space: nowrap;
+  height: 24px;
 }
 
 .combined-actions {

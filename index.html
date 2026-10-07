@@ -81,14 +81,14 @@
         <button type="button" class="btn btn-secondary" id="btn-find-all" title="Highlight all matches in this part">Find All</button>
         <button type="button" class="btn btn-secondary" id="btn-replace" title="Replace current match (Shift+click = replace all)">Replace</button>
         <span class="part-search-status" id="part-search-status" aria-live="polite"></span>
-        <div class="part-actions">
+        <div class="part-actions" role="group" aria-label="Part filters and actions">
           <div class="row-filter-buttons" role="group" aria-label="Row filters">
             <button type="button" class="btn btn-secondary row-filter-btn is-active" id="btn-filter-all" data-filter="all" title="Show all rows">All</button>
             <button type="button" class="btn btn-secondary row-filter-btn" id="btn-filter-nonempty" data-filter="nonempty" title="Hide empty rows">Non-empty</button>
             <button type="button" class="btn btn-secondary row-filter-btn" id="btn-filter-included" data-filter="included" title="Show only rows included in Combined">In Combined</button>
           </div>
           <button type="button" class="btn btn-secondary" id="btn-fit-rows" title="Size every row to fit its tallest cell content (wrap)">Fit row heights</button>
-          <button type="button" class="btn btn-danger" id="btn-delete-tab" title="Delete active tab">Delete</button>
+          <button type="button" class="btn btn-danger" id="btn-delete-tab" title="Delete active tab (all pages)">Delete</button>
         </div>
       </div>
       <div class="tools-panel" id="tools-panel" hidden>
