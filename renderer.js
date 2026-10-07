@@ -7337,7 +7337,7 @@
   }
 
   // Click2Copy cells: short click/focus leaves the caret (no auto-copy). Triple-click
-  // keeps the native line/all selection and also copies that text + status toast.
+  // selects + copies the entire cell (including paragraph breaks) + status toast.
   // Enter moves to the next cell without copying (Shift+Enter = newline). Combined
   // click/focus copies Combined; Ctrl/Cmd+C copies cell or sticky multi-cell TSV. A
   // fresh drag selects a rectangle; only a later drag started inside that sticky
@@ -7393,20 +7393,18 @@
   }
 
   /**
-   * Triple-click helper: copy the native textarea selection (line/all) — or the whole
-   * value if selection is empty — and show the same status toast as other copies.
+   * Triple-click helper: select + copy the ENTIRE cell value (including newlines /
+   * paragraph breaks). Native textarea triple-click only selects one paragraph, so we
+   * expand selection to the full value before copying. Same status toast as other copies.
    * Does not re-introduce single/double-click or Enter auto-copy.
    */
   function copyTripleClickSelection(ta) {
     if (suppressCellAutoCopy) return;
     if (!ta || ta.tagName !== 'TEXTAREA') return;
-    const full = ta.value == null ? '' : String(ta.value);
-    let value = full;
-    if (typeof ta.selectionStart === 'number' && typeof ta.selectionEnd === 'number' &&
-        ta.selectionStart !== ta.selectionEnd) {
-      value = full.slice(ta.selectionStart, ta.selectionEnd);
-    }
+    const value = ta.value == null ? '' : String(ta.value);
     if (!value) return;
+    // Override native paragraph-bounded triple-click selection with the whole cell.
+    selectWholeCellContents(ta);
     const tab = activeTab();
     const idx = parseInt(ta.dataset.idx, 10);
     const nest = ta.dataset.nest != null ? String(ta.dataset.nest) : '';
@@ -8117,12 +8115,12 @@
   }
 
   function onCellClickSelect(e) {
-    // Leave caret at click position (or word select on double-click). Triple-click keeps
-    // the native line/all selection and also copies + status toast (same as Combined).
+    // Leave caret at click position (or word select on double-click). Triple-click
+    // selects + copies the entire cell (incl. paragraph breaks) + status toast.
     rememberFocusedCell(e);
     if (e.detail !== 3) return;
     const ta = e.currentTarget;
-    // Defer so the browser finishes applying the triple-click selection first.
+    // Defer past the browser's native paragraph selection, then expand to whole cell.
     window.setTimeout(function () {
       copyTripleClickSelection(ta);
     }, 0);
