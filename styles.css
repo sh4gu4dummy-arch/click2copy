@@ -2770,3 +2770,54 @@ body.resizing-rows * {
   background: transparent;
   box-shadow: inset 0 0 0 1px var(--border);
 }
+
+/* v0.143 — Col A ▾ picker: readable chevron, 18px hit area, eye-care contrast */
+.col1-dropdown-btn {
+  width: 18px;
+  height: 18px;
+  border-color: #4a5461;
+  background: #303843;
+  color: #d5dbe3;
+}
+.col1-dropdown-btn svg {
+  display: block;
+  width: 12px;
+  height: 12px;
+  pointer-events: none;
+}
+.col1-dropdown-btn:hover,
+.col1-dropdown-btn:focus-visible {
+  border-color: var(--accent);
+  background: rgba(var(--accent-rgb), 0.16);
+  color: #ffffff;
+  outline: none;
+}
+.col1-dropdown-btn:focus-visible {
+  box-shadow: 0 0 0 2px rgba(var(--accent-rgb), 0.35);
+}
+.cell.cell-col1-validated {
+  padding-right: 100px;
+}
+
+/* v0.143 — Col A has no nests: keep the gutter slot, hide the + */
+.cell-nest-add.is-col1-off {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+/* v0.143 — Col A click-to-filter */
+textarea.cell.col1-click-filter[readonly]:not(.master-cell-locked) {
+  cursor: pointer;
+  caret-color: transparent;
+}
+textarea.cell.col1-click-filter.col1-editing {
+  cursor: text;
+  caret-color: auto;
+}
+/* Filtered value: soft indigo edge + faint tint (distinct from shades, dupe orange, invalid amber, teal checks) */
+.cell-wrap.col1-filter-match {
+  box-shadow: inset 3px 0 0 rgba(129, 140, 248, 0.85), inset 0 0 0 1px rgba(129, 140, 248, 0.35);
+}
+.cell-wrap.col1-filter-match textarea.cell {
+  background-color: rgba(129, 140, 248, 0.09);
+}

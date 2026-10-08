@@ -122,6 +122,8 @@
    */
   const gridFilterPrefsByTabId = Object.create(null);
   let col1FilterMenuOpen = false;
+  /** v0.143: part Col A cell currently in type-edit mode ({ tabId, index }) — else click filters. */
+  let col1EditCell = null;
   /** UI-only Master insert filter menu open (ephemeral; not per-tab) */
   let masterLibFilterMenuOpen = false;
   /**
@@ -1900,7 +1902,7 @@
     let prev = null;
     for (let i = 0; i < ordered.length; i++) {
       const link = ordered[i];
-      if (isCol1FilterOnlyLink(link) || !link.text) continue;
+      if (isCol1FilterOnlyLink(link) || isHiddenCol1NestLink(link) || !link.text) continue;
       if (prev) text += separatorBetweenSourceLinks(prev, link);
       link.start = text.length;
       text += link.text;
@@ -2128,7 +2130,7 @@
     return state.confirmedLinks.some(function (link) {
       if (link.scope !== scope) return false;
       // Col1 filter-only links are not Combined segments.
-      if (isCol1FilterOnlyLink(link)) return false;
+      if (isCol1FilterOnlyLink(link) || isHiddenCol1NestLink(link)) return false;
       // When Global Combined is shared, only count segments from the active
       // part (or Master itself) — not other tabs’ contributions.
       if (activePartId && link.tabId !== activePartId && link.tabId !== master.id) {
@@ -4213,6 +4215,16 @@
    * Confirmed parent link on part-tab Column A — checkbox / cascade UX only.
    * Nest links on Col1 are normal Combined content (not filter-only).
    */
+  /**
+   * v0.143: Col A (part tabs) shows no nests. Old nest data is kept untouched
+   * but hidden, so a nest check there must never feed Combined.
+   */
+  function isHiddenCol1NestLink(link) {
+    if (!link || linkNestIndex(link) === null) return false;
+    const tab = state.tabs.find(function (t) { return t.id === link.tabId; });
+    return isPartTabCol1Cell(tab, link.cellIndex);
+  }
+
   function isCol1FilterOnlyLink(link) {
     if (!link || linkNestIndex(link) !== null) return false;
     const tab = state.tabs.find(function (t) { return t.id === link.tabId; });
@@ -5441,7 +5453,7 @@
     const text = getPromptText(scope);
     const notes = getNotes(scope).replace(/\s+$/, '');
     const links = linksForScope(scope).filter(function (link) {
-      return !isCol1FilterOnlyLink(link) && link.end > link.start;
+      return !isCol1FilterOnlyLink(link) && !isHiddenCol1NestLink(link) && link.end > link.start;
     });
 
     el.combined.replaceChildren();
@@ -7452,11 +7464,158 @@
       const controls = rowControls[i];
       const row = parseInt(controls.dataset.row, 10);
       if (Number.isNaN(row)) continue;
-      const hidden = !rowMatchesFilter(tab, row);
+      // v0.143: the Col A cell being typed in stays visible until the edit ends
+      // (hiding a focused cell blurs it mid-typing).
+      const pinned = !!(col1EditCell && col1EditCell.tabId === tab.id &&
+        Math.floor(col1EditCell.index / tab.cols) === row);
+      const hidden = !pinned && !rowMatchesFilter(tab, row);
       controls.classList.toggle('is-row-filtered', hidden);
       const wraps = el.cellGrid.querySelectorAll('.cell-wrap[data-row="' + row + '"]');
       for (let w = 0; w < wraps.length; w++) wraps[w].classList.toggle('is-row-filtered', hidden);
     }
+    // v0.143: tint Col A cells whose value the Col A filter is showing.
+    const filter = getGridFilterPrefs(tab.id).valueFilter;
+    const col1Wraps = el.cellGrid.querySelectorAll('.cell-wrap[data-col="0"]');
+    for (let i = 0; i < col1Wraps.length; i++) {
+      const w = col1Wraps[i];
+      const row = parseInt(w.dataset.row, 10);
+      let on = false;
+      if (filter !== null && !isMasterTab(tab) && !Number.isNaN(row)) {
+        on = filter.has((tab.cells[row * tab.cols] || '').trim());
+      }
+      w.classList.toggle('col1-filter-match', on);
+    }
+  }
+
+  /**
+   * v0.143 click-to-filter on part-tab Col A. Same state as the Values
+   * checkboxes (prefs.valueFilter): click a value → only that value; click it
+   * again (filter is exactly that value) → all rows. Empty Col A cell → edit.
+   * Keeps the clicked cell at the same screen spot (no jump).
+   */
+  function setCol1FilterKeepingAnchor(tab, nextFilter, anchorEl) {
+    const prefs = getGridFilterPrefs(tab.id);
+    const scroller = el.cellGrid ? el.cellGrid.parentElement : null;
+    const before = anchorEl ? anchorEl.getBoundingClientRect().top : null;
+    prefs.valueFilter = nextFilter;
+    applyRowFilterVisibility();
+    syncCol1FilterControls();
+    if (col1FilterMenuOpen && popoverMenus.grid) buildCol1FilterMenu(tab, popoverMenus.grid);
+    if (scroller && anchorEl && before !== null && anchorEl.isConnected) {
+      const after = anchorEl.getBoundingClientRect().top;
+      if (Math.abs(after - before) > 0.5) scroller.scrollTop += (after - before);
+    }
+    captureLiveGridScroll();
+  }
+
+  function toggleCol1ClickFilter(tab, idx, anchorEl) {
+    if (!tab || !isPartTabCol1Cell(tab, idx)) return;
+    const value = (tab.cells[idx] || '').trim();
+    const prefs = getGridFilterPrefs(tab.id);
+    const f = prefs.valueFilter;
+    const isExactly = f !== null && f.size === 1 && f.has(value);
+    if (isExactly) {
+      setCol1FilterKeepingAnchor(tab, null, anchorEl);
+      setStatus('Column A filter off — showing all rows', 'ok');
+      return;
+    }
+    setCol1FilterKeepingAnchor(tab, new Set([value]), anchorEl);
+    let n = 0;
+    for (let r = 0; r < tab.rows; r++) if (rowMatchesFilter(tab, r)) n++;
+    setStatus('Showing Column A “' + value + '” (' + n + ' row' + (n === 1 ? '' : 's') +
+      ') — click it again or Esc to clear', 'ok');
+  }
+
+  function clearCol1ValueFilter(anchorEl) {
+    const tab = activeTab();
+    if (!tab || isMasterTab(tab)) return false;
+    const prefs = getGridFilterPrefs(tab.id);
+    if (prefs.valueFilter === null) return false;
+    setCol1FilterKeepingAnchor(tab, null, anchorEl || null);
+    setStatus('Column A filter off — showing all rows', 'ok');
+    return true;
+  }
+
+  function beginCol1TypeEdit(ta, caretEnd) {
+    const tab = activeTab();
+    if (!tab || !ta) return false;
+    const idx = parseInt(ta.dataset.idx, 10);
+    if (!isPartTabCol1Cell(tab, idx) || isCellMasterLocked(tab, idx)) return false;
+    col1EditCell = { tabId: tab.id, index: idx };
+    ta.readOnly = false;
+    ta.classList.add('col1-editing');
+    if (caretEnd) {
+      try { const len = ta.value.length; ta.setSelectionRange(len, len); } catch (err) { /* no-op */ }
+    }
+    return true;
+  }
+
+  function endCol1TypeEdit(ta) {
+    col1EditCell = null;
+    if (!ta) return;
+    ta.classList.remove('col1-editing');
+    const tab = activeTab();
+    const idx = parseInt(ta.dataset.idx, 10);
+    if (tab && isPartTabCol1Cell(tab, idx) && !isCellMasterLocked(tab, idx)) ta.readOnly = true;
+    // Re-apply after the commit/revert of this blur has run.
+    window.setTimeout(applyRowFilterVisibility, 0);
+  }
+
+  function onCol1CellClickFilter(e) {
+    const ta = e.currentTarget;
+    if (e.detail > 1 || suppressCellAutoCopy) return;
+    if (ta.classList.contains('col1-editing') || ta.classList.contains('master-cell-editing')) return;
+    if (cellRangeDrag && cellRangeDrag.mode) return;
+    const tab = activeTab();
+    const idx = parseInt(ta.dataset.idx, 10);
+    if (!tab || !isPartTabCol1Cell(tab, idx)) return;
+    if (!(tab.cells[idx] || '').trim()) {
+      // Nothing to filter by: an empty Col A cell just starts typing.
+      if (beginCol1TypeEdit(ta, true)) setStatus('Type a Column A value (or pick from ▾)', 'ok');
+      return;
+    }
+    toggleCol1ClickFilter(tab, idx, ta);
+  }
+
+  function onCol1CellKeyEdit(e) {
+    if (e.defaultPrevented) return;
+    const ta = e.currentTarget;
+    if (ta.classList.contains('col1-editing')) {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        endCol1TypeEdit(ta);
+        setStatus('Column A edit done', 'ok');
+      }
+      return;
+    }
+    if (!ta.readOnly) return;
+    const mod = e.ctrlKey || e.metaKey;
+    const printable = !mod && !e.altKey && (e.key.length === 1 || e.key === 'Process' || e.isComposing);
+    const pasteOrCut = mod && !e.altKey && (e.key === 'v' || e.key === 'V' || e.key === 'x' || e.key === 'X');
+    const clearKey = !mod && !e.altKey && (e.key === 'Backspace' || e.key === 'Delete');
+    if (e.key === 'F2') {
+      e.preventDefault();
+      beginCol1TypeEdit(ta, true);
+      return;
+    }
+    // Typing / paste / delete edit in place as before. Chromium decides
+    // editability before keydown handlers run, so insert the first key here
+    // (execCommand keeps native undo + fires the normal input event).
+    if (pasteOrCut) { beginCol1TypeEdit(ta, true); return; }
+    if ((printable && e.key.length === 1) || clearKey) {
+      if (!beginCol1TypeEdit(ta, true)) return;
+      e.preventDefault();
+      if (clearKey) document.execCommand(e.key === 'Delete' ? 'forwardDelete' : 'delete', false);
+      else document.execCommand('insertText', false, e.key);
+      return;
+    }
+    if (printable) beginCol1TypeEdit(ta, true);
+  }
+
+  function onCol1CellBlurEdit(e) {
+    const ta = e.currentTarget;
+    if (!ta.classList.contains('col1-editing')) return;
+    endCol1TypeEdit(ta);
   }
 
   function syncRowFilterButtons() {
@@ -8106,6 +8265,14 @@
         nestAddBtn.title = 'Add nested cell under this cell';
         nestAddBtn.setAttribute('aria-label', 'Add nest under ' + cellAddress(r, c));
         nestAddBtn.innerHTML = '<span class="cell-nest-add-mark" aria-hidden="true">+</span>';
+        if (isPartTabCol1Cell(tab, idx)) {
+          // v0.143: Col A is filter-only — no nests. Keep the (invisible) slot so
+          // the gutter/row layout is identical to other columns.
+          nestAddBtn.classList.add('is-col1-off');
+          nestAddBtn.disabled = true;
+          nestAddBtn.tabIndex = -1;
+          nestAddBtn.setAttribute('aria-hidden', 'true');
+        }
         nestAddBtn.addEventListener('pointerdown', function (ev) {
           ev.preventDefault();
           ev.stopPropagation();
@@ -8138,7 +8305,8 @@
           const ddBtn = document.createElement('button');
           ddBtn.type = 'button';
           ddBtn.className = 'col1-dropdown-btn';
-          ddBtn.textContent = '▾';
+          ddBtn.innerHTML = '<svg viewBox="0 0 12 12" width="12" height="12" aria-hidden="true" focusable="false">' +
+            '<path d="M2.5 4.5 L6 8 L9.5 4.5" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>';
           ddBtn.title = 'Pick a Master Column A value (Alt+↓)';
           ddBtn.setAttribute('aria-label', 'Pick Column A value for ' + cellAddress(r, c));
           ddBtn.addEventListener('pointerdown', function (ev) {
@@ -8253,6 +8421,15 @@
           ta.readOnly = true;
           ta.title = 'Locked Master cell — double-click to unlock and edit';
         }
+        if (isPartTabCol1Cell(tab, idx)) {
+          ta.classList.add('col1-click-filter');
+          if (!cellEditing && !cellLocked) {
+            const editingHere = col1EditCell && col1EditCell.tabId === tab.id && col1EditCell.index === idx;
+            ta.readOnly = !editingHere;
+            if (editingHere) ta.classList.add('col1-editing');
+            if (!ta.title) ta.title = 'Click: filter rows to this value (again = clear) · type or F2 to edit · ▾ / Alt+↓ to pick';
+          }
+        }
         ta.addEventListener('input', onCellInput);
         ta.addEventListener('keydown', onCellKeydown);
         ta.addEventListener('pointerdown', onCellPointerDownSelect);
@@ -8264,6 +8441,9 @@
         ta.addEventListener('change', onCellCommitMasterMatch);
         if (isPartTabCol1Cell(tab, idx)) {
           ta.addEventListener('focus', onCol1CellFocusRemember);
+          ta.addEventListener('click', onCol1CellClickFilter);
+          ta.addEventListener('keydown', onCol1CellKeyEdit);
+          ta.addEventListener('blur', onCol1CellBlurEdit);
           ta.addEventListener('keydown', function (ev) {
             if (ev.altKey && ev.key === 'ArrowDown') {
               ev.preventDefault();
@@ -8277,7 +8457,8 @@
         ta.addEventListener('beforeinput', onCellBeforeInputMasterLock);
         stack.appendChild(ta);
 
-        const nests = getCellNests(tab, idx);
+        // v0.143: Col A nests are not shown (data kept as-is, see isHiddenCol1NestLink).
+        const nests = isPartTabCol1Cell(tab, idx) ? [] : getCellNests(tab, idx);
         if (nests.length) {
           const nestsEl = document.createElement('div');
           nestsEl.className = 'cell-nests';
@@ -8522,6 +8703,7 @@
     }
 
     syncRowFilterButtons();
+    applyRowFilterVisibility(); // v0.143: Col A filter tint + edit-row pin
     applyAppendCheckedState();
     applyMasterDupeMarks();
     if (col1FilterMenuOpen) {
@@ -11603,6 +11785,18 @@
     }
   });
   document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape' && !e.defaultPrevented) {
+      // v0.143: Esc clears the Col A filter when no editor/menu/selection is open.
+      const t = e.target;
+      const tag = t && t.tagName;
+      const inCell = tag === 'TEXTAREA' && t.classList && t.classList.contains('cell');
+      const inEditor = (tag === 'INPUT' || tag === 'SELECT' || (tag === 'TEXTAREA' && !inCell) ||
+        (t && t.isContentEditable) || (inCell && t.classList.contains('col1-editing')));
+      const busy = col1FilterMenuOpen || masterLibFilterMenuOpen || !!col1MenuEl ||
+        !!stickyCellRange || isMasterCellEditSession() || masterSegmentDialogOpen ||
+        partSearchHits.length || partSearchFindAll;
+      if (!inEditor && !busy) clearCol1ValueFilter(inCell ? t : null);
+    }
     if (e.key === 'Escape') {
       closeTabIconPicker();
       closeCol1FilterMenu();
