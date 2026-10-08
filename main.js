@@ -5,6 +5,9 @@ const fs = require('fs');
 const STORE_FILE = 'click2copy-data.json';
 const SESSION_FILE = 'click2copy-session.json';
 const WINDOW_STATE_FILE = 'window-state.json';
+const BACKUP_SETTINGS_FILE = 'backup-settings.json';
+const BACKUP_FORMAT = 'click2copy-restart-backup';
+const BACKUP_FORMAT_VERSION = 1;
 const DEFAULT_WINDOW_WIDTH = 1440;
 const DEFAULT_WINDOW_HEIGHT = 720;
 const MIN_WINDOW_WIDTH = 960;
@@ -1048,6 +1051,193 @@ function saveWindowState(win) {
   }
 }
 
+/* ── Restart backup (Update ready → Restart) ───────────────────────────────
+ * Settings live in userData/backup-settings.json (outside the app folder, so
+ * they survive git pulls / restarts), same pattern as window-state.json.
+ * mode: 'ask'      → native Save dialog on every Restart
+ *       'remember' → save silently into lastDir (falls back to the dialog when
+ *                    lastDir is unset, missing or unwritable)
+ */
+function backupSettingsPath() {
+  return path.join(app.getPath('userData'), BACKUP_SETTINGS_FILE);
+}
+
+function loadBackupSettings() {
+  let raw = null;
+  try {
+    raw = JSON.parse(fs.readFileSync(backupSettingsPath(), 'utf8'));
+  } catch (err) {
+    raw = null;
+  }
+  const mode = raw && raw.mode === 'remember' ? 'remember' : 'ask';
+  const lastDir = raw && typeof raw.lastDir === 'string' && raw.lastDir ? raw.lastDir : null;
+  return { mode, lastDir };
+}
+
+/** Write text via temp file + fsync + rename so a crash never leaves a half file. */
+function writeFileAtomic(file, text) {
+  const dir = path.dirname(file);
+  fs.mkdirSync(dir, { recursive: true });
+  const tmp = path.join(dir, `.${path.basename(file)}.${process.pid}.${Date.now()}.tmp`);
+  let fd = null;
+  try {
+    fd = fs.openSync(tmp, 'w');
+    fs.writeSync(fd, text, null, 'utf8');
+    fs.fsyncSync(fd);
+    fs.closeSync(fd);
+    fd = null;
+    fs.renameSync(tmp, file);
+  } catch (err) {
+    if (fd !== null) {
+      try { fs.closeSync(fd); } catch (closeErr) { /* ignore */ }
+    }
+    try { fs.unlinkSync(tmp); } catch (unlinkErr) { /* ignore */ }
+    throw err;
+  }
+}
+
+function saveBackupSettings(next) {
+  const current = loadBackupSettings();
+  const merged = {
+    mode: next && next.mode === 'remember' ? 'remember' : (next && next.mode === 'ask' ? 'ask' : current.mode),
+    lastDir: next && Object.prototype.hasOwnProperty.call(next, 'lastDir')
+      ? (typeof next.lastDir === 'string' && next.lastDir ? next.lastDir : null)
+      : current.lastDir
+  };
+  writeFileAtomic(backupSettingsPath(), JSON.stringify(merged, null, 2));
+  return merged;
+}
+
+function pad2(n) {
+  return String(n).padStart(2, '0');
+}
+
+/** click2copy-backup-v0.134-2026-10-08_1258.json (local time). */
+function backupFileName(version, date) {
+  const d = date || new Date();
+  const stamp = `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}_${pad2(d.getHours())}${pad2(d.getMinutes())}`;
+  const v = String(version || 'unknown').replace(/[^0-9A-Za-z._-]/g, '');
+  return `click2copy-backup-v${v}-${stamp}.json`;
+}
+
+/** Never overwrite an older backup in silent mode: name.json → name-2.json … */
+function uniqueBackupPath(dir, fileName) {
+  const ext = path.extname(fileName);
+  const base = fileName.slice(0, fileName.length - ext.length);
+  let candidate = path.join(dir, fileName);
+  for (let n = 2; fs.existsSync(candidate); n++) {
+    candidate = path.join(dir, `${base}-${n}${ext}`);
+  }
+  return candidate;
+}
+
+function isWritableDir(dir) {
+  try {
+    if (!dir || !fs.statSync(dir).isDirectory()) return false;
+    fs.accessSync(dir, fs.constants.W_OK);
+    return true;
+  } catch (err) {
+    return false;
+  }
+}
+
+function readJsonFileOrNull(file) {
+  try {
+    return JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch (err) {
+    return null;
+  }
+}
+
+/**
+ * Full local snapshot: session (all open prompts: tabs, part pages, nests,
+ * Master, locks, rowHeights, icons, Combined/links), the untitled store, window
+ * state, renderer prefs (localStorage), versions and timestamp.
+ */
+function buildRestartBackupPayload(extra) {
+  const now = new Date();
+  const runningVersion = startupPackageVersion || app.getVersion();
+  const diskVersion = readPackageVersionFromDisk();
+  return {
+    format: BACKUP_FORMAT,
+    formatVersion: BACKUP_FORMAT_VERSION,
+    createdAt: now.toISOString(),
+    createdAtLocal: now.toString(),
+    appVersion: runningVersion,
+    sourceVersion: runningVersion,
+    targetVersion: diskVersion,
+    reason: 'update-restart',
+    session: readJsonFileOrNull(sessionPath()),
+    store: readJsonFileOrNull(storePath()),
+    windowState: readJsonFileOrNull(windowStatePath()),
+    rendererPrefs: extra && extra.rendererPrefs && typeof extra.rendererPrefs === 'object'
+      ? extra.rendererPrefs
+      : null,
+    autosaveLocations: getAutosaveLocations()
+  };
+}
+
+async function chooseBackupSavePath(parent, fileName, settings) {
+  const defaultDir = settings.lastDir && isWritableDir(settings.lastDir)
+    ? settings.lastDir
+    : app.getPath('documents');
+  const result = await dialog.showSaveDialog(parent, {
+    title: 'Save Click2Copy backup before restart',
+    defaultPath: path.join(defaultDir, fileName),
+    buttonLabel: 'Save backup',
+    filters: [{ name: 'JSON backup', extensions: ['json'] }],
+    properties: ['createDirectory', 'showOverwriteConfirmation']
+  });
+  if (result.canceled || !result.filePath) return null;
+  return path.extname(result.filePath) ? result.filePath : `${result.filePath}.json`;
+}
+
+/**
+ * Save the restart backup. Returns { ok, path } or { ok:false, canceled } /
+ * { ok:false, error }. Never relaunches by itself.
+ */
+async function writeRestartBackup(parent, extra) {
+  flushWindowState();
+  const payload = buildRestartBackupPayload(extra);
+  const text = JSON.stringify(payload, null, 2);
+  const settings = loadBackupSettings();
+  const fileName = backupFileName(payload.sourceVersion);
+  let target = null;
+  let silentError = null;
+  if (settings.mode === 'remember' && settings.lastDir && isWritableDir(settings.lastDir)) {
+    target = uniqueBackupPath(settings.lastDir, fileName);
+    try {
+      writeFileAtomic(target, text);
+      return { ok: true, path: target, silent: true };
+    } catch (err) {
+      silentError = err.message || String(err);
+      target = null;
+    }
+  }
+  // Ask mode, first use, or remembered folder missing/unwritable → dialog.
+  target = await chooseBackupSavePath(parent, fileName, settings);
+  if (!target) return { ok: false, canceled: true, silentError };
+  try {
+    writeFileAtomic(target, text);
+  } catch (err) {
+    return { ok: false, error: err.message || 'Failed to write backup.', path: target };
+  }
+  try {
+    saveBackupSettings({ lastDir: path.dirname(target) });
+  } catch (err) {
+    console.error('Failed to remember backup folder:', err);
+  }
+  return { ok: true, path: target, silent: false, fellBack: !!silentError || (settings.mode === 'remember') };
+}
+
+function relaunchNow() {
+  // app.exit skips before-quit/will-quit and can skip a reliable BrowserWindow 'close'
+  // flush — cancel debounce and write window-state.json synchronously before restart.
+  flushWindowState();
+  app.relaunch();
+  app.exit(0);
+}
+
 let flushTrackedWindowState = null;
 
 function flushWindowState() {
@@ -1205,11 +1395,50 @@ ipcMain.handle('store:load', () => loadData());
 ipcMain.handle('store:save', (_event, data) => saveData(data));
 ipcMain.handle('app:version', () => app.getVersion());
 ipcMain.handle('app:relaunch', () => {
-  // app.exit skips before-quit/will-quit and can skip a reliable BrowserWindow 'close'
-  // flush — cancel debounce and write window-state.json synchronously before restart.
-  flushWindowState();
-  app.relaunch();
-  app.exit(0);
+  relaunchNow();
+});
+// Update-ready Restart: write the JSON backup first; relaunch only on success.
+ipcMain.handle('app:backup-and-relaunch', async (event, extra) => {
+  let result;
+  try {
+    result = await writeRestartBackup(BrowserWindow.fromWebContents(event.sender), extra);
+  } catch (err) {
+    result = { ok: false, error: err.message || 'Backup failed.' };
+  }
+  if (result.ok) {
+    // Let the reply reach the renderer, then restart.
+    setTimeout(relaunchNow, 150);
+  }
+  return result;
+});
+ipcMain.handle('backup:get-settings', () => loadBackupSettings());
+ipcMain.handle('backup:set-settings', (_event, next) => {
+  try {
+    return { ok: true, settings: saveBackupSettings(next || {}) };
+  } catch (err) {
+    return { ok: false, error: err.message || 'Failed to save backup settings.', settings: loadBackupSettings() };
+  }
+});
+ipcMain.handle('backup:choose-folder', async (event) => {
+  const settings = loadBackupSettings();
+  const result = await dialog.showOpenDialog(BrowserWindow.fromWebContents(event.sender), {
+    title: 'Choose folder for restart backups',
+    defaultPath: settings.lastDir && isWritableDir(settings.lastDir) ? settings.lastDir : app.getPath('documents'),
+    buttonLabel: 'Use this folder',
+    properties: ['openDirectory', 'createDirectory']
+  });
+  if (result.canceled || !result.filePaths || !result.filePaths[0]) {
+    return { ok: false, canceled: true, settings };
+  }
+  const dir = result.filePaths[0];
+  if (!isWritableDir(dir)) {
+    return { ok: false, error: 'That folder is not writable.', settings };
+  }
+  try {
+    return { ok: true, settings: saveBackupSettings({ lastDir: dir }) };
+  } catch (err) {
+    return { ok: false, error: err.message || 'Failed to save backup settings.', settings };
+  }
 });
 ipcMain.handle('app:update-info', () => ({
   runningVersion: startupPackageVersion || app.getVersion(),

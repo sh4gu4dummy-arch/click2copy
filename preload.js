@@ -30,5 +30,9 @@ contextBridge.exposeInMainWorld('click2copy', {
     return () => ipcRenderer.removeListener('app:update-ready', listener);
   },
   relaunchApp: () => ipcRenderer.invoke('app:relaunch'),
+  backupAndRelaunch: (extra) => ipcRenderer.invoke('app:backup-and-relaunch', extra),
+  getBackupSettings: () => ipcRenderer.invoke('backup:get-settings'),
+  setBackupSettings: (next) => ipcRenderer.invoke('backup:set-settings', next),
+  chooseBackupFolder: () => ipcRenderer.invoke('backup:choose-folder'),
   getUpdateInfo: () => ipcRenderer.invoke('app:update-info')
 });

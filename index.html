@@ -100,6 +100,15 @@
           <button type="button" class="btn btn-secondary" id="btn-add-col" title="Add a column of cells to the active part">+ Column</button>
           <button type="button" class="btn btn-secondary" id="btn-rename-tab" title="Rename the active part tab">Rename</button>
         </div>
+        <div class="tools-backup" role="group" aria-label="Restart backup">
+          <span class="tools-backup-label">Restart backup</span>
+          <label class="tools-backup-toggle" title="On: Update-ready Restart saves the JSON backup silently into the folder below. Off: ask where to save each time.">
+            <input type="checkbox" id="backup-remember" />
+            <span>Remember last location</span>
+          </label>
+          <button type="button" class="btn btn-secondary" id="btn-backup-folder" title="Choose the folder for restart backups">Change folder…</button>
+          <span class="tools-backup-path" id="backup-folder-path">No folder yet — Restart will ask</span>
+        </div>
         <div class="tools-separators" aria-label="Append separators">
           <label class="separator-control">
             <span>Part separator</span>

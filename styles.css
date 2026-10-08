@@ -2657,3 +2657,44 @@ body.resizing-rows * {
 .part-page-chip.drop-after {
   box-shadow: 2px 0 0 0 var(--accent);
 }
+
+/* Tools → Restart backup (location like browser downloads) */
+.tools-backup {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+}
+.tools-backup-label {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+.tools-backup-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text);
+  cursor: pointer;
+  user-select: none;
+}
+.tools-backup-toggle input {
+  accent-color: var(--accent);
+  margin: 0;
+}
+.tools-backup-path {
+  flex: 1 1 200px;
+  min-width: 0;
+  color: var(--muted);
+  font-family: "Cascadia Code", "Consolas", "SF Mono", ui-monospace, monospace;
+  font-size: 11.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

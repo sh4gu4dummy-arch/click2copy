@@ -191,6 +191,9 @@
     updateBanner: document.getElementById('update-banner'),
     updateBannerText: document.getElementById('update-banner-text'),
     btnUpdateRestart: document.getElementById('btn-update-restart'),
+    backupRemember: document.getElementById('backup-remember'),
+    btnBackupFolder: document.getElementById('btn-backup-folder'),
+    backupFolderPath: document.getElementById('backup-folder-path'),
     btnUpdateDismiss: document.getElementById('btn-update-dismiss')
   };
 
@@ -11568,17 +11571,145 @@
       showUpdateBanner(payload);
     });
   }
-  if (el.btnUpdateRestart) {
-    el.btnUpdateRestart.addEventListener('click', function () {
-      if (!window.click2copy || typeof window.click2copy.relaunchApp !== 'function') {
-        setStatus('Restart unavailable', 'err');
+  /* ── Restart backup: Tools setting + Update-ready Restart flow ───────── */
+
+  function renderBackupSettings(settings) {
+    if (!settings) return;
+    if (el.backupRemember) el.backupRemember.checked = settings.mode === 'remember';
+    if (el.backupFolderPath) {
+      el.backupFolderPath.textContent = settings.lastDir || 'No folder yet — Restart will ask';
+      el.backupFolderPath.title = settings.lastDir || '';
+    }
+  }
+
+  async function refreshBackupSettings() {
+    if (!window.click2copy || typeof window.click2copy.getBackupSettings !== 'function') return null;
+    try {
+      const settings = await window.click2copy.getBackupSettings();
+      renderBackupSettings(settings);
+      return settings;
+    } catch (err) {
+      console.error(err);
+      return null;
+    }
+  }
+
+  async function chooseBackupFolder() {
+    if (!window.click2copy || typeof window.click2copy.chooseBackupFolder !== 'function') return null;
+    const res = await window.click2copy.chooseBackupFolder();
+    if (res && res.settings) renderBackupSettings(res.settings);
+    if (res && res.ok) setStatus('Restart backups → ' + res.settings.lastDir, 'ok');
+    else if (res && res.error) setStatus(res.error, 'err');
+    return res;
+  }
+
+  if (el.btnBackupFolder) {
+    el.btnBackupFolder.addEventListener('click', function () {
+      chooseBackupFolder().catch(function (err) {
+        console.error(err);
+        setStatus('Could not choose backup folder', 'err');
+      });
+    });
+  }
+  if (el.backupRemember) {
+    el.backupRemember.addEventListener('change', async function () {
+      if (!window.click2copy || typeof window.click2copy.setBackupSettings !== 'function') return;
+      const wantRemember = el.backupRemember.checked;
+      try {
+        let settings = await window.click2copy.getBackupSettings();
+        if (wantRemember && !settings.lastDir) {
+          // Remember needs a folder — pick one now (cancel keeps Ask mode).
+          const picked = await chooseBackupFolder();
+          if (!picked || !picked.ok) {
+            el.backupRemember.checked = false;
+            return;
+          }
+        }
+        const res = await window.click2copy.setBackupSettings({ mode: wantRemember ? 'remember' : 'ask' });
+        if (res && res.settings) renderBackupSettings(res.settings);
+        setStatus(wantRemember
+          ? 'Restart backups save silently to the remembered folder'
+          : 'Restart will ask where to save each backup', res && res.ok ? 'ok' : 'err');
+      } catch (err) {
+        console.error(err);
+        setStatus('Could not save backup setting', 'err');
+        refreshBackupSettings();
+      }
+    });
+  }
+  refreshBackupSettings();
+
+  function withTimeout(promise, ms, fallback) {
+    return Promise.race([
+      promise,
+      new Promise(function (resolve) { setTimeout(function () { resolve(fallback); }, ms); })
+    ]);
+  }
+
+  function collectRendererPrefs() {
+    const out = {};
+    try {
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (key && key.indexOf('click2copy') === 0) out[key] = localStorage.getItem(key);
+      }
+    } catch (err) { /* ignore */ }
+    return out;
+  }
+
+  let restartInFlight = false;
+
+  async function restartWithBackup() {
+    if (restartInFlight) return;
+    if (!window.click2copy || typeof window.click2copy.relaunchApp !== 'function') {
+      setStatus('Restart unavailable', 'err');
+      return;
+    }
+    restartInFlight = true;
+    if (el.btnUpdateRestart) el.btnUpdateRestart.disabled = true;
+    try {
+      if (typeof window.click2copy.backupAndRelaunch !== 'function') {
+        setStatus('Restarting…', 'ok');
+        await window.click2copy.relaunchApp();
         return;
       }
-      setStatus('Restarting…', 'ok');
-      window.click2copy.relaunchApp().catch(function (err) {
-        console.error(err);
-        setStatus('Restart failed', 'err');
-      });
+      // Flush the pending debounced save so the snapshot is current (bounded wait).
+      setStatus('Saving session before backup…');
+      clearTimeout(state.saveTimer);
+      const persisted = await withTimeout(persist(), 8000, false);
+      const extra = { rendererPrefs: collectRendererPrefs() };
+      // Save failed / timed out → carry the live session in the backup itself.
+      if (!persisted) extra.liveSession = JSON.parse(JSON.stringify(sessionSnapshot()));
+      setStatus('Saving backup…');
+      const res = await window.click2copy.backupAndRelaunch(extra);
+      if (res && res.ok) {
+        setStatus('Backup saved: ' + res.path + ' — restarting…', 'ok');
+        return;
+      }
+      const why = res && res.canceled
+        ? 'Backup was cancelled — no backup file was written.'
+        : 'Backup failed: ' + ((res && res.error) || 'unknown error');
+      const go = window.confirm(why + '\n\nRestart WITHOUT a backup?\n' +
+        '(Your prompts are still saved in the app session.)\n\n' +
+        'OK = restart without backup    Cancel = stay open');
+      if (go) {
+        setStatus('Restarting without backup…', 'ok');
+        await window.click2copy.relaunchApp();
+      } else {
+        setStatus('Restart cancelled — nothing changed', 'err');
+      }
+    } catch (err) {
+      console.error(err);
+      setStatus('Restart failed', 'err');
+    } finally {
+      restartInFlight = false;
+      if (el.btnUpdateRestart) el.btnUpdateRestart.disabled = false;
+    }
+  }
+
+  if (el.btnUpdateRestart) {
+    el.btnUpdateRestart.addEventListener('click', function () {
+      restartWithBackup();
     });
   }
   if (el.btnUpdateDismiss) {
