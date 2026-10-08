@@ -4137,7 +4137,22 @@
    * normal edit (existing sync pushes blank to locked linked part cells).
    * Nest textareas are not covered by this menu (nests keep default browser menu).
    */
-  function clearCellsFromMenu(tab, indices) {
+  function cellHasClearableNestContent(tab, idx) {
+    ensureNestedCells(tab);
+    const nests = tab.nestedCells[idx] || [];
+    for (let n = 0; n < nests.length; n++) {
+      if (nestHasContent(nests[n])) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Empty cells (current page text) + unlink Master on part tabs. opts.clearNests
+   * also drops nest lists (row Clear). Keeps shades + rowHeights. One undo step.
+   */
+  function clearCellsFromMenu(tab, indices, opts) {
+    opts = opts || {};
+    const clearNests = !!opts.clearNests;
     if (!tab || !indices || !indices.length) return;
     const uniq = [];
     const seen = {};
@@ -4153,6 +4168,7 @@
       const idx = uniq[i];
       if ((tab.cells[idx] || '') !== '') { anyWork = true; break; }
       if (!isMasterTab(tab) && getCellLock(tab, idx)) { anyWork = true; break; }
+      if (clearNests && cellHasClearableNestContent(tab, idx)) { anyWork = true; break; }
     }
     if (!anyWork) {
       setStatus('Nothing to clear', 'ok');
@@ -4169,9 +4185,14 @@
 
     pushHistory();
     ensureCellPages(tab);
+    if (clearNests) ensureNestedCells(tab);
     for (let i = 0; i < uniq.length; i++) {
       const idx = uniq[i];
       writeCellCurrentPage(tab, idx, '');
+      if (clearNests) {
+        tab.nestedCells[idx] = [];
+        syncNestLinksAfterNestReplace(tab.id, idx);
+      }
       if (!isMasterTab(tab)) {
         clearCellMasterLock(tab, idx);
         // Drop Master origin on Combined links for this cell (parent + nests).
@@ -4186,10 +4207,10 @@
       liveSyncConfirmedLinksForCell(tab.id, idx, undefined, { dropEmpty: true, silent: true });
       if (isMasterTab(tab)) syncLockedPartPagesFromMaster(idx);
     }
-    renderCombinedPrompt();
-    applyConfirmedCellHighlights();
-    applyAppendCheckedState();
-    if (el.cellGrid) {
+    if (clearNests) {
+      // Nest DOM must rebuild; keep sticky highlight / scroll via normal render.
+      renderGrid();
+    } else if (el.cellGrid) {
       for (let i = 0; i < uniq.length; i++) {
         const idx = uniq[i];
         const ta = el.cellGrid.querySelector('textarea.cell[data-idx="' + idx + '"]');
@@ -4205,11 +4226,57 @@
         }
       }
     }
+    renderCombinedPrompt();
+    applyConfirmedCellHighlights();
+    applyAppendCheckedState();
     if (getStickyCellRange()) restoreStickyCellRangeHighlight();
     if (isMasterTab(tab)) renderMasterLibrary();
     scheduleSave();
-    const what = uniq.length === 1 ? 'Cell cleared' : (uniq.length + ' cells cleared');
-    setStatus(isMasterTab(tab) ? what : (what + ' (unlinked from Master)'), 'ok');
+    if (opts.statusText) {
+      setStatus(opts.statusText, 'ok');
+    } else {
+      const what = uniq.length === 1 ? 'Cell cleared' : (uniq.length + ' cells cleared');
+      setStatus(isMasterTab(tab) ? what : (what + ' (unlinked from Master)'), 'ok');
+    }
+  }
+
+  /** Right-click row number → Clear this row (current part page only). */
+  function openRowClearMenu(rowIndex, x, y) {
+    const tab = activeTab();
+    if (!tab || rowIndex < 0 || rowIndex >= tab.rows) return;
+    closeAddPageChoiceMenu();
+    closeCellShadePicker();
+    const indices = [];
+    for (let c = 0; c < tab.cols; c++) {
+      indices.push(rowIndex * tab.cols + c);
+    }
+    const anyClearable = indices.some(function (idx) {
+      if ((tab.cells[idx] || '') !== '') return true;
+      if (!isMasterTab(tab) && getCellLock(tab, idx)) return true;
+      return cellHasClearableNestContent(tab, idx);
+    });
+    const heading = 'Row ' + (rowIndex + 1);
+    openCtxMenu({
+      heading: heading,
+      className: 'row-clear-menu',
+      x: x,
+      y: y,
+      items: [{
+        label: 'Clear this row',
+        title: isMasterTab(tab)
+          ? 'Empty every cell in this Master row (linked part cells may sync)'
+          : 'Empty every cell in this row and unlink from Master (Master library unchanged)',
+        disabled: !anyClearable,
+        onClick: function () {
+          clearCellsFromMenu(tab, indices, {
+            clearNests: true,
+            statusText: isMasterTab(tab)
+              ? ('Row ' + (rowIndex + 1) + ' cleared')
+              : ('Row ' + (rowIndex + 1) + ' cleared (unlinked from Master)')
+          });
+        }
+      }]
+    });
   }
 
   function openCellShadeMenu(cellIndex, x, y) {
@@ -8878,9 +8945,18 @@
       const rowNum = document.createElement('span');
       rowNum.className = 'row-header-label';
       rowNum.textContent = String(r + 1);
-      rowNum.title = 'Row ' + (r + 1);
+      rowNum.title = 'Row ' + (r + 1) + ' — right-click to clear';
       rowNum.setAttribute('aria-hidden', 'true');
       rowControls.appendChild(rowNum);
+
+      // Right-click the row number / move controls (not the bottom resize handle).
+      rowControls.addEventListener('contextmenu', function (ev) {
+        const t = ev.target;
+        if (t && t.closest && t.closest('.row-resize-handle')) return;
+        ev.preventDefault();
+        ev.stopPropagation();
+        openRowClearMenu(r, ev.clientX, ev.clientY);
+      });
 
       const moveControls = document.createElement('span');
       moveControls.className = 'row-move-controls';
