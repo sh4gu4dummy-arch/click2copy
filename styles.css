@@ -1099,7 +1099,6 @@ body.resizing-sections * {
   margin: 0;
   padding: 4px 6px;
   border-radius: 4px;
-  cursor: pointer;
   font-size: 0.8rem;
   color: var(--text);
   text-transform: none;
@@ -1119,15 +1118,41 @@ body.resizing-sections * {
 }
 
 .column-col1-filter-option-text {
+  flex: 1 1 auto;
   min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  cursor: pointer;
+}
+
+.column-col1-filter-option-text:hover,
+.column-col1-filter-option-text:focus-visible {
+  color: var(--accent);
+  text-decoration: underline;
+  outline: none;
 }
 
 .column-col1-filter-option-text.is-blank {
   color: var(--muted);
   font-style: italic;
+}
+
+/* Values-name jump flash (grid Col A + Master-insert library cell) */
+.cell-wrap.col1-jump-flash {
+  box-shadow: inset 0 0 0 2px rgba(129, 140, 248, 0.95), inset 3px 0 0 rgba(129, 140, 248, 0.9);
+  transition: box-shadow 0.15s ease;
+}
+.master-library-cell.master-lib-jump-flash {
+  outline: 2px solid rgba(129, 140, 248, 0.95);
+  outline-offset: 1px;
 }
 
 .column-col1-filter-empty {

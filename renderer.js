@@ -6434,14 +6434,16 @@
     } else {
       for (let i = 0; i < values.length; i++) {
         const value = values[i];
-        const label = document.createElement('label');
-        label.className = 'column-col1-filter-option';
+        const row = document.createElement('div');
+        row.className = 'column-col1-filter-option';
 
         const cb = document.createElement('input');
         cb.type = 'checkbox';
         cb.checked = isMasterLibValueSelected(value);
         if (value) cb.dataset.value = value;
         else cb.dataset.blank = '1';
+        cb.title = 'Toggle filter for this Master Column A value';
+        cb.setAttribute('aria-label', 'Filter Master Column A “' + (value || '(blank)') + '”');
         cb.addEventListener('click', function (e) {
           e.stopPropagation();
         });
@@ -6464,14 +6466,21 @@
           );
         });
 
-        const textEl = document.createElement('span');
-        textEl.className = 'column-col1-filter-option-text';
-        textEl.textContent = value ? value : '(blank)';
-        if (!value) textEl.classList.add('is-blank');
+        const nameBtn = document.createElement('button');
+        nameBtn.type = 'button';
+        nameBtn.className = 'column-col1-filter-option-text';
+        nameBtn.textContent = value ? value : '(blank)';
+        if (!value) nameBtn.classList.add('is-blank');
+        nameBtn.title = 'Click to jump · checkbox to filter';
+        nameBtn.addEventListener('click', function (e) {
+          e.preventDefault();
+          e.stopPropagation();
+          jumpToMasterLibCol1Value(master, value);
+        });
 
-        label.appendChild(cb);
-        label.appendChild(textEl);
-        list.appendChild(label);
+        row.appendChild(cb);
+        row.appendChild(nameBtn);
+        list.appendChild(row);
       }
     }
 
@@ -8151,6 +8160,131 @@
     syncCol1FilterControls();
   }
 
+
+  /** Brief flash on a cell-wrap after Values-name jump. */
+  let col1JumpFlashTimer = 0;
+  function flashCol1Jump(wrap) {
+    if (!wrap) return;
+    wrap.classList.remove('col1-jump-flash');
+    void wrap.offsetWidth;
+    wrap.classList.add('col1-jump-flash');
+    if (col1JumpFlashTimer) clearTimeout(col1JumpFlashTimer);
+    col1JumpFlashTimer = window.setTimeout(function () {
+      wrap.classList.remove('col1-jump-flash');
+      col1JumpFlashTimer = 0;
+    }, 900);
+  }
+
+  /**
+   * Values dropdown: click the name (not the checkbox) → ensure the value is
+   * visible in the filter, scroll its first Col A cell near the top of the
+   * grid, flash it, close the menu. Checkbox still only toggles the filter.
+   */
+  function jumpToCol1ValueInGrid(tab, value) {
+    if (!tab || !el.cellGrid) return;
+    const want = value == null ? '' : String(value);
+    const prefs = getGridFilterPrefs(tab.id);
+    if (prefs.valueFilter !== null && !prefs.valueFilter.has(want)) {
+      const next = new Set(prefs.valueFilter);
+      next.add(want);
+      const all = uniqueCol1Values(tab);
+      let allOn = next.size === all.length;
+      if (allOn) {
+        for (let i = 0; i < all.length; i++) {
+          if (!next.has(all[i])) { allOn = false; break; }
+        }
+      }
+      prefs.valueFilter = allOn ? null : next;
+      applyRowFilterVisibility();
+      syncCol1FilterControls();
+    }
+    closeCol1FilterMenu();
+
+    let row = -1;
+    for (let r = 0; r < tab.rows; r++) {
+      if ((tab.cells[r * tab.cols] || '').trim() === want) {
+        row = r;
+        break;
+      }
+    }
+    if (row < 0) {
+      setStatus('No Column A cell for “' + (want || '(blank)') + '”', 'err');
+      return;
+    }
+    const idx = row * tab.cols;
+    const ta = el.cellGrid.querySelector('textarea.cell[data-idx="' + idx + '"]');
+    const wrap = ta && ta.closest ? ta.closest('.cell-wrap') : null;
+    const scroller = el.cellGrid.parentElement;
+    if (wrap && scroller) {
+      // Sticky header row sits above cells — leave a little room under it.
+      const header = el.cellGrid.querySelector('.column-header');
+      const headerH = header ? header.getBoundingClientRect().height : 28;
+      const sRect = scroller.getBoundingClientRect();
+      const wRect = wrap.getBoundingClientRect();
+      scroller.scrollTop += (wRect.top - sRect.top) - headerH - 4;
+    }
+    flashCol1Jump(wrap);
+    if (ta && typeof ta.focus === 'function') {
+      try { ta.focus({ preventScroll: true }); } catch (err) { ta.focus(); }
+    }
+    setStatus('Jumped to Column A “' + (want || '(blank)') + '”', 'ok');
+  }
+
+  /**
+   * Master-insert Values: jump inside the results pane to the first library
+   * cell whose Master row Column A equals `value` (scroll near top + flash).
+   */
+  function jumpToMasterLibCol1Value(master, value) {
+    if (!master) return;
+    const want = value == null ? '' : String(value);
+    const prefs = getMasterLibPrefs(masterLibPrefsPartId());
+    if (prefs.valueFilter !== null && !prefs.valueFilter.has(want)) {
+      prefs.valueFilter.add(want);
+      const all = uniqueMasterLibCol1Values(master);
+      let allOn = prefs.valueFilter.size === all.length;
+      if (allOn) {
+        for (let i = 0; i < all.length; i++) {
+          if (!prefs.valueFilter.has(all[i])) { allOn = false; break; }
+        }
+      }
+      if (allOn) prefs.valueFilter = null;
+      const current = activeTab();
+      refreshMasterLibraryResults(master, current);
+      syncMasterLibFilterControls();
+    }
+    masterLibFilterMenuOpen = false;
+    syncMasterLibFilterControls();
+
+    let row = -1;
+    for (let r = 0; r < master.rows; r++) {
+      if ((master.cells[r * master.cols] || '').trim() === want) {
+        row = r;
+        break;
+      }
+    }
+    if (row < 0) {
+      setStatus('No Master Column A “' + (want || '(blank)') + '”', 'err');
+      return;
+    }
+    const results = masterLibraryResultsEl();
+    if (!results) return;
+    const cell = results.querySelector(
+      '.master-library-cell[data-row="' + row + '"][data-col="0"]'
+    );
+    if (!cell) {
+      setStatus('Master “' + (want || '(blank)') + '” is hidden by the current filter', 'err');
+      return;
+    }
+    const sRect = results.getBoundingClientRect();
+    const cRect = cell.getBoundingClientRect();
+    results.scrollTop += (cRect.top - sRect.top) - 4;
+    cell.classList.remove('master-lib-jump-flash');
+    void cell.offsetWidth;
+    cell.classList.add('master-lib-jump-flash');
+    window.setTimeout(function () { cell.classList.remove('master-lib-jump-flash'); }, 900);
+    setStatus('Jumped to Master Column A “' + (want || '(blank)') + '”', 'ok');
+  }
+
   function buildCol1FilterMenu(tab, menu) {
     menu.innerHTML = '';
     const values = uniqueCol1Values(tab);
@@ -8203,14 +8337,17 @@
     } else {
       for (let i = 0; i < values.length; i++) {
         const value = values[i];
-        const label = document.createElement('label');
-        label.className = 'column-col1-filter-option';
+        // div (not label): checkbox toggles filter; name click jumps to the cell.
+        const row = document.createElement('div');
+        row.className = 'column-col1-filter-option';
 
         const cb = document.createElement('input');
         cb.type = 'checkbox';
         cb.checked = isCol1ValueSelected(value);
         if (value) cb.dataset.value = value;
         else cb.dataset.blank = '1';
+        cb.title = 'Toggle filter for this Column A value';
+        cb.setAttribute('aria-label', 'Filter Column A “' + (value || '(blank)') + '”');
         cb.addEventListener('click', function (e) {
           e.stopPropagation();
         });
@@ -8232,14 +8369,21 @@
           );
         });
 
-        const text = document.createElement('span');
-        text.className = 'column-col1-filter-option-text';
-        text.textContent = value ? value : '(blank)';
-        if (!value) text.classList.add('is-blank');
+        const nameBtn = document.createElement('button');
+        nameBtn.type = 'button';
+        nameBtn.className = 'column-col1-filter-option-text';
+        nameBtn.textContent = value ? value : '(blank)';
+        if (!value) nameBtn.classList.add('is-blank');
+        nameBtn.title = 'Click to jump · checkbox to filter';
+        nameBtn.addEventListener('click', function (e) {
+          e.preventDefault();
+          e.stopPropagation();
+          jumpToCol1ValueInGrid(tab, value);
+        });
 
-        label.appendChild(cb);
-        label.appendChild(text);
-        list.appendChild(label);
+        row.appendChild(cb);
+        row.appendChild(nameBtn);
+        list.appendChild(row);
       }
     }
 
