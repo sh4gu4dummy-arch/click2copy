@@ -10555,6 +10555,12 @@
   function addRow() {
     const tab = toolsTargetTab();
     if (!tab) return;
+    appendRowToTab(tab);
+    setStatus('Row added to ' + tab.title + ' (' + tab.cols + '×' + tab.rows + ')');
+  }
+
+  /** Tools '+ Row' core: one undo step, appends an empty row, re-renders. Returns new row index. */
+  function appendRowToTab(tab) {
     pushHistory();
     ensureNestedCells(tab);
     ensureCellLocks(tab);
@@ -10573,7 +10579,7 @@
     renderGrid();
     renderMasterLibrary();
     scheduleSave();
-    setStatus('Row added to ' + tab.title + ' (' + tab.cols + '×' + tab.rows + ')');
+    return tab.rows - 1;
   }
 
   /**
@@ -10638,9 +10644,30 @@
         if (usable(r)) { target = r; wrapped = true; break; }
       }
     }
+    let added = false;
+    let filterNote = '';
     if (target < 0) {
-      setStatus('No empty row in ' + tab.title + ' — use + Row in Tools (or Enter on the last cell)', 'err');
-      return;
+      // No visible empty row: add one via the Tools '+ Row' path (single undo step).
+      target = appendRowToTab(tab);
+      added = true;
+      // Make sure the new row is visible: Filled/Combined hide empty rows, and a
+      // Values filter that excludes blank Column A hides it too.
+      const prefs = getGridFilterPrefs(tab.id);
+      const notes = [];
+      if (prefs.rowFilter !== 'all' && !rowMatchesFilter(tab, target)) {
+        prefs.rowFilter = 'all';
+        syncRowFilterButtons();
+        notes.push('row filter set to All');
+      }
+      if (prefs.valueFilter && !prefs.valueFilter.has('')) {
+        prefs.valueFilter.add('');
+        if (typeof syncCol1FilterControls === 'function') syncCol1FilterControls();
+        notes.push('blank Column A added to Values filter');
+      }
+      if (notes.length) {
+        filterNote = ' (' + notes.join(', ') + ' so it shows)';
+        renderGrid();
+      }
     }
     const rowEl = el.cellGrid.querySelector('.row-controls[data-row="' + target + '"]');
     const header = el.cellGrid.querySelector('.grid-corner');
@@ -10672,7 +10699,9 @@
         try { ta.setSelectionRange(0, 0); } catch (err) { /* ignore */ }
       }
     }
-    setStatus('Row ' + (target + 1) + ' is empty' + (wrapped ? ' (wrapped to top)' : ''), 'ok');
+    setStatus(added
+      ? ('Added row ' + (target + 1) + filterNote)
+      : ('Row ' + (target + 1) + ' is empty' + (wrapped ? ' (wrapped to top)' : '')), 'ok');
   }
 
   function rowIsEmpty(tab, rowIndex) {
