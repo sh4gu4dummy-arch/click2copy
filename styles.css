@@ -2956,3 +2956,11 @@ textarea.cell.col1-click-filter.col1-editing {
 .cell-wrap.col1-filter-match textarea.cell {
   background-color: rgba(129, 140, 248, 0.09);
 }
+
+/* v0.156: a teal block and the system blue selection never show together. */
+body.selecting-cell-range textarea.cell::selection,
+.cell-wrap.cell-range-selected textarea.cell::selection,
+textarea.cell.cell-range-selected::selection {
+  background: transparent;
+  color: inherit;
+}

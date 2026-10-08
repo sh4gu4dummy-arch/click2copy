@@ -10090,6 +10090,9 @@
   const CELL_CLICK_SLOP_PX = 4;
   /** Last press on a cell: { idx, shift, moved } — lets click handlers skip drags / Shift+click. */
   let lastCellGesture = null;
+  /** Drag-start textarea of the last block drag: its leftover native selection is
+   *  collapsed (not treated as a new text selection) until the next key/press. */
+  let blockDragSelGuard = null;
 
   function writeTextToClipboard(text) {
     if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
@@ -10415,16 +10418,25 @@
     if (cellRangeDrag && cellRangeDrag.active && cellRangeDrag.mode) e.preventDefault();
   }
 
-  function collapseCellTextSelection() {
-    try {
-      const sel = window.getSelection();
-      if (sel && sel.removeAllRanges) sel.removeAllRanges();
-    } catch (err) { /* no-op */ }
-    const active = document.activeElement;
-    if (active && active.tagName === 'TEXTAREA' && active.classList.contains('cell')) {
+  function collapseCellTextSelection(extraTa) {
+    const act = document.activeElement;
+    if (!act || act.tagName !== 'TEXTAREA') {
+      // Document (non-textarea) selection only. removeAllRanges while a cell
+      // textarea is focused leaves Chromium's cached textarea selection stale,
+      // so the blue comes back on the next key/selection event.
       try {
-        const pos = typeof active.selectionEnd === 'number' ? active.selectionEnd : 0;
-        active.setSelectionRange(pos, pos);
+        const sel = window.getSelection();
+        if (sel && sel.removeAllRanges) sel.removeAllRanges();
+      } catch (err) { /* no-op */ }
+    }
+    const targets = [act, extraTa];
+    for (let i = 0; i < targets.length; i++) {
+      const ta = targets[i];
+      if (!ta || ta.tagName !== 'TEXTAREA' || !ta.classList.contains('cell')) continue;
+      if (ta.selectionStart === ta.selectionEnd) continue;
+      try {
+        const pos = typeof ta.selectionStart === 'number' ? ta.selectionStart : 0;
+        ta.setSelectionRange(pos, pos);
       } catch (err2) { /* no-op */ }
     }
   }
@@ -10517,6 +10529,17 @@
       return;
     }
     if (cellRangeDrag.mode !== 'multi') return;
+    // Chromium keeps extending the start textarea's native selection on every
+    // mousemove while the button is held, so collapsing once at block start
+    // let the blue selection come back under the teal block. Collapse each move.
+    if (e.cancelable) e.preventDefault();
+    const dragTa = cellRangeDrag.captureEl;
+    collapseCellTextSelection(dragTa);
+    // The compat mousemove that follows re-extends it again — collapse once more
+    // before the next paint so the blue never shows under the teal block.
+    window.requestAnimationFrame(function () {
+      if (cellRangeDrag && cellRangeDrag.mode === 'multi') collapseCellTextSelection(dragTa);
+    });
 
     if (row === cellRangeDrag.endRow && col === cellRangeDrag.endCol) {
       return;
@@ -10550,6 +10573,7 @@
       }
       const b = normalizeRangeBounds(drag.startRow, drag.startCol, drag.endRow, drag.endCol);
       if (isMultiCellBounds(b)) {
+        if (e.cancelable) e.preventDefault();
         suppressCellAutoCopy = true;
         const tab = activeTab();
         // Sticky multi-cell selection only — copy via Ctrl/Cmd+C (no auto-copy on release).
@@ -10559,10 +10583,14 @@
           keyboardRangeAnchor = { tabId: tab.id, row: drag.startRow, col: drag.startCol };
           keyboardRangeFocus = { row: drag.endRow, col: drag.endCol };
         }
-        collapseCellTextSelection();
+        const startTa = drag.captureEl;
+        blockDragSelGuard = startTa;
+        collapseCellTextSelection(startTa);
+        window.setTimeout(function () { collapseCellTextSelection(startTa); }, 0);
         window.setTimeout(function () {
           suppressCellAutoCopy = false;
           cellRangeDrag = null;
+          collapseCellTextSelection(startTa);
           restoreStickyCellRangeHighlight();
         }, 120);
         return;
@@ -11505,8 +11533,21 @@
   function onCellPaste(e) {
     const tab = activeTab();
     if (!tab) return;
-    const startIdx = parseInt(e.currentTarget.dataset.idx, 10);
+    let startIdx = parseInt(e.currentTarget.dataset.idx, 10);
     if (Number.isNaN(startIdx) || startIdx < 0 || startIdx >= tab.cells.length) return;
+    // A lit block owns the paste: it lands at the block's top-left, not at the
+    // focused cell (which is the drag START — the bottom cell for a bottom-up drag,
+    // so the upper cell used to stay blank).
+    const pasteBlock = getStickyCellRange();
+    let intoBlock = false;
+    if (pasteBlock) {
+      const fr = Math.floor(startIdx / tab.cols);
+      const fc = startIdx % tab.cols;
+      if (fr >= pasteBlock.rMin && fr <= pasteBlock.rMax && fc >= pasteBlock.cMin && fc <= pasteBlock.cMax) {
+        startIdx = pasteBlock.rMin * tab.cols + pasteBlock.cMin;
+        intoBlock = true;
+      }
+    }
 
     if (!isMasterTab(tab) && isCellMasterLocked(tab, startIdx) &&
         !(isMasterCellEditSession() &&
@@ -11517,8 +11558,13 @@
       return;
     }
 
-    const matrix = parseClipboardMatrix(e.clipboardData);
-    if (!matrix || !isMultiCellMatrix(matrix)) {
+    let matrix = parseClipboardMatrix(e.clipboardData);
+    if (!matrix && intoBlock && e.clipboardData) {
+      // Single value into a lit block → goes to the block's top-left cell.
+      const plain = e.clipboardData.getData('text/plain');
+      if (plain) matrix = [[plain.replace(/\r?\n$/, '')]];
+    }
+    if (!matrix || (!isMultiCellMatrix(matrix) && !intoBlock)) {
       // Single-cell / plain text: let the textarea handle a normal paste.
       return;
     }
@@ -13297,16 +13343,25 @@
     // selectionchange often clears before blur; keep last remembered offsets.
     rememberCombinedCaretFromDom();
   });
+  document.addEventListener('keydown', function () { blockDragSelGuard = null; }, true);
+  document.addEventListener('pointerdown', function () { blockDragSelGuard = null; }, true);
   document.addEventListener('selectionchange', function () {
-    // Invariant: a lit cell block and a text selection in the grid never show
-    // together — a new text selection (Ctrl+A, nest drag…) drops the block.
+    // Invariant: a lit cell block and a text selection never show together.
+    // A new user text selection (Ctrl+A, nest drag…) drops the block. But Chromium
+    // also re-extends the drag-start textarea's selection after a block drag's
+    // mouseup; dropping the block for THAT made Ctrl+C copy one cell and let the
+    // system blue come back. That leftover is collapsed instead (block kept).
     if (stickyCellRange && el.cellGrid) {
       const a = document.activeElement;
       if (a && (a.tagName === 'TEXTAREA' || a.tagName === 'INPUT') && el.cellGrid.contains(a) &&
           typeof a.selectionStart === 'number' && a.selectionStart !== a.selectionEnd &&
-          !(cellRangeDrag && cellRangeDrag.mode)) {
-        clearStickyCellRange();
-        clearKeyboardCellRange();
+          !(cellRangeDrag && cellRangeDrag.mode === 'multi')) {
+        if (a === blockDragSelGuard) {
+          collapseCellTextSelection(a);
+        } else {
+          clearStickyCellRange();
+          clearKeyboardCellRange();
+        }
       }
     }
     if (document.activeElement !== el.combined) return;
