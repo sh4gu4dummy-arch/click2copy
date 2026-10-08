@@ -6808,7 +6808,13 @@
     const tab = activeTab();
     if (!tab || !Array.isArray(tab.rowHeights)) return;
     if (row < 0 || row >= tab.rows) return;
+    // Grow-only while typing: keep a dragged / Fit height; Fit shrinks.
+    const kept = Number(tab.rowHeights[row]);
     refitRowHeightAt(row);
+    if (Number.isFinite(kept) && kept > tab.rowHeights[row]) {
+      tab.rowHeights[row] = kept;
+      applyHeightToGridRow(row, kept);
+    }
   }
 
   /**
@@ -7295,6 +7301,17 @@
       moveControls.appendChild(moveDown);
 
       rowControls.appendChild(moveControls);
+
+      const rowResize = document.createElement('div');
+      rowResize.className = 'row-resize-handle';
+      rowResize.setAttribute('role', 'separator');
+      rowResize.setAttribute('aria-orientation', 'horizontal');
+      rowResize.setAttribute('aria-label', 'Resize row ' + (r + 1));
+      rowResize.title = 'Drag to resize row ' + (r + 1);
+      rowResize.addEventListener('pointerdown', function (e) {
+        beginRowResize(e, r, rowResize);
+      });
+      rowControls.appendChild(rowResize);
       el.cellGrid.appendChild(rowControls);
 
       for (let c = 0; c < tab.cols; c++) {
@@ -7760,6 +7777,63 @@
     tab.columnWidths = widths;
     applyGridColumns(tab);
     scheduleSave();
+  }
+
+  /** Drag the row-number bottom edge → tab.rowHeights[row] (same store as Fit). */
+  function beginRowResize(e, row, handle) {
+    const tab = activeTab();
+    if (!tab || !el.cellGrid || e.button !== 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const controls = el.cellGrid.querySelector('.row-controls[data-row="' + row + '"]');
+    if (!controls) return;
+    const startY = e.clientY;
+    const startH = Math.max(MIN_ROW_HEIGHT, Math.round(controls.getBoundingClientRect().height));
+    let started = false;
+    document.body.classList.add('resizing-rows');
+    handle.classList.add('is-active');
+
+    function onMove(moveEvent) {
+      const delta = moveEvent.clientY - startY;
+      if (!started) {
+        if (Math.abs(delta) < 2) return;
+        started = true;
+        pushHistory();
+        // First manual size: pin every row at its current rendered height so
+        // only the dragged row changes (no layout jump elsewhere).
+        if (!normalizeRowHeights(tab.rowHeights, tab.rows)) {
+          const heights = [];
+          for (let r = 0; r < tab.rows; r++) {
+            const rc = el.cellGrid.querySelector('.row-controls[data-row="' + r + '"]');
+            const h = rc ? Math.round(rc.getBoundingClientRect().height) : MIN_ROW_HEIGHT;
+            heights.push(Math.max(MIN_ROW_HEIGHT, h));
+          }
+          tab.rowHeights = heights;
+        }
+      }
+      const next = Math.max(MIN_ROW_HEIGHT, Math.round(startH + delta));
+      tab.rowHeights[row] = next;
+      applyHeightToGridRow(row, next);
+    }
+
+    function finish() {
+      document.removeEventListener('pointermove', onMove);
+      document.removeEventListener('pointerup', finish);
+      document.removeEventListener('pointercancel', finish);
+      document.body.classList.remove('resizing-rows');
+      handle.classList.remove('is-active');
+      if (started) {
+        scheduleSave();
+        setStatus('Row ' + (row + 1) + ' height ' + tab.rowHeights[row] + 'px', 'ok');
+      }
+    }
+
+    document.addEventListener('pointermove', onMove);
+    document.addEventListener('pointerup', finish);
+    document.addEventListener('pointercancel', finish);
+    if (handle.setPointerCapture) {
+      try { handle.setPointerCapture(e.pointerId); } catch (err) { /* no-op */ }
+    }
   }
 
   function beginColumnResize(e, col, handle) {

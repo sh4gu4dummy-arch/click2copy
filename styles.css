@@ -1273,7 +1273,8 @@ body.relocating-cell * {
 
 
 .cell {
-  resize: vertical;
+  /* Row height: drag the row-number bottom edge (no per-cell corner grip). */
+  resize: none;
   min-width: 0;
   min-height: var(--cell-min-h);
   height: var(--cell-min-h);
@@ -1298,40 +1299,6 @@ body.relocating-cell * {
 .cell::placeholder {
   color: var(--muted);
   opacity: 0.55;
-}
-
-/* Soft-dark: native row-resize corner grip was nearly invisible on cell bg */
-.cell::-webkit-resizer,
-.cell-nest-input::-webkit-resizer {
-  /* Solid + grip lines — Chromium paints over translucent gradients otherwise */
-  background-color: #6b7584;
-  background-image: linear-gradient(
-    -45deg,
-    transparent 0 38%,
-    rgba(232, 236, 241, 0.95) 38% 46%,
-    transparent 46% 56%,
-    rgba(232, 236, 241, 0.95) 56% 64%,
-    transparent 64% 100%
-  );
-  border: 1px solid rgba(232, 236, 241, 0.35);
-  border-radius: 0 0 2px 0;
-  box-sizing: border-box;
-}
-
-.cell:hover::-webkit-resizer,
-.cell:focus::-webkit-resizer,
-.cell-nest-input:hover::-webkit-resizer,
-.cell-nest-input:focus::-webkit-resizer {
-  background-color: #0f9e8e;
-  background-image: linear-gradient(
-    -45deg,
-    transparent 0 38%,
-    rgba(232, 236, 241, 0.98) 38% 46%,
-    transparent 46% 56%,
-    rgba(232, 236, 241, 0.98) 56% 64%,
-    transparent 64% 100%
-  );
-  border-color: rgba(20, 184, 166, 0.85);
 }
 
 .cell.cell-confirmed {
@@ -1585,7 +1552,7 @@ body.relocating-cell * {
 }
 
 .cell-nest-input {
-  resize: vertical;
+  resize: none;
   min-width: 0;
   min-height: 36px;
   height: 36px;
@@ -2184,6 +2151,7 @@ body.relocating-cell * {
 /* Reorder controls share the narrow row-header column.
    Excel-style row numbers sit in .row-header-label (1, 2, 3…). */
 .row-controls {
+  position: relative;
   display: flex;
   width: 100%;
   min-height: var(--cell-min-h);
@@ -2492,4 +2460,38 @@ body.painting-checkboxes .cell-append {
   height: 24px;
   padding: 0 10px;
   font-size: 12px;
+}
+
+/* Row resize — thin hit zone on the bottom edge of each row number
+   (feels like .section-resizer; faint accent line on hover / drag). */
+.row-resize-handle {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -4px;
+  height: 8px;
+  z-index: 4;
+  cursor: row-resize;
+  touch-action: none;
+}
+.row-resize-handle::after {
+  content: "";
+  position: absolute;
+  left: 3px;
+  right: 3px;
+  top: 3px;
+  height: 2px;
+  border-radius: 2px;
+  background: transparent;
+  transition: background 0.12s;
+}
+.row-resize-handle:hover::after,
+.row-resize-handle.is-active::after {
+  background: var(--accent);
+  box-shadow: 0 0 0 1px rgba(var(--accent-rgb), 0.28);
+}
+body.resizing-rows,
+body.resizing-rows * {
+  cursor: row-resize !important;
+  user-select: none !important;
 }
