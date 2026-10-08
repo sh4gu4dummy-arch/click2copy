@@ -2494,9 +2494,9 @@ body.resizing-rows * {
   display: flex;
   flex-direction: column;
   gap: 1px;
-  min-width: 140px;
-  max-width: 320px;
-  max-height: 280px;
+  min-width: 200px;
+  max-width: 340px;
+  max-height: 320px;
   overflow-y: auto;
   padding: 4px;
   border: 1px solid var(--border);
@@ -2504,33 +2504,57 @@ body.resizing-rows * {
   background: var(--surface);
   box-shadow: 0 8px 20px rgba(0, 0, 0, 0.45);
   overscroll-behavior: contain;
+  font-size: 13px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(154, 163, 176, 0.45) transparent;
 }
+/* v0.144: rows must NOT shrink. In a height-capped flex column, items with
+   overflow:hidden get min-height 0 and were squashed to ~11px (text clipped
+   into dots). flex: none + a real min-height keeps every row full size; the
+   list scrolls instead. */
 .col1-value-option {
   appearance: none;
+  flex: none;
+  display: block;
+  position: relative;
+  min-height: 28px;
   margin: 0;
-  padding: 5px 9px;
+  padding: 5px 10px 5px 24px;
   border: 0;
   border-radius: 4px;
   background: transparent;
-  color: var(--text);
+  color: #e3e8ee;
   font: inherit;
-  font-size: 12px;
+  font-size: 13px;
+  line-height: 18px;
   text-align: left;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
   cursor: pointer;
 }
-.col1-value-option:hover,
-.col1-value-option:focus-visible {
+.col1-value-option:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+.col1-value-option:focus-visible,
+.col1-value-option:focus {
   background: var(--accent-soft);
+  box-shadow: inset 0 0 0 1px rgba(var(--accent-rgb), 0.55);
   outline: none;
 }
 .col1-value-option.is-selected {
   color: var(--accent);
   font-weight: 700;
 }
+.col1-value-option.is-selected::before {
+  content: '\2713';
+  position: absolute;
+  left: 8px;
+  top: 5px;
+  font-weight: 700;
+}
 .col1-value-empty {
+  flex: none;
   padding: 5px 9px;
   color: var(--muted);
   font-size: 11.5px;

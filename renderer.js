@@ -6821,11 +6821,29 @@
   }
 
   function onCol1ValueMenuKey(ev) {
-    if (ev.key === 'Escape') {
+    if (!col1MenuEl) return;
+    if (ev.key === 'Escape' || ev.key === 'Tab') {
       ev.preventDefault();
       ev.stopPropagation();
+      const idx = col1MenuEl.dataset.idx;
       closeCol1ValueMenu();
+      // Back to the Col A cell the list was opened from.
+      const ta = el.cellGrid && el.cellGrid.querySelector('textarea.cell[data-idx="' + idx + '"]');
+      if (ta) ta.focus();
+      return;
     }
+    // v0.144: keyboard nav inside the list (Enter/Space pick via the button).
+    const opts = Array.prototype.slice.call(col1MenuEl.querySelectorAll('.col1-value-option'));
+    if (!opts.length) return;
+    const navKeys = { ArrowDown: 1, ArrowUp: -1, PageDown: 8, PageUp: -8, Home: -1e6, End: 1e6 };
+    if (!Object.prototype.hasOwnProperty.call(navKeys, ev.key)) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    let at = opts.indexOf(document.activeElement);
+    if (at < 0) at = Math.max(0, opts.findIndex(function (o) { return o.classList.contains('is-selected'); }));
+    const next = Math.max(0, Math.min(opts.length - 1, at + navKeys[ev.key]));
+    opts[next].focus();
+    opts[next].scrollIntoView({ block: 'nearest' });
   }
 
   /** Pick a Master Column A value for a part-tab Col1 cell (= Master insert). */
@@ -6872,7 +6890,7 @@
       opt.setAttribute('role', 'option');
       opt.setAttribute('aria-selected', v === current ? 'true' : 'false');
       opt.textContent = v;
-      opt.title = v;
+      opt.title = v === current ? (v + ' (current)') : v;
       opt.addEventListener('click', function (ev) {
         ev.preventDefault();
         ev.stopPropagation();
