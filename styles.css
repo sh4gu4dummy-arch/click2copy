@@ -2552,6 +2552,9 @@ body.resizing-rows * {
   scrollbar-width: thin;
   scrollbar-color: rgba(154, 163, 176, 0.45) transparent;
 }
+.col1-value-empty:empty {
+  display: none;
+}
 /* v0.144: rows must NOT shrink. In a height-capped flex column, items with
    overflow:hidden get min-height 0 and were squashed to ~11px (text clipped
    into dots). flex: none + a real min-height keeps every row full size; the

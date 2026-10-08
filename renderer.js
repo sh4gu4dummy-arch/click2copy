@@ -4297,7 +4297,70 @@
     const heading = indices.length > 1
       ? (indices.length + ' cells')
       : ('Cell ' + cellAddress(r, c));
-    const items = [
+    // Snapshot text selection now — opening the menu can blur the textarea.
+    const ta = el.cellGrid && el.cellGrid.querySelector('textarea.cell[data-idx="' + cellIndex + '"]');
+    let textSel = null;
+    if (ta && typeof ta.selectionStart === 'number' && typeof ta.selectionEnd === 'number' &&
+        ta.selectionStart !== ta.selectionEnd) {
+      textSel = {
+        start: ta.selectionStart,
+        end: ta.selectionEnd,
+        value: ta.value == null ? '' : String(ta.value)
+      };
+    }
+    const sticky = getStickyCellRange();
+    const inStickyBlock = !!(sticky && indices.length > 1);
+
+    function clipboardPayloadForCopy() {
+      // Match Ctrl/Cmd+C: block TSV if right-click is inside sticky range; else
+      // selected substring; else whole cell.
+      if (inStickyBlock) {
+        const tsv = buildCellRangeTsv(tab, sticky.rMin, sticky.cMin, sticky.rMax, sticky.cMax);
+        const rows = sticky.rMax - sticky.rMin + 1;
+        const cols = sticky.cMax - sticky.cMin + 1;
+        return { text: tsv, status: 'Copied ' + rows + '\u00d7' + cols + ' cells' };
+      }
+      if (textSel) {
+        return {
+          text: textSel.value.slice(textSel.start, textSel.end),
+          status: 'Copied selection'
+        };
+      }
+      const value = (tab.cells[cellIndex] == null ? '' : String(tab.cells[cellIndex]));
+      return { text: value, status: 'Copied cell' };
+    }
+
+    const items = [];
+    items.push({
+      label: 'Copy',
+      title: inStickyBlock
+        ? 'Copy selected cells as TSV (same as Ctrl+C)'
+        : (textSel ? 'Copy selected text (same as Ctrl+C)' : 'Copy cell text (same as Ctrl+C)'),
+      onClick: function () {
+        const payload = clipboardPayloadForCopy();
+        copyTextWithStatus(payload.text, payload.status);
+      }
+    });
+    items.push({
+      label: 'Cut',
+      title: isMasterTab(tab)
+        ? 'Copy, then empty (Master sync may update linked part cells)'
+        : 'Copy, then empty and unlink from Master (Master library unchanged)',
+      disabled: !anyClearable,
+      onClick: function () {
+        const payload = clipboardPayloadForCopy();
+        // Clipboard write is async; Clear (v0.147) is the one undo step.
+        writeTextToClipboard(payload.text).catch(function () {
+          copyTextWithStatus(payload.text);
+        });
+        clearCellsFromMenu(tab, indices, {
+          statusText: indices.length > 1
+            ? ('Cut ' + indices.length + ' cells')
+            : (isMasterTab(tab) ? 'Cut cell' : 'Cut cell (unlinked from Master)')
+        });
+      }
+    });
+    items.push.apply(items, [
       { id: 'green', label: 'Shade green' },
       { id: 'yellow', label: 'Shade yellow' },
       { id: 'red', label: 'Shade red' }
@@ -4309,7 +4372,7 @@
         title: current === opt.id ? 'Current shade' : '',
         onClick: function () { applyShadeToCells(tab, indices, opt.id); }
       };
-    });
+    }));
     items.push({
       label: 'Clear shading',
       swatch: 'none',
@@ -7211,8 +7274,23 @@
   function onMasterValueMenuKey(ev) {
     if (!masterValueMenuEl) return;
     const search = masterValueMenuEl.querySelector('.col1-value-search');
-    const inSearch = search && document.activeElement === search;
-    if (ev.key === 'Escape' || (ev.key === 'Tab' && !inSearch)) {
+    const inMenu = masterValueMenuEl.contains(document.activeElement) ||
+      (search && document.activeElement === search);
+    // Keep focus on the search box so every keystroke filters live. Arrow keys
+    // used to .focus() option buttons, after which typing never reached search
+    // (looked like filter needed Enter / a re-click).
+    if (search && document.activeElement !== search &&
+        masterValueMenuEl.contains(document.activeElement)) {
+      const printable = !ev.ctrlKey && !ev.metaKey && !ev.altKey &&
+        (ev.key.length === 1 || ev.key === 'Backspace' || ev.key === 'Delete' ||
+          ev.key === 'Process' || ev.isComposing);
+      if (printable) {
+        search.focus();
+        // Let the character land in the input (input event → applyFilter).
+        return;
+      }
+    }
+    if (ev.key === 'Escape' || (ev.key === 'Tab' && !(search && document.activeElement === search))) {
       ev.preventDefault();
       ev.stopPropagation();
       const idx = masterValueMenuEl.dataset.idx;
@@ -7222,7 +7300,8 @@
       return;
     }
     const opts = masterValueMenuVisibleOptions();
-    if (ev.key === 'Enter' && inSearch) {
+    const inSearch = search && document.activeElement === search;
+    if (ev.key === 'Enter' && (inSearch || inMenu)) {
       ev.preventDefault();
       ev.stopPropagation();
       const pick = opts.find(function (o) { return o.classList.contains('is-kbd'); }) || opts[0];
@@ -7234,17 +7313,18 @@
     if (!opts.length) return;
     ev.preventDefault();
     ev.stopPropagation();
-    let at = opts.indexOf(document.activeElement);
-    if (at < 0) {
-      at = opts.findIndex(function (o) { return o.classList.contains('is-kbd'); });
-      if (at < 0) at = opts.findIndex(function (o) { return o.classList.contains('is-selected'); });
-      if (at < 0) at = inSearch ? -1 : 0;
-    }
-    const next = Math.max(0, Math.min(opts.length - 1, at + navKeys[ev.key]));
+    let at = opts.findIndex(function (o) { return o.classList.contains('is-kbd'); });
+    if (at < 0) at = opts.findIndex(function (o) { return o.classList.contains('is-selected'); });
+    if (at < 0) at = -1;
+    const delta = navKeys[ev.key];
+    let next;
+    if (ev.key === 'Home') next = 0;
+    else if (ev.key === 'End') next = opts.length - 1;
+    else next = Math.max(0, Math.min(opts.length - 1, (at < 0 ? (delta > 0 ? -1 : 0) : at) + delta));
     opts.forEach(function (o) { o.classList.remove('is-kbd'); });
     opts[next].classList.add('is-kbd');
-    opts[next].focus();
     opts[next].scrollIntoView({ block: 'nearest' });
+    if (search) search.focus();
   }
 
   /**
@@ -7325,15 +7405,44 @@
         optsEl[i].classList.remove('is-kbd');
         if (hit) shown++;
       }
-      empty.hidden = shown > 0 || !values.length;
-      empty.textContent = !values.length
-        ? (opts.emptyText || 'No values in Master yet')
-        : (q ? ('No match for “' + search.value.trim() + '”') : (opts.emptyText || 'No values'));
+      // Keep empty row in-flow so menu height stays stable while filtering.
+      empty.hidden = false;
+      if (!values.length) {
+        empty.textContent = opts.emptyText || 'No values in Master yet';
+      } else if (shown === 0) {
+        empty.textContent = q
+          ? ('No matches for “' + search.value.trim() + '”')
+          : (opts.emptyText || 'No values');
+      } else {
+        empty.textContent = '';
+        empty.hidden = true;
+      }
       const first = list.querySelector('.col1-value-option:not([hidden])');
       if (first) first.classList.add('is-kbd');
     }
     applyFilter();
+    // Live filter on every keystroke / IME / paste (not Enter-gated).
     search.addEventListener('input', applyFilter);
+    search.addEventListener('compositionend', applyFilter);
+    search.addEventListener('keydown', function (ev) {
+      // Stop keys from reaching locked/readonly cell handlers underneath.
+      ev.stopPropagation();
+      if (ev.key === 'Escape' || ev.key === 'Enter' ||
+          ev.key === 'ArrowDown' || ev.key === 'ArrowUp' ||
+          ev.key === 'PageDown' || ev.key === 'PageUp' ||
+          ev.key === 'Home' || ev.key === 'End') {
+        // Handled by capture-phase onMasterValueMenuKey.
+        return;
+      }
+    });
+    // option buttons: don't steal focus on pointerdown so search keeps receiving keys
+    list.addEventListener('pointerdown', function (ev) {
+      const opt = ev.target && ev.target.closest && ev.target.closest('.col1-value-option');
+      if (opt) {
+        // Allow click; keep search focused for further typing after a miss-click.
+        // (Actual pick still happens on click.)
+      }
+    });
 
     document.body.appendChild(menu);
     masterValueMenuEl = menu;
@@ -7346,6 +7455,10 @@
     if (top + size.height > window.innerHeight - pad) top = Math.max(pad, rect.top - size.height - 3);
     menu.style.left = left + 'px';
     menu.style.top = top + 'px';
+    // Pin height so filtering rows does not bounce the menu (scroll inside list).
+    const pinned = Math.max(size.height, Math.min(320, window.innerHeight - pad * 2));
+    menu.style.height = pinned + 'px';
+    menu.style.maxHeight = pinned + 'px';
     search.focus();
     const sel = list.querySelector('.col1-value-option.is-selected:not([hidden])') ||
       list.querySelector('.col1-value-option:not([hidden])');
