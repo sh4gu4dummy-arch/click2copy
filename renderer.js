@@ -12587,17 +12587,37 @@
   }
 
   /** Drag-drop row move (hold ↑/↓ + drag): one undo step, same data path as ↑. */
+  /**
+   * Ash (v0.159): a row move that leaves a row with an empty Column A between
+   * two rows with the same Column A fills it with that value (never overwrites).
+   * Part tabs relink it to the Master like a typed exact match.
+   */
+  function fillCol1FromNeighbors(tab, row) {
+    if (!tab || !tab.cols || row <= 0 || row >= tab.rows - 1) return false;
+    ensureCellPages(tab); // row moves update pages; mirror them into cells first
+    const idx = row * tab.cols;
+    if (String(tab.cells[idx] || '').trim()) return false;
+    const above = String(tab.cells[(row - 1) * tab.cols] || '');
+    const below = String(tab.cells[(row + 1) * tab.cols] || '');
+    if (!above.trim() || above.trim() !== below.trim()) return false;
+    writeCellCurrentPage(tab, idx, above);
+    if (!isMasterTab(tab)) linkCellIfMasterMatch(tab, idx);
+    return true;
+  }
+
   function moveRowTo(from, to) {
     const tab = activeTab();
     if (!tab) return false;
     if (from === to || from < 0 || to < 0 || from >= tab.rows || to >= tab.rows) return false;
     pushHistory();
     reorderRowInTab(tab, from, to);
+    const filled = fillCol1FromNeighbors(tab, to);
     renderTabs();
     renderGrid();
     renderMasterLibrary();
     scheduleSave();
-    setStatus('Row ' + (from + 1) + ' moved to row ' + (to + 1), 'ok');
+    setStatus('Row ' + (from + 1) + ' moved to row ' + (to + 1) +
+      (filled ? ' — Column A filled from neighbors' : ''), 'ok');
     return true;
   }
 
@@ -12912,11 +12932,15 @@
       if (isMasterTab(tab)) remapMasterIndicesAfterPushDown(cols, rowIndex);
     }
 
+    // ↓ leaves an empty row at rowIndex; ↑ lands the row at destination.
+    let col1Filled = fillCol1FromNeighbors(tab, direction < 0 ? destination : rowIndex);
+    if (direction > 0 && fillCol1FromNeighbors(tab, rowIndex + 1)) col1Filled = true;
     renderTabs();
     renderGrid();
     renderMasterLibrary();
     scheduleSave();
-    setStatus(direction < 0 ? 'Row moved up' : 'Row moved down');
+    setStatus((direction < 0 ? 'Row moved up' : 'Row moved down') +
+      (col1Filled ? ' — Column A filled from neighbors' : ''));
   }
 
   function addColumn() {
