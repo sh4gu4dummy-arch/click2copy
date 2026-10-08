@@ -124,6 +124,25 @@
   let col1FilterMenuOpen = false;
   /** UI-only Master insert filter menu open (ephemeral; not per-tab) */
   let masterLibFilterMenuOpen = false;
+  /**
+   * v0.142: Values dropdowns live on <body> (portal). Inside the Master insert
+   * toolbar (z-index 2 stacking context) or a sticky column header (z-index 4)
+   * the grid's later sticky headers painted OVER the open list ("bar covering
+   * master value"). On <body> with position:fixed + z-index they sit above
+   * every grid header, row number and cell control.
+   */
+  const popoverMenus = { masterLib: null, grid: null };
+  function portalPopover(kind, menu) {
+    const prev = popoverMenus[kind];
+    if (prev && prev !== menu && prev.parentNode) prev.parentNode.removeChild(prev);
+    popoverMenus[kind] = menu;
+    if (menu && menu.parentNode !== document.body) document.body.appendChild(menu);
+  }
+  function dropPopover(kind) {
+    const prev = popoverMenus[kind];
+    if (prev && prev.parentNode) prev.parentNode.removeChild(prev);
+    popoverMenus[kind] = null;
+  }
   /** Skip scroll-dismiss while Values filter refresh changes Master insert height. */
   let suppressMasterLibMenuScrollClose = false;
   /**
@@ -6147,7 +6166,7 @@
   function closeMasterLibFilterMenu() {
     if (!masterLibFilterMenuOpen) return;
     masterLibFilterMenuOpen = false;
-    const menu = el.masterLibraryItems && el.masterLibraryItems.querySelector('.master-library-filter-menu');
+    const menu = popoverMenus.masterLib;
     if (menu) menu.hidden = true;
     const btn = el.masterLibraryItems && el.masterLibraryItems.querySelector('.master-library-filter-btn');
     if (btn) btn.setAttribute('aria-expanded', 'false');
@@ -6166,7 +6185,7 @@
       ? ('Master Column A value filter on (' + count + ' selected) — click to change')
       : 'Filter Master parts by Column A values';
     btn.setAttribute('aria-label', btn.title);
-    const menu = el.masterLibraryItems.querySelector('.master-library-filter-menu');
+    const menu = popoverMenus.masterLib;
     if (menu) {
       menu.hidden = !masterLibFilterMenuOpen;
       if (masterLibFilterMenuOpen) positionCol1FilterMenu(btn, menu);
@@ -6428,6 +6447,7 @@
     const current = activeTab();
     if (!master || !current || isMasterTab(current)) {
       masterLibFilterMenuOpen = false;
+      dropPopover('masterLib');
       return;
     }
 
@@ -6514,7 +6534,7 @@
     });
 
     filterWrap.appendChild(filterBtn);
-    filterWrap.appendChild(filterMenu);
+    portalPopover('masterLib', filterMenu);
     toolbar.appendChild(filterWrap);
     el.masterLibraryItems.appendChild(toolbar);
     // Results scroll independently so Values / A–Z never leave the viewport.
@@ -6529,6 +6549,49 @@
       buildMasterLibFilterMenu(master, filterMenu);
     }
     syncMasterLibFilterControls();
+    sizeMasterLibraryPane();
+  }
+
+  /**
+   * v0.142: bound the Master insert pane in px from JS. The CSS-only bound
+   * relied on ::details-content (Chromium 131+); Ash's Electron 33 is
+   * Chromium 130, which ignores that rule, so the <details> content box grew
+   * to the full list height and was merely clipped by max-height:30% — the
+   * results pane never got a bounded height and could not scroll (worse the
+   * more Values were selected). An explicit max-height on the items flex box
+   * works in every engine: toolbar stays, results flex/shrink and scroll.
+   */
+  let masterLibSizeRaf = 0;
+  function sizeMasterLibraryPane() {
+    masterLibSizeRaf = 0;
+    const lib = el.masterLibrary;
+    const items = el.masterLibraryItems;
+    if (!lib || !items) return;
+    if (!lib.open || lib.hidden || !el.partSection) {
+      items.style.maxHeight = '';
+      lib.style.maxHeight = '';
+      return;
+    }
+    const summary = lib.querySelector('summary');
+    const toolbar = items.querySelector('.master-library-toolbar');
+    const summaryH = summary ? summary.offsetHeight : 0;
+    const borders = lib.offsetHeight - lib.clientHeight;
+    // Fixed chrome = header + search/sort bar + bottom padding. The results
+    // always get >= ~3 rows (110px) when the part area can spare it (max 50%),
+    // else the plain 30% cap. Depends only on window/section size, never on
+    // how many Values are selected → no bounce.
+    const chrome = summaryH + borders + (toolbar ? toolbar.offsetHeight : 0) + 10;
+    const partH = el.partSection.clientHeight;
+    const cap = Math.max(Math.floor(partH * 0.3), Math.min(chrome + 110, Math.floor(partH * 0.5)));
+    const libValue = cap + 'px';
+    if (lib.style.maxHeight !== libValue) lib.style.maxHeight = libValue;
+    const value = Math.max(48, cap - summaryH - borders) + 'px';
+    if (items.style.maxHeight !== value) items.style.maxHeight = value;
+  }
+
+  function scheduleMasterLibrarySize() {
+    if (masterLibSizeRaf) return;
+    masterLibSizeRaf = requestAnimationFrame(sizeMasterLibraryPane);
   }
 
   /**
@@ -7456,7 +7519,16 @@
     if (left + width > window.innerWidth - pad) left = Math.max(pad, window.innerWidth - pad - width);
     if (left < pad) left = pad;
     menu.style.position = 'fixed';
-    menu.style.top = Math.round(rect.bottom + 4) + 'px';
+    // Keep the whole list reachable: cap to the space below the button, or
+    // open upward when there is more room above (small windows, low panel).
+    const below = window.innerHeight - rect.bottom - 4 - pad;
+    const above = rect.top - 4 - pad;
+    const useAbove = below < 180 && above > below;
+    const room = Math.max(120, Math.min(320, useAbove ? above : below));
+    menu.style.maxHeight = room + 'px';
+    menu.style.top = useAbove
+      ? Math.round(Math.max(pad, rect.top - 4 - room)) + 'px'
+      : Math.round(rect.bottom + 4) + 'px';
     menu.style.left = Math.round(left) + 'px';
     menu.style.width = width + 'px';
     menu.style.zIndex = '60';
@@ -7475,7 +7547,7 @@
       ? ('Column A value filter on (' + count + ' selected) — click to change')
       : 'Filter rows by Column A values';
     btn.setAttribute('aria-label', btn.title);
-    const menu = el.cellGrid.querySelector('.column-col1-filter-menu');
+    const menu = popoverMenus.grid;
     if (menu) {
       menu.hidden = !col1FilterMenuOpen;
       if (col1FilterMenuOpen) positionCol1FilterMenu(btn, menu);
@@ -7902,7 +7974,7 @@
         });
 
         filterWrap.appendChild(filterBtn);
-        filterWrap.appendChild(filterMenu);
+        portalPopover('grid', filterMenu);
         header.appendChild(filterWrap);
         header.classList.add('column-header-filterable');
       }
@@ -8453,7 +8525,7 @@
     applyAppendCheckedState();
     applyMasterDupeMarks();
     if (col1FilterMenuOpen) {
-      const menu = el.cellGrid.querySelector('.column-col1-filter-menu');
+      const menu = popoverMenus.grid;
       if (menu) buildCol1FilterMenu(tab, menu);
     }
     syncCol1FilterControls();
@@ -9077,6 +9149,17 @@
     pending.forEach(function (item) {
       item.link.cellIndex = item.to;
     });
+    // v0.142: dragging a Master block moved the text but part-tab links kept
+    // pointing at the old Master spots (now empty or holding other text), so
+    // editing/clearing the vacated Master cell overwrote or emptied the linked
+    // part cell ("empty cell is still locked"). Follow the move like row ↑/↓
+    // and sort do, then run the existing repair for overwritten spots.
+    if (isMasterTab(tab)) {
+      remapMasterIndexWith(function (idx) {
+        return Object.prototype.hasOwnProperty.call(indexMap, idx) ? indexMap[idx] : idx;
+      });
+      reportLockRepair(reconcileMasterLocks());
+    }
 
     return {
       swapped: !overlap && destHadContent,
@@ -11507,11 +11590,13 @@
   document.addEventListener('pointerdown', function (e) {
     if (col1FilterMenuOpen) {
       const wrap = el.cellGrid && el.cellGrid.querySelector('.column-col1-filter');
-      if (!(wrap && wrap.contains(e.target))) closeCol1FilterMenu();
+      const menu = popoverMenus.grid;
+      if (!(wrap && wrap.contains(e.target)) && !(menu && menu.contains(e.target))) closeCol1FilterMenu();
     }
     if (masterLibFilterMenuOpen) {
       const wrap = el.masterLibraryItems && el.masterLibraryItems.querySelector('.master-library-filter');
-      if (!(wrap && wrap.contains(e.target))) closeMasterLibFilterMenu();
+      const menu = popoverMenus.masterLib;
+      if (!(wrap && wrap.contains(e.target)) && !(menu && menu.contains(e.target))) closeMasterLibFilterMenu();
     }
     if (tabIconPickerEl && !tabIconPickerEl.contains(e.target)) {
       closeTabIconPicker();
@@ -11563,6 +11648,13 @@
     el.cellGrid.parentElement.addEventListener('scroll', closeCol1FilterMenu, { passive: true });
   }
   if (el.masterLibrary) {
+    el.masterLibrary.addEventListener('toggle', sizeMasterLibraryPane);
+    if (typeof ResizeObserver === 'function' && el.partSection) {
+      new ResizeObserver(scheduleMasterLibrarySize).observe(el.partSection);
+    }
+    window.addEventListener('resize', scheduleMasterLibrarySize);
+  }
+  if (el.masterLibrary) {
     // Capture scroll from the results pane (or legacy items scroll). Do not close
     // when the user scrolls inside the fixed Values dropdown itself — that was the
     // "scroll down Values glitch" (menu closed / jumped mid-scroll).
@@ -11570,7 +11662,7 @@
       if (suppressMasterLibMenuScrollClose) return;
       const t = e.target;
       if (!t || !t.classList) return;
-      const menu = el.masterLibraryItems && el.masterLibraryItems.querySelector('.master-library-filter-menu');
+      const menu = popoverMenus.masterLib;
       if (menu && (t === menu || menu.contains(t))) return;
       if (t.classList.contains('master-library-results') ||
           t.classList.contains('master-library-items') ||

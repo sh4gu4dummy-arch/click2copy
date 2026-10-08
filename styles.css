@@ -1053,6 +1053,8 @@ body.resizing-sections * {
 .column-col1-filter-menu {
   box-sizing: border-box;
   max-height: min(320px, calc(100vh - 80px));
+  /* Wheel at the list end must not chain into the page / panes behind it. */
+  overscroll-behavior: contain;
   padding: 8px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
