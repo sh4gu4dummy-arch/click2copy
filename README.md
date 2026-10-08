@@ -60,6 +60,8 @@ npm start
 
 This launches Electron with the Click2Copy window.
 
+On Windows, double-click **`Click2Copy.vbs`** (repo root) to start the app with **no console window** — you can pin a shortcut to it. It runs `node_modules\electron\dist\electron.exe` for this folder (passing a `.c2copy` path through if given); if Electron isn't installed yet it falls back to **Start Click2Copy.bat** (visible, so setup runs). Update-ready Restart works the same either way.
+
 ## Project layout
 
 | File | Role |
