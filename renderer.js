@@ -2888,7 +2888,10 @@
       const ta = tas[i];
       const idx = parseInt(ta.dataset.idx, 10);
       if (Number.isNaN(idx) || idx < 0 || idx >= tab.cells.length) continue;
-      if (document.activeElement === ta || (ta.value || '') !== (tab.cells[idx] || '')) {
+      // Only the focused textarea can hold a live user edit (onCellInput syncs
+      // every keystroke). Others may lag a programmatic model write that has
+      // not re-rendered yet (Master insert, Replace, clear) — model wins there.
+      if (document.activeElement === ta && (ta.value || '') !== (tab.cells[idx] || '')) {
         writeCellCurrentPage(tab, idx, ta.value);
       }
     }
@@ -6238,6 +6241,163 @@
     syncMasterLibFilterControls();
   }
 
+  /**
+   * Model-only core of a Master link (shared by Master insert, typed/pasted
+   * exact matches). Caller pushes history and renders. tab must be active
+   * (Combined auto-check targets the active tab).
+   */
+  function applyMasterLinkToCell(tab, index, masterIdx, insertText) {
+    setCellMasterLock(tab, index, masterIdx >= 0 ? masterIdx : null);
+    // Replace/sync nests + parent pages from the Master cell (Ash).
+    copyNestsFromMasterToCell(tab, index, masterIdx);
+    copyPagesFromMasterToCell(tab, index, masterIdx);
+    // Master text is authoritative for the active page slot.
+    // (copyPages alone can leave the cell blank when Master cellPages desyncs
+    // from master.cells, especially after part-page switches / empty page 2.)
+    writeCellCurrentPage(tab, index, insertText);
+    syncNestLinksAfterNestReplace(tab.id, index);
+    revalidateLinksForCell(tab.id, index, { silent: true });
+    // Auto-check Combined for the inserted cell (no-op if already included).
+    const wasSuspended = historySuspended;
+    historySuspended = true;
+    try {
+      ensureCellConfirmedState(index, true, { quiet: true, col1Cascade: false });
+    } finally {
+      historySuspended = wasSuspended;
+    }
+  }
+
+  function trimEndText(value) {
+    return String(value == null ? '' : value).replace(/\s+$/, '');
+  }
+
+  /**
+   * Master cell whose text exactly equals typed/pasted text (trailing
+   * whitespace ignored; leading whitespace and inner newlines must match).
+   * Several matches → prefer, in order: Master row whose Column A equals this
+   * part row's Column A; row visible under this part's Master-insert Values
+   * filter; same column as the target cell; then first in row-major order.
+   * Returns -1 when nothing matches.
+   */
+  function findMasterMatchForCell(tab, index, text) {
+    const master = state.tabs.find(isMasterTab);
+    if (!master || !tab || isMasterTab(tab)) return -1;
+    const want = trimEndText(text);
+    if (!want.trim()) return -1;
+    const cols = master.cols || 1;
+    const targetCol = index % (tab.cols || 1);
+    const targetRow = Math.floor(index / (tab.cols || 1));
+    const rowColA = targetCol === 0 ? '' : (tab.cells[targetRow * tab.cols] || '').trim();
+    const filter = getMasterLibPrefs(tab.id).valueFilter;
+    let best = -1;
+    let bestScore = -1;
+    for (let i = 0; i < master.cells.length; i++) {
+      if (trimEndText(master.cells[i]) !== want) continue;
+      const mRow = Math.floor(i / cols);
+      const mColA = (master.cells[mRow * cols] || '').trim();
+      let score = 0;
+      if (rowColA && mColA === rowColA) score += 4;
+      if (filter === null || filter.has(mColA)) score += 2;
+      if ((i % cols) === targetCol) score += 1;
+      if (score > bestScore) {
+        best = i;
+        bestScore = score;
+      }
+    }
+    return best;
+  }
+
+  /** True when linking would discard this cell's own nests / other pages. */
+  function cellHasOwnExtraContent(tab, index) {
+    ensureNestedCells(tab);
+    const nests = tab.nestedCells[index] || [];
+    for (let n = 0; n < nests.length; n++) {
+      const pages = (nests[n] && nests[n].pages) || [];
+      for (let p = 0; p < pages.length; p++) {
+        if (String(pages[p] || '').trim()) return true;
+      }
+    }
+    ensureCellPagesArray(tab);
+    const entry = tab.cellPages[index];
+    if (entry && entry.pages && entry.pages.length > 1) {
+      for (let p = 0; p < entry.pages.length; p++) {
+        if (p === (entry.page || 0)) continue;
+        if (String(entry.pages[p] || '').trim()) return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Typed/pasted text that exactly matches a Master cell becomes a real
+   * Master link (same as Master insert). Returns 'linked', 'blocked'
+   * (would discard own nests/pages) or null. Model only — no history/render.
+   */
+  function linkCellIfMasterMatch(tab, index) {
+    if (!tab || isMasterTab(tab) || tab !== activeTab()) return null;
+    if (index < 0 || index >= tab.cells.length) return null;
+    if (getCellLock(tab, index)) return null;
+    if (isMasterCellEditFor(tab, index)) return null;
+    const text = tab.cells[index] || '';
+    if (!text.trim()) return null;
+    const masterIdx = findMasterMatchForCell(tab, index, text);
+    if (masterIdx < 0) return null;
+    if (cellHasOwnExtraContent(tab, index)) return 'blocked';
+    const master = state.tabs.find(isMasterTab);
+    applyMasterLinkToCell(tab, index, masterIdx, master.cells[masterIdx] || '');
+    return 'linked';
+  }
+
+  /** Cell 'change' (blur after a typed/pasted edit, incl. Enter/Tab moves). */
+  function onCellCommitMasterMatch(e) {
+    const tab = activeTab();
+    const ta = e.currentTarget;
+    if (!tab || !ta || isMasterTab(tab)) return;
+    const idx = parseInt(ta.dataset.idx, 10);
+    if (Number.isNaN(idx)) return;
+    if (getCellLock(tab, idx) || findMasterMatchForCell(tab, idx, tab.cells[idx]) < 0) return;
+    if (cellHasOwnExtraContent(tab, idx)) {
+      setStatus('Matches a Master cell — not linked (this cell has its own nests/pages)', 'err');
+      return;
+    }
+    pushHistory();
+    if (linkCellIfMasterMatch(tab, idx) !== 'linked') return;
+    const addr = cellAddressFromIndex(tab, idx);
+    // Render after focus settles so Enter/Tab/click targets keep focus.
+    window.setTimeout(function () {
+      if (activeTab() === tab) {
+        const active = document.activeElement;
+        const refocus = active && active.closest && el.cellGrid.contains(active) && active.dataset
+          ? {
+            idx: active.dataset.idx,
+            nest: active.dataset.nest,
+            start: active.selectionStart,
+            end: active.selectionEnd
+          }
+          : null;
+        renderGrid();
+        flushTabPage(tab);
+        if (refocus && refocus.idx != null) {
+          const sel = refocus.nest != null
+            ? 'textarea.cell-nest-input[data-idx="' + refocus.idx + '"][data-nest="' + refocus.nest + '"]'
+            : 'textarea.cell[data-idx="' + refocus.idx + '"]';
+          const next = el.cellGrid.querySelector(sel);
+          if (next) {
+            next.focus();
+            try {
+              if (refocus.start != null) next.setSelectionRange(refocus.start, refocus.end);
+            } catch (err) { /* ignore */ }
+          }
+        }
+      }
+      renderCombinedPrompt();
+      applyConfirmedCellHighlights();
+      renderMasterLibrary();
+      scheduleSave();
+      setStatus('Matched Master text in ' + addr + ' — linked (Combined checked; locked until double-click unlock)', 'ok');
+    }, 0);
+  }
+
   function insertMasterText(text, masterCellIndex) {
     const tab = activeTab();
     if (!tab || isMasterTab(tab) || tab.cells.length === 0) return;
@@ -6264,24 +6424,8 @@
       ? masterCellIndex
       : findMasterCellIndexByText(insertText);
     if (masterIdx === null) masterIdx = -1;
-    setCellMasterLock(tab, index, masterIdx >= 0 ? masterIdx : null);
-    // Replace/sync nests + parent pages from the Master cell (Ash).
-    copyNestsFromMasterToCell(tab, index, masterIdx);
-    copyPagesFromMasterToCell(tab, index, masterIdx);
-    // Clicked Master-library text is authoritative for the active page slot.
-    // (copyPages alone can leave the cell blank when Master cellPages desyncs
-    // from master.cells, especially after part-page switches / empty page 2.)
-    writeCellCurrentPage(tab, index, insertText);
-    syncNestLinksAfterNestReplace(tab.id, index);
     focusedCell = { tabId: tab.id, index: index };
-    revalidateLinksForCell(tab.id, index, { silent: true });
-    // Auto-check Combined for the inserted cell (no-op if already included).
-    historySuspended = true;
-    try {
-      ensureCellConfirmedState(index, true, { quiet: true, col1Cascade: false });
-    } finally {
-      historySuspended = false;
-    }
+    applyMasterLinkToCell(tab, index, masterIdx, insertText);
     renderTabs();
     renderGrid();
     // Flush AFTER renderGrid — flushLiveCellInputs would otherwise re-read the
@@ -7344,6 +7488,7 @@
         ta.addEventListener('dblclick', onCellDblClickMasterUnlock);
         ta.addEventListener('blur', onCellBlurMasterFinish);
         ta.addEventListener('paste', onCellPaste);
+        ta.addEventListener('change', onCellCommitMasterMatch);
         ta.addEventListener('copy', onCellCopy);
         ta.addEventListener('cut', onCellCut);
         ta.addEventListener('beforeinput', onCellBeforeInputMasterLock);
@@ -9314,6 +9459,22 @@
     pushHistory();
     const result = pasteMatrixAt(tab, startRow, startCol, matrix);
     if (!result) return;
+    // Pasted cells that exactly match Master text become real Master links.
+    let pasteLinked = 0;
+    let pasteBlocked = 0;
+    if (!isMasterTab(tab)) {
+      for (let r = 0; r < result.rows; r++) {
+        for (let c = 0; c < result.cols; c++) {
+          const outcome = linkCellIfMasterMatch(tab, (startRow + r) * tab.cols + (startCol + c));
+          if (outcome === 'linked') pasteLinked++;
+          else if (outcome === 'blocked') pasteBlocked++;
+        }
+      }
+      if (pasteLinked) {
+        renderCombinedPrompt();
+        applyConfirmedCellHighlights();
+      }
+    }
 
     focusedCell = { tabId: tab.id, index: startIdx };
     renderTabs();
@@ -9324,7 +9485,9 @@
     if (cell) cell.focus();
     setStatus(
       'Pasted ' + result.rows + '×' + result.cols + ' cells at ' + cellAddress(startRow, startCol) +
-      ' (' + tab.cols + '×' + tab.rows + ' grid)',
+      ' (' + tab.cols + '×' + tab.rows + ' grid)' +
+      (pasteLinked ? ' — ' + pasteLinked + ' matched Master (linked + locked)' : '') +
+      (pasteBlocked ? ' — ' + pasteBlocked + ' Master match(es) not linked (own nests/pages)' : ''),
       'ok'
     );
   }
