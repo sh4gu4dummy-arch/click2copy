@@ -6348,6 +6348,199 @@
     return 'linked';
   }
 
+  /* ── Col1 data validation (part tabs): list = Master Column A values ── */
+
+  /** Unique trimmed non-empty Master Column A values (Master row order). */
+  function masterCol1Values() {
+    const master = state.tabs.find(isMasterTab);
+    const out = [];
+    if (!master || !master.cols) return out;
+    const seen = Object.create(null);
+    for (let r = 0; r < master.rows; r++) {
+      const v = (master.cells[r * master.cols] || '').trim();
+      if (!v || seen[v]) continue;
+      seen[v] = true;
+      out.push(v);
+    }
+    return out;
+  }
+
+  /**
+   * Col1 value allowed? Empty is allowed (clearing). With no Master Column A
+   * values at all, validation is off so nobody gets locked out.
+   */
+  function isCol1ValueAllowed(value, allowed) {
+    const v = String(value == null ? '' : value).trim();
+    if (!v) return true;
+    const list = allowed || masterCol1Values();
+    if (!list.length) return true;
+    return list.indexOf(v) !== -1;
+  }
+
+  function countInvalidCol1Cells(tab) {
+    if (!tab || isMasterTab(tab) || !tab.cols) return 0;
+    const allowed = masterCol1Values();
+    if (!allowed.length) return 0;
+    let n = 0;
+    for (let r = 0; r < tab.rows; r++) {
+      if (!isCol1ValueAllowed(tab.cells[r * tab.cols], allowed)) n++;
+    }
+    return n;
+  }
+
+  /** Master Column A cell index for a Col1 value (first row), or -1. */
+  function masterCol1IndexForValue(value) {
+    const master = state.tabs.find(isMasterTab);
+    const v = String(value == null ? '' : value).trim();
+    if (!master || !master.cols || !v) return -1;
+    for (let r = 0; r < master.rows; r++) {
+      const idx = r * master.cols;
+      if ((master.cells[idx] || '').trim() === v) return idx;
+    }
+    return -1;
+  }
+
+  /** Values to remember per Col1 cell at focus, so an invalid commit can revert. */
+  const col1FocusValues = Object.create(null);
+
+  function onCol1CellFocusRemember(e) {
+    const tab = activeTab();
+    const ta = e.currentTarget;
+    if (!tab || !ta) return;
+    const idx = parseInt(ta.dataset.idx, 10);
+    if (!isPartTabCol1Cell(tab, idx)) return;
+    col1FocusValues[tab.id + ':' + idx] = tab.cells[idx] || '';
+  }
+
+  function flashCol1Invalid(idx) {
+    const ta = el.cellGrid && el.cellGrid.querySelector('textarea.cell[data-idx="' + idx + '"]');
+    const wrap = ta && ta.closest ? ta.closest('.cell-wrap') : null;
+    if (!wrap) return;
+    wrap.classList.remove('col1-invalid-flash');
+    void wrap.offsetWidth;
+    wrap.classList.add('col1-invalid-flash');
+    window.setTimeout(function () { wrap.classList.remove('col1-invalid-flash'); }, 900);
+  }
+
+  /** Typed/pasted Col1 value not in the Master list → revert (returns true). */
+  function revertInvalidCol1Commit(tab, idx, ta) {
+    if (!isPartTabCol1Cell(tab, idx)) return false;
+    const value = tab.cells[idx] || '';
+    if (isCol1ValueAllowed(value)) return false;
+    const key = tab.id + ':' + idx;
+    const prev = Object.prototype.hasOwnProperty.call(col1FocusValues, key) ? col1FocusValues[key] : '';
+    writeCellCurrentPage(tab, idx, prev);
+    if (ta) ta.value = prev;
+    liveSyncConfirmedLinksForCell(tab.id, idx, null, { silent: true });
+    applyAppendCheckedState();
+    scheduleSave();
+    flashCol1Invalid(idx);
+    setStatus('“' + value.trim() + '” is not in Master Column A — reverted (use the ▾ list)', 'err');
+    return true;
+  }
+
+  let col1MenuEl = null;
+
+  function closeCol1ValueMenu() {
+    if (col1MenuEl && col1MenuEl.parentNode) col1MenuEl.parentNode.removeChild(col1MenuEl);
+    col1MenuEl = null;
+    document.removeEventListener('pointerdown', onCol1ValueMenuOutside, true);
+    document.removeEventListener('keydown', onCol1ValueMenuKey, true);
+  }
+
+  function onCol1ValueMenuOutside(ev) {
+    const t = ev.target;
+    if (col1MenuEl && col1MenuEl.contains(t)) return;
+    if (t && t.closest && t.closest('.col1-dropdown-btn')) return;
+    closeCol1ValueMenu();
+  }
+
+  function onCol1ValueMenuKey(ev) {
+    if (ev.key === 'Escape') {
+      ev.preventDefault();
+      ev.stopPropagation();
+      closeCol1ValueMenu();
+    }
+  }
+
+  /** Pick a Master Column A value for a part-tab Col1 cell (= Master insert). */
+  function pickCol1Value(tab, idx, value) {
+    if (!tab || activeTab() !== tab || !isPartTabCol1Cell(tab, idx)) return;
+    const master = state.tabs.find(isMasterTab);
+    const masterIdx = masterCol1IndexForValue(value);
+    if (!master || masterIdx < 0) return;
+    if ((tab.cells[idx] || '').trim() === value && getCellLock(tab, idx)) {
+      setStatus('Column A already “' + value + '”');
+      return;
+    }
+    focusedCell = { tabId: tab.id, index: idx };
+    insertMasterText(master.cells[masterIdx] || value, masterIdx);
+  }
+
+  function openCol1ValueMenu(anchorBtn, idx) {
+    const tab = activeTab();
+    if (!tab || !isPartTabCol1Cell(tab, idx)) return;
+    if (col1MenuEl && col1MenuEl.dataset.idx === String(idx)) {
+      closeCol1ValueMenu();
+      return;
+    }
+    closeCol1ValueMenu();
+    closeAddPageChoiceMenu();
+    closeCellShadePicker();
+    const values = masterCol1Values();
+    const current = (tab.cells[idx] || '').trim();
+    const menu = document.createElement('div');
+    menu.className = 'col1-value-menu';
+    menu.dataset.idx = String(idx);
+    menu.setAttribute('role', 'listbox');
+    menu.setAttribute('aria-label', 'Master Column A values');
+    if (!values.length) {
+      const empty = document.createElement('div');
+      empty.className = 'col1-value-empty';
+      empty.textContent = 'No Column A values in Master yet';
+      menu.appendChild(empty);
+    }
+    values.forEach(function (v) {
+      const opt = document.createElement('button');
+      opt.type = 'button';
+      opt.className = 'col1-value-option' + (v === current ? ' is-selected' : '');
+      opt.setAttribute('role', 'option');
+      opt.setAttribute('aria-selected', v === current ? 'true' : 'false');
+      opt.textContent = v;
+      opt.title = v;
+      opt.addEventListener('click', function (ev) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        closeCol1ValueMenu();
+        pickCol1Value(tab, idx, v);
+      });
+      menu.appendChild(opt);
+    });
+    if (current && !isCol1ValueAllowed(current, values)) {
+      const note = document.createElement('div');
+      note.className = 'col1-value-empty';
+      note.textContent = '“' + current + '” is not in Master — pick a value';
+      menu.insertBefore(note, menu.firstChild);
+    }
+    document.body.appendChild(menu);
+    col1MenuEl = menu;
+    const rect = anchorBtn.getBoundingClientRect();
+    const size = menu.getBoundingClientRect();
+    const pad = 6;
+    const left = Math.max(pad, Math.min(rect.right - size.width, window.innerWidth - size.width - pad));
+    let top = rect.bottom + 3;
+    if (top + size.height > window.innerHeight - pad) top = Math.max(pad, rect.top - size.height - 3);
+    menu.style.left = left + 'px';
+    menu.style.top = top + 'px';
+    const sel = menu.querySelector('.col1-value-option.is-selected') || menu.querySelector('.col1-value-option');
+    if (sel) {
+      sel.scrollIntoView({ block: 'nearest' });
+      sel.focus();
+    }
+    document.addEventListener('pointerdown', onCol1ValueMenuOutside, true);
+    document.addEventListener('keydown', onCol1ValueMenuKey, true);
+  }
+
   /** Cell 'change' (blur after a typed/pasted edit, incl. Enter/Tab moves). */
   function onCellCommitMasterMatch(e) {
     const tab = activeTab();
@@ -6355,6 +6548,7 @@
     if (!tab || !ta || isMasterTab(tab)) return;
     const idx = parseInt(ta.dataset.idx, 10);
     if (Number.isNaN(idx)) return;
+    if (revertInvalidCol1Commit(tab, idx, ta)) return;
     if (getCellLock(tab, idx) || findMasterMatchForCell(tab, idx, tab.cells[idx]) < 0) return;
     if (cellHasOwnExtraContent(tab, idx)) {
       setStatus('Matches a Master cell — not linked (this cell has its own nests/pages)', 'err');
@@ -7156,6 +7350,9 @@
 
     // The first grid row is a header row. Its handles resize the matching cell column.
     applyGridColumns(tab);
+    // Col1 data validation list (part tabs) — Master Column A values.
+    const col1Allowed = isMasterTab(tab) ? [] : masterCol1Values();
+    const col1InvalidCount = isMasterTab(tab) ? 0 : countInvalidCol1Cells(tab);
 
     const corner = document.createElement('div');
     corner.className = 'grid-corner';
@@ -7176,6 +7373,14 @@
 
       if (c === 0) {
         header.classList.add('column-header-sortable');
+        if (col1InvalidCount > 0) {
+          const bad = document.createElement('span');
+          bad.className = 'col1-invalid-count';
+          bad.textContent = '⚠ ' + col1InvalidCount;
+          bad.title = col1InvalidCount + ' Column A value' + (col1InvalidCount === 1 ? '' : 's') +
+            ' not in Master Column A (kept; marked). Pick from ▾ to fix.';
+          header.appendChild(bad);
+        }
         const sortControls = document.createElement('span');
         sortControls.className = 'column-sort-controls';
         sortControls.setAttribute('role', 'group');
@@ -7404,6 +7609,24 @@
           ev.stopPropagation();
           openCellShadePicker(shadeBtn, idx);
         });
+        if (isPartTabCol1Cell(tab, idx)) {
+          const ddBtn = document.createElement('button');
+          ddBtn.type = 'button';
+          ddBtn.className = 'col1-dropdown-btn';
+          ddBtn.textContent = '▾';
+          ddBtn.title = 'Pick a Master Column A value (Alt+↓)';
+          ddBtn.setAttribute('aria-label', 'Pick Column A value for ' + cellAddress(r, c));
+          ddBtn.addEventListener('pointerdown', function (ev) {
+            ev.preventDefault();
+            ev.stopPropagation();
+          });
+          ddBtn.addEventListener('click', function (ev) {
+            ev.preventDefault();
+            ev.stopPropagation();
+            openCol1ValueMenu(ddBtn, idx);
+          });
+          corner.appendChild(ddBtn);
+        }
         corner.appendChild(shadeBtn);
 
         const pageChrome = document.createElement('div');
@@ -7480,6 +7703,13 @@
         const ta = document.createElement('textarea');
         ta.className = 'cell';
         if (isCellConfirmed(tab.id, idx)) ta.classList.add('cell-confirmed');
+        if (isPartTabCol1Cell(tab, idx)) {
+          ta.classList.add('cell-col1-validated');
+          if (!isCol1ValueAllowed(tab.cells[idx], col1Allowed)) {
+            wrap.classList.add('col1-invalid');
+            ta.title = 'Not in Master Column A — keep or pick a value from ▾';
+          }
+        }
         ta.rows = 2;
         ta.spellcheck = false;
         ta.placeholder = cellAddress(r, c);
@@ -7506,6 +7736,16 @@
         ta.addEventListener('blur', onCellBlurMasterFinish);
         ta.addEventListener('paste', onCellPaste);
         ta.addEventListener('change', onCellCommitMasterMatch);
+        if (isPartTabCol1Cell(tab, idx)) {
+          ta.addEventListener('focus', onCol1CellFocusRemember);
+          ta.addEventListener('keydown', function (ev) {
+            if (ev.altKey && ev.key === 'ArrowDown') {
+              ev.preventDefault();
+              const btn = ev.currentTarget.closest('.cell-wrap').querySelector('.col1-dropdown-btn');
+              if (btn) openCol1ValueMenu(btn, idx);
+            }
+          });
+        }
         ta.addEventListener('copy', onCellCopy);
         ta.addEventListener('cut', onCellCut);
         ta.addEventListener('beforeinput', onCellBeforeInputMasterLock);
@@ -9513,6 +9753,19 @@
     e.preventDefault();
     const startRow = Math.floor(startIdx / tab.cols);
     const startCol = startIdx % tab.cols;
+    // Col1 data validation: values not in Master Column A keep the cell's
+    // previous value (never silently stored).
+    let col1Rejected = 0;
+    if (!isMasterTab(tab) && startCol === 0) {
+      const allowed = masterCol1Values();
+      for (let r = 0; r < matrix.length; r++) {
+        const v = matrix[r][0];
+        if (isCol1ValueAllowed(v, allowed)) continue;
+        const rr = startRow + r;
+        matrix[r][0] = rr < tab.rows ? (tab.cells[rr * tab.cols] || '') : '';
+        col1Rejected++;
+      }
+    }
     if (!isMasterTab(tab)) {
       const pr = matrix.length;
       const pc = matrix[0].length;
@@ -9563,8 +9816,9 @@
         'Pasted ' + result.rows + '×' + result.cols + ' cells at ' + cellAddress(startRow, startCol) +
         ' (' + tab.cols + '×' + tab.rows + ' grid)' +
         (pasteLinked ? ' — ' + pasteLinked + ' matched Master (linked + locked)' : '') +
-        (pasteBlocked ? ' — ' + pasteBlocked + ' Master match(es) not linked (own nests/pages)' : ''),
-        'ok'
+        (pasteBlocked ? ' — ' + pasteBlocked + ' Master match(es) not linked (own nests/pages)' : '') +
+        (col1Rejected ? ' — ' + col1Rejected + ' Column A value(s) not in Master kept previous' : ''),
+        col1Rejected ? 'err' : 'ok'
       );
     }
 
