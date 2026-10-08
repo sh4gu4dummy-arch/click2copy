@@ -476,6 +476,15 @@
         liveSyncConfirmedLinksForCell(tab.id, i, null, { silent: true });
       }
     });
+    syncStoredPartPagesFromMaster(masterIdx);
+  }
+
+  /** Same push for part pages not currently shown (stored snapshots). */
+  function syncStoredPartPagesFromMaster(masterIdx) {
+    forEachPartLockSite(function (site, i, lock) {
+      if (site.live || lock.masterCellIndex !== masterIdx) return;
+      writeLockSiteFromMaster(site, i, masterIdx);
+    });
   }
 
   function swapCellPagesIndices(tab, indexA, indexB) {
@@ -645,6 +654,7 @@
         syncNestLinksAfterNestReplace(tab.id, i);
       }
     });
+    syncStoredPartPagesFromMaster(masterIdx);
   }
 
   /** Nested-cell arrays parallel to cells; missing/short pad with []. */
@@ -2148,26 +2158,47 @@
     });
   }
 
-  /** When Master rows reorder, keep part-tab locks + Combined masterCellIndex in sync. */
-  function remapMasterCellIndices(oldToNew, cols) {
-    if (!oldToNew || !cols) return;
-    function mapIndex(idx) {
-      if (!Number.isInteger(idx) || idx < 0) return idx;
-      const row = Math.floor(idx / cols);
-      const col = idx % cols;
-      if (row < 0 || row >= oldToNew.length) return idx;
-      const next = oldToNew[row];
-      if (!Number.isInteger(next) || next < 0) return idx;
-      return next * cols + col;
-    }
+  /**
+   * Visit every Master-origin lock on part tabs: the live grid (current part
+   * page) AND every stored part-page snapshot. Master sync/remap used to walk
+   * only the live arrays, so links on part pages not currently shown went stale.
+   * cb(site, i, lock) — site = { tab, live, cells, cellLocks, cellPages, nestedCells }.
+   */
+  function forEachPartLockSite(cb) {
     state.tabs.forEach(function (tab) {
-      if (isMasterTab(tab)) return;
+      if (!tab || isMasterTab(tab)) return;
       ensureCellLocks(tab);
+      ensureCellPages(tab);
+      ensureNestedCells(tab);
+      const live = { tab: tab, live: true, cells: tab.cells, cellLocks: tab.cellLocks,
+        cellPages: tab.cellPages, nestedCells: tab.nestedCells };
       for (let i = 0; i < tab.cellLocks.length; i++) {
         const lock = tab.cellLocks[i];
-        if (lock && Number.isInteger(lock.masterCellIndex) && lock.masterCellIndex >= 0) {
-          lock.masterCellIndex = mapIndex(lock.masterCellIndex);
+        if (lock && lock.masterOrigin === true) cb(live, i, lock);
+      }
+      if (!Array.isArray(tab.pages)) return;
+      for (let k = 0; k < tab.pages.length; k++) {
+        if (k === (tab.page || 0)) continue; // live arrays are authoritative for the shown page
+        const snap = tab.pages[k];
+        if (!snap || !Array.isArray(snap.cellLocks) || !Array.isArray(snap.cells)) continue;
+        const n = snap.cells.length;
+        if (!Array.isArray(snap.cellPages)) snap.cellPages = [];
+        if (!Array.isArray(snap.nestedCells)) snap.nestedCells = [];
+        const site = { tab: tab, live: false, cells: snap.cells, cellLocks: snap.cellLocks,
+          cellPages: snap.cellPages, nestedCells: snap.nestedCells };
+        for (let i = 0; i < Math.min(n, snap.cellLocks.length); i++) {
+          const lock = snap.cellLocks[i];
+          if (lock && lock.masterOrigin === true) cb(site, i, lock);
         }
+      }
+    });
+  }
+
+  /** Remap every part lock + Combined masterCellIndex through mapIndex(oldIdx) → newIdx. */
+  function remapMasterIndexWith(mapIndex) {
+    forEachPartLockSite(function (site, i, lock) {
+      if (Number.isInteger(lock.masterCellIndex) && lock.masterCellIndex >= 0) {
+        lock.masterCellIndex = mapIndex(lock.masterCellIndex);
       }
     });
     state.confirmedLinks.forEach(function (link) {
@@ -2175,6 +2206,170 @@
         link.masterCellIndex = mapIndex(link.masterCellIndex);
       }
     });
+  }
+
+  /** When Master rows reorder, keep part-tab locks + Combined masterCellIndex in sync. */
+  function remapMasterCellIndices(oldToNew, cols) {
+    if (!oldToNew || !cols) return;
+    remapMasterIndexWith(function (idx) {
+      const row = Math.floor(idx / cols);
+      const col = idx % cols;
+      if (row < 0 || row >= oldToNew.length) return idx;
+      const next = oldToNew[row];
+      if (!Number.isInteger(next) || next < 0) return idx;
+      return next * cols + col;
+    });
+  }
+
+  /** Master gained a column: row*oldCols+col → row*newCols+col. */
+  function remapMasterIndicesAfterColumnAdd(oldCols, newCols) {
+    if (!oldCols || !newCols) return;
+    remapMasterIndexWith(function (idx) {
+      return Math.floor(idx / oldCols) * newCols + (idx % oldCols);
+    });
+  }
+
+  /** Master rows >= fromRow pushed down one. */
+  function remapMasterIndicesAfterPushDown(cols, fromRow) {
+    if (!cols) return;
+    remapMasterIndexWith(function (idx) {
+      const row = Math.floor(idx / cols);
+      return row >= fromRow ? idx + cols : idx;
+    });
+  }
+
+  function siteCellText(site, i) {
+    const entry = site.cellPages[i];
+    if (entry && Array.isArray(entry.pages) && entry.pages.length) {
+      const pg = entry.page || 0;
+      return entry.pages[pg] == null ? '' : String(entry.pages[pg]);
+    }
+    return site.cells[i] == null ? '' : String(site.cells[i]);
+  }
+
+  function masterSourceHasContent(master, idx) {
+    if (!master || !Number.isInteger(idx) || idx < 0 || idx >= master.cells.length) return false;
+    const entry = getCellPages(master, idx);
+    for (let p = 0; p < entry.pages.length; p++) {
+      if (String(entry.pages[p] || '').trim()) return true;
+    }
+    if ((master.cells[idx] || '').trim()) return true;
+    const nests = getCellNests(master, idx);
+    for (let n = 0; n < nests.length; n++) if (nestHasContent(nests[n])) return true;
+    return false;
+  }
+
+  /** Copy Master[masterIdx] pages + nests into a lock site (live or stored page). */
+  function writeLockSiteFromMaster(site, i, masterIdx) {
+    const master = state.tabs.find(isMasterTab);
+    if (!master) return false;
+    const source = cloneCellPagesEntry(getCellPages(master, masterIdx));
+    const live = master.cells[masterIdx] == null ? '' : String(master.cells[masterIdx]);
+    if ((source.pages[source.page] || '') !== live) source.pages[source.page] = live;
+    const nests = cloneNestList(getCellNests(master, masterIdx));
+    const pagesSame = cellPagesContentEqual(site.cellPages[i], source) &&
+      site.cellPages[i] && site.cellPages[i].page === source.page &&
+      siteCellText(site, i) === (source.pages[source.page] || '');
+    const nestsSame = nestsContentEqual(site.nestedCells[i], nests);
+    if (pagesSame && nestsSame) return false;
+    site.cellPages[i] = source;
+    site.cells[i] = source.pages[source.page] == null ? '' : String(source.pages[source.page]);
+    site.nestedCells[i] = nests;
+    if (site.live) {
+      if (!nestsSame) syncNestLinksAfterNestReplace(site.tab.id, i);
+      liveSyncConfirmedLinksForCell(site.tab.id, i, null, { silent: true });
+    }
+    return true;
+  }
+
+  function findMasterIndexForText(text, preferCol, masterCols) {
+    const master = state.tabs.find(isMasterTab);
+    if (!master) return -1;
+    const want = trimEndText(text);
+    if (!want.trim()) return -1;
+    let first = -1;
+    for (let j = 0; j < master.cells.length; j++) {
+      if (trimEndText(master.cells[j] || '') !== want) continue;
+      if (Number.isInteger(preferCol) && masterCols && j % masterCols === preferCol) return j;
+      if (first < 0) first = j;
+    }
+    return first;
+  }
+
+  /**
+   * No locked cell may be left stale or orphaned. For every Master-origin lock
+   * (all part tabs, all part pages):
+   *  - source Master cell exists (in range, has content): follow it — if the cell
+   *    text no longer matches, re-point to the Master cell that holds exactly this
+   *    text (index drift) else re-sync pages + nests from the source (Master edited);
+   *  - source missing/empty/unknown: re-link by exact text if a Master cell holds
+   *    it, otherwise unlock and keep the text as a normal cell.
+   * Skips the cell in an active unlock-edit session. Returns counts.
+   */
+  function reconcileMasterLocks(opts) {
+    opts = opts || {};
+    const out = { checked: 0, resynced: 0, repointed: 0, unlocked: 0 };
+    const master = state.tabs.find(isMasterTab);
+    if (!master) return out;
+    ensureCellPages(master);
+    ensureNestedCells(master);
+    const unlockedLive = [];
+    forEachPartLockSite(function (site, i, lock) {
+      if (opts.onlyTabId && site.tab.id !== opts.onlyTabId) return;
+      if (opts.onlyLive && !site.live) return;
+      if (Number.isInteger(opts.onlyIndex) && (!site.live || i !== opts.onlyIndex)) return;
+      if (site.live && isMasterCellEditFor(site.tab, i)) return;
+      out.checked++;
+      const text = siteCellText(site, i);
+      const cols = site.tab.cols || 1;
+      const idx = lock.masterCellIndex;
+      const sourceOk = masterSourceHasContent(master, idx);
+      if (sourceOk && trimEndText(master.cells[idx] || '') === trimEndText(text)) {
+        if (writeLockSiteFromMaster(site, i, idx)) out.resynced++;
+        return;
+      }
+      const match = findMasterIndexForText(text, i % cols, master.cols);
+      if (match >= 0 && match !== idx) {
+        lock.masterCellIndex = match;
+        writeLockSiteFromMaster(site, i, match);
+        out.repointed++;
+        return;
+      }
+      if (sourceOk) {
+        writeLockSiteFromMaster(site, i, idx);
+        out.resynced++;
+        return;
+      }
+      site.cellLocks[i] = null;
+      out.unlocked++;
+      if (site.live) unlockedLive.push({ tabId: site.tab.id, cellIndex: i });
+    });
+    // Orphans become normal cells: drop Master lock/origin on their Combined links.
+    unlockedLive.forEach(function (u) {
+      state.confirmedLinks.forEach(function (link) {
+        if (link.tabId !== u.tabId || link.cellIndex !== u.cellIndex) return;
+        if (!isMasterOriginLink(link)) return;
+        link.masterOrigin = false;
+        link.locked = false;
+        if ('masterCellIndex' in link) delete link.masterCellIndex;
+      });
+    });
+    return out;
+  }
+
+  function reportLockRepair(r) {
+    if (!r || !(r.resynced || r.repointed || r.unlocked)) return;
+    const msg = 'Repaired stale Master links: ' + reconcileSummary(r);
+    pushEvent(msg, 'ok');
+    scheduleSave();
+  }
+
+  function reconcileSummary(r) {
+    const parts = [];
+    if (r.resynced) parts.push(r.resynced + ' re-synced');
+    if (r.repointed) parts.push(r.repointed + ' re-linked');
+    if (r.unlocked) parts.push(r.unlocked + ' unlocked (Master source gone, text kept)');
+    return parts.join(', ');
   }
 
 
@@ -2977,6 +3172,7 @@
     tab.page = next;
     applyTabPageGrid(tab, tab.pages[tab.page]);
     restoreTabCombinedFromPage(tab, tab.pages[tab.page]);
+    reportLockRepair(reconcileMasterLocks({ onlyTabId: tab.id, onlyLive: true }));
     focusedCell = null;
     clearStickyCellRange();
     clearKeyboardCellRange();
@@ -3126,49 +3322,76 @@
     });
   }
 
-  /** Shared small page menu (part-page chips, cell page labels): heading + red Delete page. */
+  /** Shared small page menu (part-page chips, cell/nest page labels): heading + Delete page (+ extra). */
   function openPageCtxMenu(opts) {
+    const items = [{
+      label: 'Delete page',
+      danger: opts.pageDanger !== false,
+      disabled: !!opts.disabled,
+      title: opts.disabled ? opts.disabledTitle : opts.enabledTitle,
+      onClick: opts.onDelete
+    }];
+    if (opts.extra) {
+      items.push({
+        label: opts.extra.label,
+        danger: true,
+        disabled: !!opts.extra.disabled,
+        title: opts.extra.title || '',
+        onClick: opts.extra.onClick
+      });
+    }
+    openCtxMenu({ heading: opts.heading, items: items, x: opts.x, y: opts.y });
+  }
+
+  /**
+   * Generic small context menu (tab right-click menu look).
+   * items: [{ label, onClick, disabled, danger, current, swatch, title }]
+   */
+  function openCtxMenu(opts) {
     closePartPageMenu();
     closeTabIconPicker();
     const pop = document.createElement('div');
-    pop.className = 'tab-icon-picker part-page-menu';
+    pop.className = 'tab-icon-picker part-page-menu' + (opts.className ? ' ' + opts.className : '');
     pop.setAttribute('role', 'menu');
     const heading = document.createElement('div');
     heading.className = 'tab-icon-picker-heading';
     heading.textContent = opts.heading;
     pop.appendChild(heading);
-    const del = document.createElement('button');
-    del.type = 'button';
-    del.className = 'tab-icon-picker-action' + (opts.pageDanger === false ? '' : ' is-danger');
-    del.setAttribute('role', 'menuitem');
-    del.textContent = 'Delete page';
-    del.disabled = !!opts.disabled;
-    del.title = opts.disabled ? opts.disabledTitle : opts.enabledTitle;
-    del.addEventListener('click', function (ev) {
-      ev.preventDefault();
-      ev.stopPropagation();
-      closePartPageMenu();
-      if (!opts.disabled) opts.onDelete();
-    });
-    pop.appendChild(del);
-    let extraBtn = null;
-    if (opts.extra) {
-      const ex = opts.extra;
-      extraBtn = document.createElement('button');
-      extraBtn.type = 'button';
-      extraBtn.className = 'tab-icon-picker-action is-danger';
-      extraBtn.setAttribute('role', 'menuitem');
-      extraBtn.textContent = ex.label;
-      extraBtn.disabled = !!ex.disabled;
-      extraBtn.title = ex.title || '';
-      extraBtn.addEventListener('click', function (ev) {
+    let firstEnabled = null;
+    (opts.items || []).forEach(function (item) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'tab-icon-picker-action' + (item.danger ? ' is-danger' : '') +
+        (item.current ? ' is-current' : '');
+      btn.setAttribute('role', 'menuitem');
+      if (item.swatch) {
+        const sw = document.createElement('span');
+        sw.className = 'ctx-swatch ctx-swatch-' + item.swatch;
+        sw.setAttribute('aria-hidden', 'true');
+        btn.appendChild(sw);
+      }
+      const label = document.createElement('span');
+      label.className = 'ctx-label';
+      label.textContent = item.label;
+      btn.appendChild(label);
+      if (item.current) {
+        const mark = document.createElement('span');
+        mark.className = 'ctx-check';
+        mark.textContent = '✓';
+        mark.setAttribute('aria-label', 'current');
+        btn.appendChild(mark);
+      }
+      btn.disabled = !!item.disabled;
+      if (item.title) btn.title = item.title;
+      btn.addEventListener('click', function (ev) {
         ev.preventDefault();
         ev.stopPropagation();
         closePartPageMenu();
-        if (!ex.disabled) ex.onClick();
+        if (!item.disabled && typeof item.onClick === 'function') item.onClick();
       });
-      pop.appendChild(extraBtn);
-    }
+      pop.appendChild(btn);
+      if (!firstEnabled && !btn.disabled) firstEnabled = btn;
+    });
     document.body.appendChild(pop);
     partPageMenuEl = pop;
     const pad = 6;
@@ -3180,8 +3403,6 @@
     document.addEventListener('pointerdown', onPartPageMenuOutside, true);
     document.addEventListener('keydown', onPartPageMenuKey, true);
     window.addEventListener('blur', closePartPageMenu);
-    if (!del.disabled) del.focus({ preventScroll: true });
-    else if (extraBtn && !extraBtn.disabled) extraBtn.focus({ preventScroll: true });
   }
 
   function stepTabPage(delta) {
@@ -3450,68 +3671,76 @@
 
 
   function closeCellShadePicker() {
-    const open = document.querySelectorAll('.cell-shade-picker');
-    for (let i = 0; i < open.length; i++) open[i].remove();
-    document.removeEventListener('pointerdown', onShadePickerOutside, true);
+    if (partPageMenuEl && partPageMenuEl.classList.contains('cell-shade-menu')) closePartPageMenu();
   }
 
-  function onShadePickerOutside(ev) {
-    const t = ev.target;
-    if (t && typeof t.closest === 'function' &&
-        (t.closest('.cell-shade-picker') || t.closest('.cell-shade-btn'))) {
-      return;
+  /** Target cells for a shade action: the multi-cell range if the click is inside it, else the cell. */
+  function shadeTargetIndices(tab, cellIndex) {
+    const b = getStickyCellRange();
+    const r = Math.floor(cellIndex / tab.cols);
+    const c = cellIndex % tab.cols;
+    if (b && r >= b.rMin && r <= b.rMax && c >= b.cMin && c <= b.cMax) {
+      const out = [];
+      for (let rr = b.rMin; rr <= b.rMax; rr++) {
+        for (let cc = b.cMin; cc <= b.cMax; cc++) {
+          const i = rr * tab.cols + cc;
+          if (i >= 0 && i < tab.cells.length) out.push(i);
+        }
+      }
+      return out;
     }
-    closeCellShadePicker();
+    return [cellIndex];
   }
 
-  function openCellShadePicker(anchorBtn, cellIndex) {
+  function applyShadeToCells(tab, indices, shade) {
+    pushHistory();
+    indices.forEach(function (i) { setCellShade(tab, i, shade); });
+    indices.forEach(function (i) {
+      const ta = el.cellGrid && el.cellGrid.querySelector('textarea.cell[data-idx="' + i + '"]');
+      const wrapEl = ta && ta.closest ? ta.closest('.cell-wrap') : null;
+      if (!wrapEl) return;
+      wrapEl.classList.remove('cell-shade-green', 'cell-shade-yellow', 'cell-shade-red');
+      if (shade) wrapEl.classList.add('cell-shade-' + shade);
+    });
+    scheduleSave();
+    const what = indices.length === 1 ? 'Cell' : indices.length + ' cells';
+    setStatus(shade ? (what + ' shaded ' + shade) : (what + ' shading cleared'), 'ok');
+  }
+
+  function openCellShadeMenu(cellIndex, x, y) {
     const tab = activeTab();
     if (!tab || cellIndex < 0 || cellIndex >= tab.cells.length) return;
-    closeCellShadePicker();
     closeAddPageChoiceMenu();
-    const picker = document.createElement('div');
-    picker.className = 'cell-shade-picker';
-    picker.setAttribute('role', 'listbox');
-    picker.setAttribute('aria-label', 'Cell shade');
-    const options = [
-      { id: null, label: 'None', swatch: 'none' },
-      { id: 'green', label: 'Light green', swatch: 'green' },
-      { id: 'yellow', label: 'Light yellow', swatch: 'yellow' },
-      { id: 'red', label: 'Light red', swatch: 'red' }
-    ];
-    const current = getCellShade(tab, cellIndex);
-    options.forEach(function (opt) {
-      const btn = document.createElement('button');
-      btn.type = 'button';
-      btn.className = 'cell-shade-option cell-shade-option-' + opt.swatch;
-      btn.title = opt.label;
-      btn.setAttribute('aria-label', opt.label);
-      btn.setAttribute('role', 'option');
-      if ((opt.id || null) === (current || null)) btn.classList.add('is-selected');
-      btn.addEventListener('click', function (ev) {
-        ev.preventDefault();
-        ev.stopPropagation();
-        pushHistory();
-        setCellShade(tab, cellIndex, opt.id);
-        closeCellShadePicker();
-        const wrap = el.cellGrid
-          ? el.cellGrid.querySelector('.cell-wrap textarea.cell[data-idx="' + cellIndex + '"]')
-          : null;
-        const wrapEl = wrap && wrap.closest ? wrap.closest('.cell-wrap') : null;
-        if (wrapEl) {
-          wrapEl.classList.remove('cell-shade-green', 'cell-shade-yellow', 'cell-shade-red');
-          if (opt.id) wrapEl.classList.add('cell-shade-' + opt.id);
-        } else {
-          renderGrid();
-        }
-        scheduleSave();
-        setStatus(opt.id ? ('Cell shade: ' + opt.label) : 'Cell shade cleared', 'ok');
-      });
-      picker.appendChild(btn);
+    const indices = shadeTargetIndices(tab, cellIndex);
+    const shades = indices.map(function (i) { return getCellShade(tab, i) || null; });
+    const allSame = shades.every(function (v) { return v === shades[0]; });
+    const current = allSame ? shades[0] : undefined;
+    const anyShaded = shades.some(function (v) { return !!v; });
+    const r = Math.floor(cellIndex / tab.cols);
+    const c = cellIndex % tab.cols;
+    const heading = indices.length > 1 ? ('Shade ' + indices.length + ' cells') : ('Shade ' + cellAddress(r, c));
+    const items = [
+      { id: 'green', label: 'Shade green' },
+      { id: 'yellow', label: 'Shade yellow' },
+      { id: 'red', label: 'Shade red' }
+    ].map(function (opt) {
+      return {
+        label: opt.label,
+        swatch: opt.id,
+        current: current === opt.id,
+        title: current === opt.id ? 'Current shade' : '',
+        onClick: function () { applyShadeToCells(tab, indices, opt.id); }
+      };
     });
-    const host = anchorBtn.closest('.cell-corner-tools') || anchorBtn.parentNode;
-    host.appendChild(picker);
-    document.addEventListener('pointerdown', onShadePickerOutside, true);
+    items.push({
+      label: 'Clear shading',
+      swatch: 'none',
+      disabled: !anyShaded,
+      current: current === null,
+      title: anyShaded ? '' : 'No shading to clear',
+      onClick: function () { applyShadeToCells(tab, indices, null); }
+    });
+    openCtxMenu({ heading: heading, items: items, x: x, y: y, className: 'cell-shade-menu' });
   }
 
   function closeAddPageChoiceMenu() {
@@ -4992,6 +5221,24 @@
     if (!tab || masterSegmentDialogOpen) return;
     if (isMasterTab(tab)) return;
     if (!isCellMasterLocked(tab, cellIndex)) return;
+    // Never open an edit session (and its Overwrite-Master prompt) on a stale or
+    // orphaned lock: re-sync it from Master first, or unlock it if the source is gone.
+    const fix = reconcileMasterLocks({ onlyTabId: tab.id, onlyIndex: cellIndex });
+    if (fix.resynced || fix.repointed || fix.unlocked) {
+      renderGrid();
+      renderCombinedPrompt();
+      applyConfirmedCellHighlights();
+      applyAppendCheckedState();
+      scheduleSave();
+      if (fix.unlocked) {
+        setStatus('Master source for this cell is gone — unlocked; your text is kept and editable', 'ok');
+        const fresh = el.cellGrid && el.cellGrid.querySelector('textarea.cell[data-idx="' + cellIndex + '"]');
+        if (fresh) fresh.focus();
+        return;
+      }
+      setStatus('This linked cell was out of date — re-synced from Master; double-click again to edit', 'ok');
+      return;
+    }
     const originalText = tab.cells[cellIndex] == null ? '' : String(tab.cells[cellIndex]);
     ensureNestedCells(tab);
     ensureCellPages(tab);
@@ -5187,6 +5434,8 @@
       }
     }
 
+    // No Master source found: do NOT rewrite/lock other cells (that created orphans).
+    if (masterIdx < 0) return -1;
     // Sync every tab cell that still holds the old Master text (library + parts).
     state.tabs.forEach(function (tab) {
       if (!tab || !Array.isArray(tab.cells)) return;
@@ -5244,6 +5493,16 @@
       const preferred = lock && Number.isInteger(lock.masterCellIndex) ? lock.masterCellIndex : -1;
       const nestsFromEdit = cloneNestList(getCellNests(tab, edit.cellIndex));
       const pagesFromEdit = cloneCellPagesEntry(getCellPages(tab, edit.cellIndex));
+      const master = state.tabs.find(isMasterTab);
+      if (!master || !masterSourceHasContent(master, preferred) ||
+          trimEndText(master.cells[preferred] || '') !== trimEndText(oldText)) {
+        // Source missing or out of date — never "overwrite" a Master cell we can't
+        // identify; keep the edit as a normal local cell instead.
+        masterSegmentEdit = edit;
+        keepMasterSegmentLocalOnly();
+        setStatus('No matching Master cell — kept as local text (Master unchanged)', 'err');
+        return;
+      }
       pushHistory();
       const masterIdx = applyMasterOverwriteText(oldText, newText, preferred, nestsFromEdit, pagesFromEdit);
       setCellMasterLock(tab, edit.cellIndex, masterIdx >= 0 ? masterIdx : null);
@@ -5441,6 +5700,7 @@
     return getPromptText(currentPromptScope());
   }
 
+  let lastLockRepair = null;
   function applyData(data) {
     focusedCell = null;
     const tabs = [];
@@ -5493,6 +5753,8 @@
     repairAllConfirmedLinks();
     // Col1 is filter-only: drop any legacy Column A text from Combined prompts.
     stripCol1TextFromAllCombinedScopes();
+    // Repair stale / orphaned Master locks (all part tabs + stored part pages).
+    lastLockRepair = reconcileMasterLocks();
     if (el.partSeparator) el.partSeparator.value = state.separators.part;
     if (el.columnSeparator) el.columnSeparator.value = state.separators.column;
     if (el.rowSeparator) el.rowSeparator.value = state.separators.row;
@@ -7514,9 +7776,80 @@
   const gridScrollPos = Object.create(null);
   let gridScrollKey = null;
 
+  // Keys are "documentId|tabId:page" so documents with the same tab ids don't collide.
+  // Persisted to userData grid-scroll.json (v0.138) so it survives restarts/updates.
   function gridScrollKeyFor(tab) {
     if (!tab) return null;
-    return tab.id + ':' + (isMasterTab(tab) ? 0 : (tab.page || 0));
+    const doc = activeDocument();
+    return (doc ? doc.id : '') + '|' + tab.id + ':' + (isMasterTab(tab) ? 0 : (tab.page || 0));
+  }
+
+  let gridScrollSaveTimer = null;
+  let gridScrollCaptureTimer = null;
+
+  /** Record the live grid scroll for the current tab/page (skips while hidden). */
+  function captureLiveGridScroll() {
+    const wrap = el.cellGrid && el.cellGrid.parentElement;
+    if (!wrap || !gridScrollKey || wrap.clientHeight <= 0) return;
+    gridScrollPos[gridScrollKey] = { top: wrap.scrollTop, left: wrap.scrollLeft };
+  }
+
+  /** Nested { docId: { "tabId:page": [top, left] } } for open documents only. */
+  function gridScrollPayload() {
+    const open = Object.create(null);
+    (state.documents || []).forEach(function (d) { open[d.id] = true; });
+    const out = {};
+    Object.keys(gridScrollPos).forEach(function (key) {
+      const bar = key.indexOf('|');
+      if (bar < 0) return;
+      const docId = key.slice(0, bar);
+      if (!open[docId]) return;
+      const pos = gridScrollPos[key];
+      if (!pos) return;
+      if (!out[docId]) out[docId] = {};
+      out[docId][key.slice(bar + 1)] = [Math.round(pos.top) || 0, Math.round(pos.left) || 0];
+    });
+    return out;
+  }
+
+  function seedGridScroll(raw) {
+    if (!raw || typeof raw !== 'object') return;
+    Object.keys(raw).forEach(function (docId) {
+      const map = raw[docId];
+      if (!map || typeof map !== 'object') return;
+      Object.keys(map).forEach(function (k) {
+        const v = map[k];
+        const key = docId + '|' + k;
+        if (gridScrollPos[key] || !Array.isArray(v)) return; // live memory wins
+        gridScrollPos[key] = { top: Number(v[0]) || 0, left: Number(v[1]) || 0 };
+      });
+    });
+  }
+
+  function scheduleGridScrollSave() {
+    if (!window.click2copy || typeof window.click2copy.saveGridScroll !== 'function') return;
+    clearTimeout(gridScrollSaveTimer);
+    gridScrollSaveTimer = setTimeout(function () {
+      gridScrollSaveTimer = null;
+      window.click2copy.saveGridScroll(gridScrollPayload()).catch(function () {});
+    }, 800);
+  }
+
+  /** Immediate save (Restart). Returns a promise; never throws. */
+  function flushGridScroll() {
+    captureLiveGridScroll();
+    clearTimeout(gridScrollSaveTimer);
+    gridScrollSaveTimer = null;
+    if (!window.click2copy || typeof window.click2copy.saveGridScroll !== 'function') return Promise.resolve(false);
+    return Promise.resolve(window.click2copy.saveGridScroll(gridScrollPayload())).catch(function () { return false; });
+  }
+
+  function onGridScrolled() {
+    clearTimeout(gridScrollCaptureTimer);
+    gridScrollCaptureTimer = setTimeout(function () {
+      captureLiveGridScroll();
+      scheduleGridScrollSave();
+    }, 150);
   }
 
   function restoreGridScroll(tab) {
@@ -7753,6 +8086,15 @@
         else if (cellLocked) wrap.classList.add('master-cell-locked');
         const shade = getCellShade(tab, idx);
         if (shade) wrap.classList.add('cell-shade-' + shade);
+        // Right-click the cell body → shade menu (page labels have their own menu;
+        // nests have no shading and keep default behaviour).
+        wrap.addEventListener('contextmenu', function (ev) {
+          const t = ev.target;
+          if (t && t.closest && (t.closest('.cell-nest') || t.closest('.cell-page-label'))) return;
+          ev.preventDefault();
+          ev.stopPropagation();
+          openCellShadeMenu(idx, ev.clientX, ev.clientY);
+        });
         const gutter = document.createElement('div');
         gutter.className = 'cell-gutter';
 
@@ -7814,21 +8156,6 @@
         corner.className = 'cell-corner-tools';
         corner.dataset.idx = String(idx);
 
-        const shadeBtn = document.createElement('button');
-        shadeBtn.type = 'button';
-        shadeBtn.className = 'cell-shade-btn' + (shade ? ' cell-shade-btn-' + shade : '');
-        shadeBtn.title = 'Cell shade';
-        shadeBtn.setAttribute('aria-label', 'Cell shade');
-        shadeBtn.innerHTML = '<span class="cell-shade-btn-mark" aria-hidden="true"></span>';
-        shadeBtn.addEventListener('pointerdown', function (ev) {
-          ev.preventDefault();
-          ev.stopPropagation();
-        });
-        shadeBtn.addEventListener('click', function (ev) {
-          ev.preventDefault();
-          ev.stopPropagation();
-          openCellShadePicker(shadeBtn, idx);
-        });
         if (isPartTabCol1Cell(tab, idx)) {
           const ddBtn = document.createElement('button');
           ddBtn.type = 'button';
@@ -7847,7 +8174,6 @@
           });
           corner.appendChild(ddBtn);
         }
-        corner.appendChild(shadeBtn);
 
         const pageChrome = document.createElement('div');
         pageChrome.className = 'cell-page-chrome';
@@ -9546,6 +9872,8 @@
     if (el.partFindInput) partSearchQuery = el.partFindInput.value;
     closeMasterLibFilterMenu();
     masterLibFilterMenuOpen = false;
+    // Safety net: linked cells always show their current Master source.
+    reportLockRepair(reconcileMasterLocks());
     renderTabs();
     renderGrid();
     // Repair/drop Combined links for this tab before Master-insert greens paint.
@@ -9917,6 +10245,7 @@
       remapCellPagesAfterColumnAdd(tab, oldCols, tab.cols);
       remapCellShadesAfterColumnAdd(tab, oldCols, tab.cols);
       remapConfirmedAfterColumnAdd(tab.id, oldCols, tab.cols);
+      if (isMasterTab(tab)) remapMasterIndicesAfterColumnAdd(oldCols, tab.cols);
     }
     while (tab.rows < rows) {
       ensureNestedCells(tab);
@@ -9947,6 +10276,8 @@
         // Sheet paste replaces cell text — drop Master lock on overwritten cells.
         if (!isMasterTab(tab)) clearCellMasterLock(tab, idx);
         revalidateLinksForCell(tab.id, idx, { silent: true });
+        // Pasting into Master must push to linked part cells like typing does.
+        if (isMasterTab(tab)) syncLockedPartPagesFromMaster(idx);
       }
     }
     renderCombinedPrompt();
@@ -10544,6 +10875,7 @@
 
       // Links on this row and every row below move down one with the push.
       shiftConfirmedRowsFrom(tab.id, cols, rowIndex);
+      if (isMasterTab(tab)) remapMasterIndicesAfterPushDown(cols, rowIndex);
     }
 
     renderTabs();
@@ -10577,6 +10909,7 @@
     remapCellPagesAfterColumnAdd(tab, oldCols, tab.cols);
     remapCellShadesAfterColumnAdd(tab, oldCols, tab.cols);
     remapConfirmedAfterColumnAdd(tab.id, oldCols, tab.cols);
+    if (isMasterTab(tab)) remapMasterIndicesAfterColumnAdd(oldCols, tab.cols);
     renderTabs();
     renderGrid();
     renderMasterLibrary();
@@ -11710,9 +12043,31 @@
       }
     }
 
+    // Restore remembered grid scroll positions before the first render (no jump).
+    if (window.click2copy && typeof window.click2copy.loadGridScroll === 'function') {
+      try {
+        seedGridScroll(await withTimeout(window.click2copy.loadGridScroll(), 2000, {}));
+      } catch (err) {
+        console.error(err);
+      }
+    }
+    const gridWrapEl = el.cellGrid && el.cellGrid.parentElement;
+    if (gridWrapEl) gridWrapEl.addEventListener('scroll', onGridScrolled, { passive: true });
+    window.addEventListener('beforeunload', function () {
+      captureLiveGridScroll();
+      if (window.click2copy && typeof window.click2copy.saveGridScrollSync === 'function') {
+        try { window.click2copy.saveGridScrollSync(gridScrollPayload()); } catch (err) { /* closing */ }
+      }
+    });
+
     const current = activeDocument();
     clearHistory();
     applyData(current.data);
+    if (lastLockRepair && (lastLockRepair.resynced || lastLockRepair.repointed || lastLockRepair.unlocked)) {
+      const repairMsg = 'Repaired stale Master links on load: ' + reconcileSummary(lastLockRepair);
+      pushEvent(repairMsg, 'ok');
+      setStatus(repairMsg, 'ok');
+    }
     // Capture repaired greens back onto the document before launch persist.
     if (current) current.data = snapshot();
     renderDocuments();
@@ -11880,6 +12235,8 @@
     }
     restartInFlight = true;
     if (el.btnUpdateRestart) el.btnUpdateRestart.disabled = true;
+    // Remember grid scroll positions across the relaunch (bounded wait).
+    await withTimeout(flushGridScroll(), 2000, false);
     try {
       if (typeof window.click2copy.backupAndRelaunch !== 'function') {
         setStatus('Restarting…', 'ok');

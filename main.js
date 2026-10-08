@@ -1058,6 +1058,65 @@ function saveWindowState(win) {
  *       'remember' → save silently into lastDir (falls back to the dialog when
  *                    lastDir is unset, missing or unwritable)
  */
+/*
+ * Grid scroll memory (per document → "tabId:page" → [top, left]) — a small
+ * userData file outside the app code, same pattern as window-state.json, so
+ * it survives restarts, Update-ready relaunches and git pulls.
+ */
+const GRID_SCROLL_FILE = 'grid-scroll.json';
+const GRID_SCROLL_MAX_DOCS = 200;
+const GRID_SCROLL_MAX_KEYS = 2000;
+
+function gridScrollPath() {
+  return path.join(app.getPath('userData'), GRID_SCROLL_FILE);
+}
+
+function sanitizeGridScroll(raw) {
+  const out = {};
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out;
+  let docs = 0;
+  for (const docId of Object.keys(raw)) {
+    if (docs >= GRID_SCROLL_MAX_DOCS) break;
+    const map = raw[docId];
+    if (!docId || !map || typeof map !== 'object' || Array.isArray(map)) continue;
+    const clean = {};
+    let n = 0;
+    for (const key of Object.keys(map)) {
+      if (n >= GRID_SCROLL_MAX_KEYS) break;
+      const v = map[key];
+      if (!Array.isArray(v) || v.length < 2) continue;
+      const top = Number(v[0]);
+      const left = Number(v[1]);
+      if (!Number.isFinite(top) || !Number.isFinite(left)) continue;
+      clean[key] = [Math.max(0, Math.round(top)), Math.max(0, Math.round(left))];
+      n++;
+    }
+    if (n > 0) {
+      out[docId] = clean;
+      docs++;
+    }
+  }
+  return out;
+}
+
+function loadGridScroll() {
+  try {
+    return sanitizeGridScroll(JSON.parse(fs.readFileSync(gridScrollPath(), 'utf8')));
+  } catch (err) {
+    return {};
+  }
+}
+
+function saveGridScroll(raw) {
+  try {
+    writeFileAtomic(gridScrollPath(), JSON.stringify(sanitizeGridScroll(raw)));
+    return true;
+  } catch (err) {
+    console.error('Failed to save grid scroll memory:', err);
+    return false;
+  }
+}
+
 function backupSettingsPath() {
   return path.join(app.getPath('userData'), BACKUP_SETTINGS_FILE);
 }
@@ -1447,6 +1506,12 @@ ipcMain.handle('app:update-info', () => ({
 ipcMain.on('window:set-title', (event, title) => {
   const window = BrowserWindow.fromWebContents(event.sender);
   if (window && typeof title === 'string') window.setTitle(`${title} v${app.getVersion()}`);
+});
+ipcMain.handle('grid-scroll:load', () => loadGridScroll());
+ipcMain.handle('grid-scroll:save', (_event, raw) => saveGridScroll(raw));
+// Synchronous variant for window close (renderer beforeunload) — must finish before unload.
+ipcMain.on('grid-scroll:save-sync', (event, raw) => {
+  event.returnValue = saveGridScroll(raw);
 });
 ipcMain.handle('documents:load-session', () => loadSession());
 ipcMain.handle('documents:save-session', (_event, session) => saveSession(session));
