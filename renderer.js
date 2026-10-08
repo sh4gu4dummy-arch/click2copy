@@ -3091,7 +3091,7 @@
     });
   }
 
-  function removeNestedCell(cellIndex, nestIndex) {
+  function removeNestedCell(cellIndex, nestIndex, anchor, confirmed) {
     const tab = activeTab();
     if (!tab || cellIndex < 0 || cellIndex >= tab.cells.length) return;
     if (isCellMasterEditBlocked(tab, cellIndex)) {
@@ -3101,6 +3101,24 @@
     ensureNestedCells(tab);
     const nests = tab.nestedCells[cellIndex];
     if (nestIndex < 0 || nestIndex >= nests.length) return;
+    if (!confirmed) {
+      const pages = (nests[nestIndex] && nests[nestIndex].pages) || [];
+      const withText = pages.filter(function (pg) { return String(pg || '').trim(); }).length;
+      if (withText > 0) {
+        openActionConfirm({
+          anchor: anchor,
+          message: 'Delete nest ' + (nestIndex + 1) + ' (' + pluralCells(withText, 'page') + ' with text)?',
+          actionLabel: 'Delete',
+          cancelStatus: 'Delete nest cancelled',
+          ariaLabel: 'Confirm delete nest',
+          onConfirm: function () {
+            if (activeTab() !== tab) return;
+            removeNestedCell(cellIndex, nestIndex, anchor, true);
+          }
+        });
+        return;
+      }
+    }
     pushHistory();
     remapNestLinksAfterRemove(tab.id, cellIndex, nestIndex);
     nests.splice(nestIndex, 1);
@@ -3210,7 +3228,7 @@
     setStatus('Added nest page (' + nest.pages.length + ')');
   }
 
-  function removeNestPage(cellIndex, nestIndex) {
+  function removeNestPage(cellIndex, nestIndex, anchor, confirmed) {
     const tab = activeTab();
     if (!tab || cellIndex < 0 || cellIndex >= tab.cells.length) return;
     if (isCellMasterEditBlocked(tab, cellIndex)) {
@@ -3220,7 +3238,21 @@
     ensureNestedCells(tab);
     const nest = tab.nestedCells[cellIndex][nestIndex];
     if (!nest || nest.pages.length <= 1) {
-      removeNestedCell(cellIndex, nestIndex);
+      removeNestedCell(cellIndex, nestIndex, anchor);
+      return;
+    }
+    if (!confirmed && String(nest.pages[nest.page || 0] || '').trim()) {
+      openActionConfirm({
+        anchor: anchor,
+        message: 'Delete nest page ' + ((nest.page || 0) + 1) + ' (has text)?',
+        actionLabel: 'Delete',
+        cancelStatus: 'Delete page cancelled',
+        ariaLabel: 'Confirm delete page',
+        onConfirm: function () {
+          if (activeTab() !== tab) return;
+          removeNestPage(cellIndex, nestIndex, anchor, true);
+        }
+      });
       return;
     }
     pushHistory();
@@ -3327,7 +3359,7 @@
       : ('Added cell page — blank (' + entry.pages.length + ')'));
   }
 
-  function removeCellPage(cellIndex) {
+  function removeCellPage(cellIndex, anchor, confirmed) {
     const tab = activeTab();
     if (!tab || cellIndex < 0 || cellIndex >= tab.cells.length) return;
     if (isCellMasterEditBlocked(tab, cellIndex)) {
@@ -3338,6 +3370,21 @@
     const entry = tab.cellPages[cellIndex];
     if (!entry || entry.pages.length <= 1) {
       setStatus('Cell already has only one page', 'err');
+      return;
+    }
+    if (!confirmed && String(entry.pages[entry.page || 0] || '').trim()) {
+      openActionConfirm({
+        anchor: anchor,
+        message: 'Delete page ' + ((entry.page || 0) + 1) + ' of ' +
+          cellAddress(Math.floor(cellIndex / tab.cols), cellIndex % tab.cols) + ' (has text)?',
+        actionLabel: 'Delete',
+        cancelStatus: 'Delete page cancelled',
+        ariaLabel: 'Confirm delete page',
+        onConfirm: function () {
+          if (activeTab() !== tab) return;
+          removeCellPage(cellIndex, anchor, true);
+        }
+      });
       return;
     }
     pushHistory();
@@ -3752,7 +3799,7 @@
    * page selects the page that slides into its slot (or the new last page);
    * removing another page keeps the current page selected with its live edits.
    */
-  function removeTabPage(index) {
+  function removeTabPage(index, anchor, confirmed) {
     const tab = activeTab();
     if (!tab || isMasterTab(tab) || toolsTabActive) return;
     ensureTabPages(tab);
@@ -3763,6 +3810,39 @@
     const cur = tab.page || 0;
     const removeAt = Number.isInteger(index) ? index : cur;
     if (removeAt < 0 || removeAt >= tab.pages.length) return;
+    if (!confirmed) {
+      flushLiveCellInputs(tab);
+      let filled = 0;
+      if (removeAt === cur) {
+        for (let i = 0; i < tab.cells.length; i++) if (cellHasExportableContent(tab, i)) filled++;
+      } else {
+        const snap = tab.pages[removeAt] || {};
+        const cells = Array.isArray(snap.cells) ? snap.cells : [];
+        const nested = Array.isArray(snap.nestedCells) ? snap.nestedCells : [];
+        for (let i = 0; i < cells.length; i++) {
+          let has = !!String(cells[i] || '').trim();
+          if (!has) {
+            const ns = nested[i] || [];
+            for (let n = 0; n < ns.length && !has; n++) has = nestHasContent(ns[n]);
+          }
+          if (has) filled++;
+        }
+      }
+      if (filled > 0) {
+        openActionConfirm({
+          anchor: anchor,
+          message: 'Delete page ' + (removeAt + 1) + ' (' + pluralCells(filled) + ')?',
+          actionLabel: 'Delete',
+          cancelStatus: 'Delete page cancelled',
+          ariaLabel: 'Confirm delete page',
+          onConfirm: function () {
+            if (activeTab() !== tab) return;
+            removeTabPage(removeAt, anchor, true);
+          }
+        });
+        return;
+      }
+    }
     pushHistory();
     flushLiveCellInputs(tab);
     if (removeAt !== cur) {
@@ -3828,7 +3908,7 @@
       disabled: count <= 1,
       disabledTitle: 'Only one page — the last page cannot be deleted',
       enabledTitle: 'Delete this part page (Ctrl+Z to undo)',
-      onDelete: function () { removeTabPage(pageIndex); },
+      onDelete: function () { removeTabPage(pageIndex, { x: x, y: y }); },
       x: x,
       y: y
     });
@@ -4272,6 +4352,35 @@
       return;
     }
 
+    if (opts.confirm) {
+      // v0.157: ask only when a cell would actually lose text (cell or nests).
+      let filled = 0;
+      for (let i = 0; i < uniq.length; i++) {
+        const idx = uniq[i];
+        if (String(tab.cells[idx] || '').trim() ||
+            (clearNests && cellHasClearableNestContent(tab, idx))) filled++;
+      }
+      if (filled > 0) {
+        const dims = tab.cols + 'x' + tab.rows;
+        const again = Object.assign({}, opts, { confirm: false });
+        openActionConfirm({
+          anchor: opts.anchor,
+          message: 'Clear ' + pluralCells(filled) + (opts.where || '') + '?' + linkedPartSuffix(tab, uniq),
+          actionLabel: 'Clear',
+          cancelStatus: 'Clear cancelled',
+          ariaLabel: 'Confirm clear',
+          onConfirm: function () {
+            if (activeTab() !== tab || (tab.cols + 'x' + tab.rows) !== dims) {
+              setStatus('Clear cancelled — grid changed', 'err');
+              return;
+            }
+            clearCellsFromMenu(tab, uniq, again);
+          }
+        });
+        return;
+      }
+    }
+
     // Drop an in-progress Master unlock session on any of these cells (no dialog).
     if (masterSegmentEdit && masterSegmentEdit.kind === 'cell' &&
         masterSegmentEdit.tabId === tab.id &&
@@ -4367,6 +4476,9 @@
         onClick: function () {
           clearCellsFromMenu(tab, indices, {
             clearNests: true,
+            confirm: true,
+            anchor: rowNumberAt(rowIndex) || { x: x, y: y },
+            where: ' in row ' + (rowIndex + 1),
             statusText: isMasterTab(tab)
               ? ('Row ' + (rowIndex + 1) + ' cleared')
               : ('Row ' + (rowIndex + 1) + ' cleared (unlinked from Master)')
@@ -4377,7 +4489,7 @@
         title: isMasterTab(tab)
           ? 'Remove this Master row; rows below move up (part cells linked to it keep their text, unlocked)'
           : 'Remove this row; rows below move up one (empty row added at the bottom)',
-        onClick: function () { deleteRowFromMenu(tab, rowIndex); }
+        onClick: function () { deleteRowFromMenu(tab, rowIndex, rowNumberAt(rowIndex) || { x: x, y: y }); }
       }]
     });
   }
@@ -4391,11 +4503,41 @@
    * linked to the deleted Master row keep their text and are unlocked (same as
    * stale-lock repair); links to rows below are remapped up. One undo step.
    */
-  function deleteRowFromMenu(tab, rowIndex) {
+  function deleteRowFromMenu(tab, rowIndex, anchor, confirmed) {
     if (!tab || tab !== activeTab() || rowIndex < 0 || rowIndex >= tab.rows) return;
     const cols = tab.cols;
     const rowStart = rowIndex * cols;
     const rowEnd = rowStart + cols; // exclusive
+    if (!confirmed) {
+      // v0.157: confirm only when a cell in the row has text (any cell page or nest).
+      ensureNestedCells(tab);
+      ensureCellPages(tab);
+      let filled = 0;
+      for (let i = rowStart; i < rowEnd; i++) {
+        if (String(tab.cells[i] || '').trim() || siteHasOwnExtraContent(tab, i)) filled++;
+      }
+      if (filled > 0) {
+        const dims = tab.cols + 'x' + tab.rows;
+        const idxs = [];
+        for (let i = rowStart; i < rowEnd; i++) idxs.push(i);
+        openActionConfirm({
+          anchor: anchor,
+          message: 'Delete row ' + (rowIndex + 1) + ' (' + pluralCells(filled) + ')?' +
+            linkedPartSuffix(tab, idxs, 'unlock, text kept'),
+          actionLabel: 'Delete',
+          cancelStatus: 'Delete row cancelled',
+          ariaLabel: 'Confirm delete row',
+          onConfirm: function () {
+            if (activeTab() !== tab || (tab.cols + 'x' + tab.rows) !== dims) {
+              setStatus('Delete row cancelled — grid changed', 'err');
+              return;
+            }
+            deleteRowFromMenu(tab, rowIndex, anchor, true);
+          }
+        });
+        return;
+      }
+    }
     // Drop an in-progress Master unlock session on this row (no dialog).
     if (masterSegmentEdit && masterSegmentEdit.kind === 'cell' &&
         masterSegmentEdit.tabId === tab.id &&
@@ -4578,7 +4720,9 @@
         ? 'Empty this cell (Master sync may update linked part cells)'
         : 'Empty cell and unlink from Master (Master library unchanged)',
       disabled: !anyClearable,
-      onClick: function () { clearCellsFromMenu(tab, indices); }
+      onClick: function () {
+        clearCellsFromMenu(tab, indices, { confirm: true, anchor: cellWrapAt(cellIndex) || { x: x, y: y } });
+      }
     });
     openCtxMenu({ heading: heading, items: items, x: x, y: y, className: 'cell-shade-menu' });
   }
@@ -5932,12 +6076,84 @@
     return masterIdx;
   }
 
-  function overwriteMasterFromSegmentEdit() {
+  /** Master index applyMasterOverwriteText would pick for oldText (same rule). */
+  function resolveMasterOverwriteIdx(oldText, preferredMasterIdx) {
+    const master = state.tabs.find(isMasterTab);
+    if (!master) return -1;
+    let masterIdx = Number.isInteger(preferredMasterIdx) ? preferredMasterIdx : -1;
+    if (masterIdx < 0 || masterIdx >= master.cells.length ||
+        cellParentText(master, masterIdx) !== oldText) {
+      const found = findMasterCellIndexByText(oldText);
+      masterIdx = found === null ? -1 : found;
+    }
+    return masterIdx;
+  }
+
+  /**
+   * Cells Overwrite Master would ALSO rewrite that are not linked to that Master
+   * cell: any tab cell (incl. Master duplicates) whose text equals the old text.
+   * Linked part cells (lock → masterIdx) and the edited cell itself don't count.
+   */
+  function countUnlinkedSameTextCells(oldText, masterIdx, skipTabId, skipIndex) {
+    const master = state.tabs.find(isMasterTab);
+    if (!master || masterIdx < 0) return 0;
+    let n = 0;
+    state.tabs.forEach(function (tab) {
+      if (!tab || !Array.isArray(tab.cells)) return;
+      for (let i = 0; i < tab.cells.length; i++) {
+        if (tab.id === master.id && i === masterIdx) continue;
+        if (tab.id === skipTabId && i === skipIndex) continue;
+        if (cellParentText(tab, i) !== oldText) continue;
+        if (!isMasterTab(tab)) {
+          const lock = getCellLock(tab, i);
+          if (lock && lock.masterOrigin === true && lock.masterCellIndex === masterIdx) continue;
+        }
+        n++;
+      }
+    });
+    return n;
+  }
+
+  function overwriteMasterFromSegmentEdit(confirmedOthers) {
     if (!masterSegmentEdit) {
       hideMasterSegmentDialog();
       return;
     }
     const edit = masterSegmentEdit;
+    if (!confirmedOthers) {
+      // v0.157: Overwrite also rewrites unlinked cells holding the same old text —
+      // ask first (Cancel keeps the dialog + edit open, nothing changes).
+      let preferredIdx = -1;
+      let skipTabId = null;
+      let skipIndex = -1;
+      if (edit.kind === 'cell') {
+        const etab = state.tabs.find(function (t) { return t.id === edit.tabId; });
+        const elock = etab ? getCellLock(etab, edit.cellIndex) : null;
+        preferredIdx = elock && Number.isInteger(elock.masterCellIndex) ? elock.masterCellIndex : -1;
+        skipTabId = edit.tabId;
+        skipIndex = edit.cellIndex;
+      } else {
+        const elink = linkById(edit.linkId, edit.scope);
+        preferredIdx = elink && Number.isInteger(elink.masterCellIndex) ? elink.masterCellIndex : -1;
+      }
+      const mIdx = resolveMasterOverwriteIdx(edit.originalText, preferredIdx);
+      const others = countUnlinkedSameTextCells(edit.originalText, mIdx, skipTabId, skipIndex);
+      if (others > 0) {
+        openActionConfirm({
+          anchor: el.btnMasterOverwrite,
+          focusBack: el.btnMasterOverwrite,
+          message: 'Also update ' + pluralCells(others, 'other cell') + ' with the same text?',
+          actionLabel: 'Update',
+          cancelStatus: 'Overwrite cancelled — nothing changed',
+          ariaLabel: 'Confirm overwrite other cells',
+          onConfirm: function () {
+            if (masterSegmentEdit !== edit) return;
+            overwriteMasterFromSegmentEdit(true);
+          }
+        });
+        return;
+      }
+    }
     hideMasterSegmentDialog();
 
     if (edit.kind === 'cell') {
@@ -7073,7 +7289,7 @@
             button.dataset.row = String(row);
             button.dataset.col = String(col);
             button.addEventListener('click', function () {
-              insertMasterText(cellText, masterIdx);
+              insertMasterText(cellText, masterIdx, { anchor: button });
             });
             grid.appendChild(button);
           } else {
@@ -7906,13 +8122,16 @@
     }, 0);
   }
 
-  function insertMasterText(text, masterCellIndex) {
+  function insertMasterText(text, masterCellIndex, opts) {
+    opts = opts || {};
     const tab = activeTab();
     if (!tab || isMasterTab(tab) || tab.cells.length === 0) return;
 
     let index = -1;
-    let usedFirstCellFallback = false;
-    if (focusedCell && focusedCell.tabId === tab.id &&
+    let addedRow = false;
+    if (Number.isInteger(opts.index) && opts.index >= 0 && opts.index < tab.cells.length) {
+      index = opts.index;
+    } else if (focusedCell && focusedCell.tabId === tab.id &&
         Number.isInteger(focusedCell.index) &&
         focusedCell.index >= 0 && focusedCell.index < tab.cells.length) {
       index = focusedCell.index;
@@ -7920,14 +8139,55 @@
       index = tab.cells.findIndex(function (cell) {
         return !cell || !cell.trim();
       });
-      if (index === -1) {
-        index = 0;
-        usedFirstCellFallback = true;
-      }
     }
 
     const insertText = text == null ? '' : String(text);
-    pushHistory();
+
+    // v0.157: confirm only when the cell would lose the user's own text (or its
+    // own nests/pages). Swapping one Master value for another never asks (Ash).
+    if (index >= 0 && !opts.confirmed) {
+      const cur = String(tab.cells[index] || '');
+      const lock = getCellLock(tab, index);
+      const linked = !!(lock && lock.masterOrigin === true);
+      const ownText = !!cur.trim() && trimEndText(cur) !== trimEndText(insertText) &&
+        !partCellHoldsMasterValue(tab, index);
+      const ownExtras = !linked && siteHasOwnExtraContent(tab, index);
+      if (ownText || ownExtras) {
+        const addr = cellAddress(Math.floor(index / tab.cols), index % tab.cols);
+        const dims = tab.cols + 'x' + tab.rows;
+        const message = ownText
+          ? ('Replace text in ' + addr + (ownExtras ? ' (its nests/pages too)' : '') + '?')
+          : ('Replace nests/pages in ' + addr + '?');
+        openActionConfirm({
+          anchor: opts.anchor || cellWrapAt(index),
+          focusBack: el.cellGrid && el.cellGrid.querySelector('textarea.cell[data-idx="' + index + '"]'),
+          message: message,
+          actionLabel: 'Replace',
+          cancelStatus: 'Insert cancelled',
+          ariaLabel: 'Confirm replace',
+          onConfirm: function () {
+            if (activeTab() !== tab || (tab.cols + 'x' + tab.rows) !== dims) {
+              setStatus('Insert cancelled — grid changed', 'err');
+              return;
+            }
+            insertMasterText(text, masterCellIndex,
+              Object.assign({}, opts, { index: index, confirmed: true }));
+          }
+        });
+        return;
+      }
+    }
+
+    if (index < 0) {
+      // No selected cell and no empty cell: never overwrite A1 — add a row at
+      // the bottom (same as ⤓ when no empty row is left) and insert there.
+      // appendRowToTab is the single undo step for the whole insert.
+      const newRow = appendRowToTab(tab);
+      index = newRow * tab.cols;
+      addedRow = true;
+    } else {
+      pushHistory();
+    }
     let masterIdx = Number.isInteger(masterCellIndex) && masterCellIndex >= 0
       ? masterCellIndex
       : findMasterCellIndexByText(insertText);
@@ -7954,8 +8214,8 @@
       return;
     }
     setStatus(
-      usedFirstCellFallback
-        ? 'Added Master text (+ nests) to ' + tab.title + ' (replaced the first cell; Combined checked; locked until double-click unlock)'
+      addedRow
+        ? 'Added Master text (+ nests) to ' + tab.title + ' in new row ' + (Math.floor(index / tab.cols) + 1) + ' (no empty cell; Combined checked; locked until double-click unlock)'
         : 'Added Master text (+ nests) to ' + tab.title + ' (Combined checked; locked until double-click unlock)',
       'ok'
     );
@@ -9497,7 +9757,7 @@
               ? 'Only one page — the last page cannot be deleted'
               : 'Locked Master cell — double-click to unlock before deleting a page',
             enabledTitle: 'Delete this cell page (Ctrl+Z to undo)',
-            onDelete: function () { removeCellPage(idx); },
+            onDelete: function () { removeCellPage(idx, pageLabel); },
             x: ev.clientX,
             y: ev.clientY
           });
@@ -9693,12 +9953,12 @@
                   pageDanger: false,
                   disabledTitle: blocked ? lockTip : 'Only one page — use Delete nest to remove it',
                   enabledTitle: 'Delete this nest page (Ctrl+Z to undo)',
-                  onDelete: function () { removeNestPage(idx, nestIndex); },
+                  onDelete: function () { removeNestPage(idx, nestIndex, pageLabel); },
                   extra: {
                     label: 'Delete nest',
                     disabled: blocked,
                     title: blocked ? lockTip : 'Delete this whole nest, all pages (Ctrl+Z to undo)',
-                    onClick: function () { removeNestedCell(idx, nestIndex); }
+                    onClick: function () { removeNestedCell(idx, nestIndex, pageLabel); }
                   },
                   x: ev.clientX,
                   y: ev.clientY
@@ -10275,14 +10535,40 @@
     }
 
     let anyContent = false;
+    let filled = 0;
     for (let i = 0; i < indices.length; i++) {
-      if ((tab.cells[indices[i]] || '') !== '') {
-        anyContent = true;
-        break;
-      }
+      const v = tab.cells[indices[i]] || '';
+      if (v !== '') anyContent = true;
+      if (v.trim()) filled++;
     }
     if (!anyContent) return true;
 
+    if (filled > 0) {
+      const active = document.activeElement;
+      const anchor = active && active.tagName === 'TEXTAREA' && el.cellGrid && el.cellGrid.contains(active)
+        ? active : cellWrapAt(b.rMin * tab.cols + b.cMin);
+      const dims = tab.cols + 'x' + tab.rows;
+      openActionConfirm({
+        anchor: anchor,
+        message: 'Clear ' + pluralCells(filled) + '?' + linkedPartSuffix(tab, indices),
+        actionLabel: 'Clear',
+        cancelStatus: 'Clear cancelled',
+        ariaLabel: 'Confirm clear',
+        onConfirm: function () {
+          if (activeTab() !== tab || (tab.cols + 'x' + tab.rows) !== dims) {
+            setStatus('Clear cancelled — grid changed', 'err');
+            return;
+          }
+          doClearStickyBlock(tab, b, indices);
+        }
+      });
+      return true;
+    }
+    doClearStickyBlock(tab, b, indices);
+    return true;
+  }
+
+  function doClearStickyBlock(tab, b, indices) {
     pushHistory();
     ensureCellPages(tab);
     for (let i = 0; i < indices.length; i++) {
@@ -10290,6 +10576,8 @@
       writeCellCurrentPage(tab, idx, '');
       if (!isMasterTab(tab)) clearCellMasterLock(tab, idx);
       revalidateLinksForCell(tab.id, idx, { silent: true });
+      // Same as right-click Clear: a Master clear updates linked part cells.
+      if (isMasterTab(tab)) syncLockedPartPagesFromMaster(idx);
     }
     renderCombinedPrompt();
     applyConfirmedCellHighlights();
@@ -11005,8 +11293,9 @@
         e.key === 'ArrowUp' || e.key === 'ArrowDown' ||
         e.key === 'ArrowLeft' || e.key === 'ArrowRight' ||
         e.key === 'Home' || e.key === 'End' || e.key === 'PageUp' || e.key === 'PageDown';
+      // Ctrl/Cmd+V reaches onCellPaste, which allows Master-value pastes only (v0.157).
       const modNav = (e.ctrlKey || e.metaKey) && (e.key === 'c' || e.key === 'C' ||
-        e.key === 'a' || e.key === 'A');
+        e.key === 'a' || e.key === 'A' || e.key === 'v' || e.key === 'V');
       if (!nav && !modNav) {
         e.preventDefault();
         if (e.key === 'Enter' && !e.shiftKey) {
@@ -11549,22 +11838,25 @@
       }
     }
 
-    if (!isMasterTab(tab) && isCellMasterLocked(tab, startIdx) &&
-        !(isMasterCellEditSession() &&
-          masterSegmentEdit.tabId === tab.id &&
-          masterSegmentEdit.cellIndex === startIdx)) {
+    // v0.157: a locked Master cell may take a paste only when the pasted value
+    // is itself a Master value (relinks to that Master cell, no warning — Ash).
+    const startLocked = !isMasterTab(tab) && isCellMasterEditBlocked(tab, startIdx);
+    const refuseLocked = function () {
       e.preventDefault();
       setStatus('Locked Master cell — double-click to unlock before editing', 'err');
-      return;
-    }
+    };
 
     let matrix = parseClipboardMatrix(e.clipboardData);
-    if (!matrix && intoBlock && e.clipboardData) {
+    if (!matrix && (intoBlock || startLocked) && e.clipboardData) {
       // Single value into a lit block → goes to the block's top-left cell.
       const plain = e.clipboardData.getData('text/plain');
       if (plain) matrix = [[plain.replace(/\r?\n$/, '')]];
     }
-    if (!matrix || (!isMultiCellMatrix(matrix) && !intoBlock)) {
+    if (startLocked && (!matrix || (!isMultiCellMatrix(matrix) && !isMasterValueText(matrix[0][0])))) {
+      refuseLocked();
+      return;
+    }
+    if (!matrix || (!isMultiCellMatrix(matrix) && !intoBlock && !startLocked)) {
       // Single-cell / plain text: let the textarea handle a normal paste.
       return;
     }
@@ -11576,6 +11868,7 @@
     // previous value (never silently stored).
     let col1Rejected = 0;
     let col2Rejected = 0;
+    const pastedRaw = matrix.map(function (row) { return row.slice(); });
     if (!isMasterTab(tab)) {
       const allowedA = masterCol1Values();
       for (let r = 0; r < matrix.length; r++) {
@@ -11602,6 +11895,7 @@
         }
       }
     }
+    const lockedTargets = [];
     if (!isMasterTab(tab)) {
       const pr = matrix.length;
       const pc = matrix[0].length;
@@ -11611,9 +11905,15 @@
           const cc = startCol + c;
           if (rr < tab.rows && cc < tab.cols) {
             const i = rr * tab.cols + cc;
-            if (isCellMasterLocked(tab, i)) {
-              setStatus('Locked Master cell in paste range — double-click to unlock first', 'err');
-              return;
+            if (isCellMasterEditBlocked(tab, i)) {
+              // Judge what the user pasted (before Col A/B validation reverts it).
+              const v = pastedRaw[r][c] == null ? '' : String(pastedRaw[r][c]);
+              if (!isMasterValueText(v)) {
+                setStatus('Locked Master cell in paste range — double-click to unlock first', 'err');
+                return;
+              }
+              lockedTargets.push({ idx: i, prevText: String(tab.cells[i] || ''),
+                prevLock: Object.assign({}, getCellLock(tab, i)) });
             }
           }
         }
@@ -11624,9 +11924,38 @@
       pushHistory();
       const result = pasteMatrixAt(tab, startRow, startCol, matrix);
       if (!result) return;
+      // Push pasted text into the visible textareas now: the focused one would
+      // otherwise "win" over the model in flushLiveCellInputs (run while Master
+      // links are applied below) and put the old text back.
+      if (el.cellGrid) {
+        for (let r = 0; r < result.rows; r++) {
+          for (let c = 0; c < result.cols; c++) {
+            const pi = (startRow + r) * tab.cols + (startCol + c);
+            const pta = el.cellGrid.querySelector('textarea.cell[data-idx="' + pi + '"]');
+            if (pta && pi < tab.cells.length) pta.value = tab.cells[pi] || '';
+          }
+        }
+      }
       // Pasted cells that exactly match Master text become real Master links.
       let pasteLinked = 0;
       let pasteBlocked = 0;
+      if (!isMasterTab(tab) && lockedTargets.length) {
+        // Locked cells took a Master value: relink/lock to that Master cell
+        // (nests + pages follow, like a ▾ pick). Same text → keep the old link.
+        const masterTab = state.tabs.find(isMasterTab);
+        lockedTargets.forEach(function (lt) {
+          const now = String(tab.cells[lt.idx] || '');
+          if (trimEndText(now) === trimEndText(lt.prevText)) {
+            ensureCellLocks(tab);
+            tab.cellLocks[lt.idx] = lt.prevLock;
+            return;
+          }
+          const mIdx = findMasterMatchForCell(tab, lt.idx, now);
+          if (mIdx < 0 || !masterTab) return;
+          applyMasterLinkToCell(tab, lt.idx, mIdx, masterTab.cells[mIdx] || '');
+          pasteLinked++;
+        });
+      }
       if (!isMasterTab(tab)) {
         for (let r = 0; r < result.rows; r++) {
           for (let c = 0; c < result.cols; c++) {
@@ -11659,7 +11988,8 @@
       );
     }
 
-    // Ash: confirm before a multi-cell paste overwrites filled cells.
+    // Ash: confirm before a multi-cell paste overwrites filled cells (own text
+    // only — Master value → Master value swaps and identical text don't ask).
     const filled = countFilledCellsInPasteRange(tab, startRow, startCol, matrix);
     if (filled > 0) {
       const dims = tab.cols + 'x' + tab.rows;
@@ -11682,13 +12012,23 @@
         const rr = startRow + r;
         const cc = startCol + c;
         if (rr >= tab.rows || cc >= tab.cols) continue;
-        if (String(tab.cells[rr * tab.cols + cc] || '').trim()) filled++;
+        const idx = rr * tab.cols + cc;
+        const cur = String(tab.cells[idx] || '');
+        if (!cur.trim()) continue;
+        const next = matrix[r][c] == null ? '' : String(matrix[r][c]);
+        // Same text → nothing lost (also covers validation-rejected values).
+        if (trimEndText(cur) === trimEndText(next)) continue;
+        // Ash: swapping one Master value for another is fine (part tabs).
+        if (partCellHoldsMasterValue(tab, idx) && isMasterValueText(next)) continue;
+        filled++;
       }
     }
     return filled;
   }
 
   let pasteConfirmEl = null;
+  let pasteConfirmCancelStatus = 'Paste cancelled';
+  let pasteConfirmFocusBack = null;
 
   function closePasteOverwriteConfirm() {
     if (pasteConfirmEl && pasteConfirmEl.parentNode) pasteConfirmEl.parentNode.removeChild(pasteConfirmEl);
@@ -11697,10 +12037,17 @@
     document.removeEventListener('keydown', onPasteConfirmKey, true);
   }
 
+  function cancelActionConfirm(refocus) {
+    const status = pasteConfirmCancelStatus;
+    const back = pasteConfirmFocusBack;
+    closePasteOverwriteConfirm();
+    setStatus(status);
+    if (refocus && back && back.isConnected && typeof back.focus === 'function') back.focus();
+  }
+
   function onPasteConfirmOutside(ev) {
     if (pasteConfirmEl && pasteConfirmEl.contains(ev.target)) return;
-    closePasteOverwriteConfirm();
-    setStatus('Paste cancelled');
+    cancelActionConfirm(false);
   }
 
   function onPasteConfirmKey(ev) {
@@ -11708,47 +12055,77 @@
     if (ev.key === 'Escape') {
       ev.preventDefault();
       ev.stopPropagation();
-      closePasteOverwriteConfirm();
-      setStatus('Paste cancelled');
+      if (ev.stopImmediatePropagation) ev.stopImmediatePropagation();
+      cancelActionConfirm(true);
     }
   }
 
-  function openPasteOverwriteConfirm(anchorEl, count, onConfirm) {
+  /** Anchor → viewport rect: an element, a rect-like {left,top,bottom}, or a point {x,y}. */
+  function confirmAnchorRect(anchor) {
+    if (anchor && typeof anchor.getBoundingClientRect === 'function' && anchor.isConnected !== false) {
+      const r = anchor.getBoundingClientRect();
+      if (r.width || r.height) return r;
+    }
+    if (anchor && typeof anchor.x === 'number' && typeof anchor.y === 'number' &&
+        typeof anchor.getBoundingClientRect !== 'function') {
+      return { left: anchor.x, right: anchor.x, top: anchor.y, bottom: anchor.y };
+    }
+    if (anchor && typeof anchor.left === 'number' && typeof anchor.getBoundingClientRect !== 'function') {
+      const top = typeof anchor.top === 'number' ? anchor.top : 20;
+      return { left: anchor.left, right: anchor.left, top: top,
+        bottom: typeof anchor.bottom === 'number' ? anchor.bottom : top };
+    }
+    return { left: 20, right: 20, top: 20, bottom: 20 };
+  }
+
+  /**
+   * v0.157 shared overwrite/destroy confirm — the paste-confirm popover (same
+   * look): "<message>" + action button + Cancel. Cancel is focused (Enter on it
+   * cancels, as before); Esc / outside press cancel. position:fixed → no layout
+   * shift. opts: anchor, message, actionLabel, onConfirm, cancelStatus, ariaLabel,
+   * focusBack (refocused on Cancel/Esc; defaults to the focused element).
+   */
+  function openActionConfirm(opts) {
     closePasteOverwriteConfirm();
+    const prevFocus = document.activeElement && document.activeElement !== document.body
+      ? document.activeElement : null;
+    pasteConfirmFocusBack = opts.focusBack || prevFocus;
+    pasteConfirmCancelStatus = opts.cancelStatus || 'Cancelled — nothing changed';
     const pop = document.createElement('div');
     pop.className = 'paste-confirm';
     pop.setAttribute('role', 'alertdialog');
-    pop.setAttribute('aria-label', 'Confirm paste overwrite');
+    pop.setAttribute('aria-label', opts.ariaLabel || 'Confirm');
     const msg = document.createElement('span');
     msg.className = 'paste-confirm-text';
-    msg.textContent = 'Overwrite ' + count + ' filled cell' + (count === 1 ? '' : 's') + '?';
+    msg.textContent = opts.message;
     const ok = document.createElement('button');
     ok.type = 'button';
     ok.className = 'btn btn-danger paste-confirm-ok';
-    ok.textContent = 'Overwrite';
+    ok.textContent = opts.actionLabel || 'OK';
     const cancel = document.createElement('button');
     cancel.type = 'button';
     cancel.className = 'btn btn-secondary paste-confirm-cancel';
     cancel.textContent = 'Cancel';
     ok.addEventListener('click', function (ev) {
       ev.preventDefault();
+      const back = pasteConfirmFocusBack;
       closePasteOverwriteConfirm();
-      onConfirm();
+      opts.onConfirm();
+      if (back && back.isConnected && typeof back.focus === 'function' &&
+          (!document.activeElement || document.activeElement === document.body)) {
+        back.focus();
+      }
     });
     cancel.addEventListener('click', function (ev) {
       ev.preventDefault();
-      closePasteOverwriteConfirm();
-      setStatus('Paste cancelled');
-      if (anchorEl && anchorEl.isConnected) anchorEl.focus();
+      cancelActionConfirm(true);
     });
     pop.appendChild(msg);
     pop.appendChild(ok);
     pop.appendChild(cancel);
     document.body.appendChild(pop);
     pasteConfirmEl = pop;
-    const rect = anchorEl && anchorEl.getBoundingClientRect
-      ? anchorEl.getBoundingClientRect()
-      : { left: 20, bottom: 20 };
+    const rect = confirmAnchorRect(opts.anchor);
     const size = pop.getBoundingClientRect();
     const pad = 6;
     const left = Math.max(pad, Math.min(rect.left, window.innerWidth - size.width - pad));
@@ -11759,6 +12136,73 @@
     document.addEventListener('pointerdown', onPasteConfirmOutside, true);
     document.addEventListener('keydown', onPasteConfirmKey, true);
     cancel.focus();
+  }
+
+  function openPasteOverwriteConfirm(anchorEl, count, onConfirm) {
+    openActionConfirm({
+      anchor: anchorEl,
+      focusBack: anchorEl,
+      message: 'Overwrite ' + count + ' filled cell' + (count === 1 ? '' : 's') + '?',
+      actionLabel: 'Overwrite',
+      cancelStatus: 'Paste cancelled',
+      ariaLabel: 'Confirm paste overwrite',
+      onConfirm: onConfirm
+    });
+  }
+
+  function pluralCells(n, word) {
+    return n + ' ' + (word || 'filled cell') + (n === 1 ? '' : 's');
+  }
+
+  /** Text exactly equal (trailing whitespace ignored) to some non-empty Master cell. */
+  function isMasterValueText(text) {
+    const want = trimEndText(text);
+    if (!want.trim()) return false;
+    const master = state.tabs.find(isMasterTab);
+    if (!master) return false;
+    for (let i = 0; i < master.cells.length; i++) {
+      if (trimEndText(master.cells[i] || '') === want) return true;
+    }
+    return false;
+  }
+
+  /** Part cell currently holding Master text: a Master link, or exact Master value text. */
+  function partCellHoldsMasterValue(tab, idx) {
+    if (!tab || isMasterTab(tab)) return false;
+    const lock = getCellLock(tab, idx);
+    if (lock && lock.masterOrigin === true) return true;
+    return isMasterValueText(tab.cells[idx] || '');
+  }
+
+  /** Part cells (live + stored part pages) linked to any of these Master indices. */
+  function countLinkedPartCells(masterIndices) {
+    const want = Object.create(null);
+    (masterIndices || []).forEach(function (i) { want[i] = true; });
+    let n = 0;
+    forEachPartLockSite(function (site, i, lock) {
+      if (Number.isInteger(lock.masterCellIndex) && want[lock.masterCellIndex]) n++;
+    });
+    return n;
+  }
+
+  /** Master tab: " (N linked part cells will update)" for clear/replace confirms. */
+  function linkedPartSuffix(tab, indices, verb) {
+    if (!tab || !isMasterTab(tab)) return '';
+    const n = countLinkedPartCells(indices);
+    if (!n) return '';
+    return ' (' + pluralCells(n, 'linked part cell') + ' will ' + (verb || 'update') + ')';
+  }
+
+  function cellWrapAt(index) {
+    return el.cellGrid ? el.cellGrid.querySelector('.cell-wrap[data-idx="' + index + '"]') ||
+      (function () {
+        const ta = el.cellGrid.querySelector('textarea.cell[data-idx="' + index + '"]');
+        return ta && ta.closest ? ta.closest('.cell-wrap') : ta;
+      })() : null;
+  }
+
+  function rowNumberAt(rowIndex) {
+    return el.cellGrid ? el.cellGrid.querySelector('.row-controls[data-row="' + rowIndex + '"]') : null;
   }
 
   function onCellCopy(e) {
@@ -12704,7 +13148,7 @@
         for (let pi = 0; pi < nest.pages.length; pi++) {
           const pageText = nest.pages[pi] == null ? '' : String(nest.pages[pi]);
           const pageLower = pageText.toLowerCase();
-          from = 0;
+          let from = 0;
           while (from <= pageLower.length) {
             const at = pageLower.indexOf(qLower, from);
             if (at < 0) break;
@@ -12774,7 +13218,9 @@
     const nest = (tab.nestedCells[hit.cellIndex] || [])[hit.nestIndex];
     if (!nest || !Array.isArray(nest.pages)) return;
     if (hit.pageIndex < 0 || hit.pageIndex >= nest.pages.length) return;
+    if (!isMasterTab(tab) && isCellMasterLocked(tab, hit.cellIndex)) return;
     nest.pages[hit.pageIndex] = text;
+    if (isMasterTab(tab)) syncLockedPartNestsFromMaster(hit.cellIndex);
   }
 
   function queryHitTextarea(hit) {
@@ -12974,13 +13420,18 @@
         setStatus('No matches to replace in ' + tab.title, 'err');
         return;
       }
-      pushHistory();
-      // Unique fields (cell or nest page), replace all occurrences in each.
+      // Plan first: unique fields (cell or nest page). Locked Master cells are
+      // skipped (parent + nests), same as typing / single Replace.
       const keysDone = Object.create(null);
-      let total = 0;
-      const touchedCells = Object.create(null);
+      const plan = [];
+      const changeCells = Object.create(null);
+      const lockedCells = Object.create(null);
       for (let h = 0; h < partSearchHits.length; h++) {
         const hit = partSearchHits[h];
+        if (isCellMasterEditBlocked(tab, hit.cellIndex)) {
+          lockedCells[hit.cellIndex] = true;
+          continue;
+        }
         const key = hit.cellIndex + ':' + (hit.nestIndex == null
           ? ('c:' + (hit.pageIndex == null ? 'x' : hit.pageIndex))
           : (hit.nestIndex + ':' + hit.pageIndex));
@@ -12988,28 +13439,68 @@
         keysDone[key] = true;
         const before = getHitText(tab, hit);
         const result = replaceAllInText(before, query, replacement);
-        if (!result.count) continue;
-        setHitText(tab, hit, result.text);
-        total += result.count;
-        touchedCells[hit.cellIndex] = true;
-        liveSyncConfirmedLinksForCell(tab.id, hit.cellIndex, hit.nestIndex, { silent: true });
+        if (!result.count || result.text === before) continue;
+        plan.push({ hit: hit, text: result.text, count: result.count });
+        changeCells[hit.cellIndex] = true;
       }
-      Object.keys(touchedCells).forEach(function (idxStr) {
-        const idx = parseInt(idxStr, 10);
-        revalidateLinksForCell(tab.id, idx, { silent: true });
+      const nLocked = Object.keys(lockedCells).length;
+      const lockedNote = nLocked ? (' — ' + pluralCells(nLocked, 'locked cell') + ' skipped') : '';
+      const changeIdx = Object.keys(changeCells).map(function (s) { return parseInt(s, 10); });
+      if (!plan.length) {
+        setPartSearchStatus('0');
+        setStatus('Nothing replaced in ' + tab.title + lockedNote, 'err');
+        return;
+      }
+      openActionConfirm({
+        anchor: el.partReplaceInput,
+        focusBack: el.partReplaceInput,
+        message: 'Replace in ' + pluralCells(changeIdx.length, 'cell') + '?' +
+          linkedPartSuffix(tab, changeIdx) + (nLocked ? (' ' + pluralCells(nLocked, 'locked cell') + ' skipped.') : ''),
+        actionLabel: 'Replace all',
+        cancelStatus: 'Replace all cancelled',
+        ariaLabel: 'Confirm replace all',
+        onConfirm: function () {
+          if (currentPartSearchTab() !== tab) {
+            setStatus('Replace all cancelled — tab changed', 'err');
+            return;
+          }
+          applyReplaceAllPlan(tab, plan, lockedNote);
+        }
       });
-      partSearchFindAll = false;
-      rebuildPartSearchHits();
-      partSearchHitIndex = partSearchHits.length ? 0 : -1;
-      renderGrid();
-      if (isMasterTab(tab)) renderMasterLibrary();
-      scheduleSave();
-      setPartSearchStatus(total ? ('replaced ' + total) : '0');
-      setStatus(total ? ('Replaced ' + total + ' in ' + tab.title) : ('No matches in ' + tab.title), total ? 'ok' : 'err');
-      if (partSearchHitIndex >= 0) revealPartSearchHit(partSearchHits[partSearchHitIndex], { silent: true });
       return;
     }
+    partReplaceSingle(tab, replacement);
+  }
 
+  function applyReplaceAllPlan(tab, plan, lockedNote) {
+    pushHistory();
+    let total = 0;
+    const touchedCells = Object.create(null);
+    for (let k = 0; k < plan.length; k++) {
+      const hit = plan[k].hit;
+      setHitText(tab, hit, plan[k].text);
+      total += plan[k].count;
+      touchedCells[hit.cellIndex] = true;
+      liveSyncConfirmedLinksForCell(tab.id, hit.cellIndex, hit.nestIndex, { silent: true });
+    }
+    Object.keys(touchedCells).forEach(function (idxStr) {
+      const idx = parseInt(idxStr, 10);
+      revalidateLinksForCell(tab.id, idx, { silent: true });
+    });
+    partSearchFindAll = false;
+    rebuildPartSearchHits();
+    partSearchHitIndex = partSearchHits.length ? 0 : -1;
+    renderGrid();
+    if (isMasterTab(tab)) renderMasterLibrary();
+    scheduleSave();
+    setPartSearchStatus(total ? ('replaced ' + total) : '0');
+    setStatus((total ? ('Replaced ' + total + ' in ' + tab.title) : ('No matches in ' + tab.title)) + lockedNote,
+      total ? 'ok' : 'err');
+    if (partSearchHitIndex >= 0) revealPartSearchHit(partSearchHits[partSearchHitIndex], { silent: true });
+  }
+
+  function partReplaceSingle(tab, replacement) {
+    const query = el.partFindInput ? el.partFindInput.value : '';
     // Single replace: ensure a current hit, replace that occurrence, then find next.
     if (query !== partSearchQuery || !partSearchHits.length || partSearchHitIndex < 0) {
       partSearchFindAll = false;
@@ -13024,6 +13515,13 @@
     }
     const hit = partSearchHits[partSearchHitIndex];
     if (!hit) return;
+    if (isCellMasterEditBlocked(tab, hit.cellIndex)) {
+      // Locked Master cell: never replace (it used to change the textarea but not
+      // the saved cell). Move on to the next match instead.
+      partFindNext({ silent: true });
+      setStatus('Locked Master cell skipped — double-click to unlock before replacing', 'err');
+      return;
+    }
     const before = getHitText(tab, hit);
     const after = replaceInHitText(before, hit, replacement);
     if (after == null) {
@@ -13411,7 +13909,7 @@
 
   if (el.btnMasterOverwrite) {
     el.btnMasterOverwrite.addEventListener('click', function () {
-      overwriteMasterFromSegmentEdit();
+      overwriteMasterFromSegmentEdit(false);
     });
   }
   if (el.btnMasterKeepLocal) {

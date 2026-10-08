@@ -2473,7 +2473,9 @@ body.painting-checkboxes .cell-append {
 /* Multi-cell paste overwrite confirm — compact Soft-dark popover */
 .paste-confirm {
   position: fixed;
-  z-index: 1300;
+  /* above menus and the Master edit modal (v0.157 shared confirm) */
+  z-index: 10050;
+  max-width: calc(100vw - 12px);
   display: flex;
   align-items: center;
   gap: 6px;
@@ -2487,7 +2489,9 @@ body.painting-checkboxes .cell-append {
 }
 .paste-confirm-text {
   font-weight: 600;
-  white-space: nowrap;
+  /* short messages stay on one line; longer ones (linked-cell counts) wrap */
+  white-space: normal;
+  max-width: 360px;
   padding-right: 2px;
 }
 .paste-confirm .btn {
