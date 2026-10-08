@@ -729,7 +729,6 @@ body {
 
 .part-section.is-tools-view .cell-grid-wrap,
 .part-section.is-tools-view .master-library,
-.part-section.is-tools-view .actions-row,
 .part-section.is-tools-view .part-search-bar {
   display: none;
 }
@@ -1783,12 +1782,6 @@ body.relocating-cell * {
   box-shadow: inset 0 0 0 1.5px var(--confirmed-border);
 }
 
-.actions-row {
-  display: flex;
-  gap: 8px;
-  flex-shrink: 0;
-}
-
 .master-library {
   flex: 0 1 auto;
   max-height: 30%;
@@ -2490,11 +2483,11 @@ body.resizing-rows * {
   z-index: 1250;
   display: flex;
   flex-direction: column;
-  gap: 1px;
+  gap: 4px;
   min-width: 200px;
   max-width: 340px;
   max-height: 320px;
-  overflow-y: auto;
+  overflow: hidden; /* list scrolls; search stays pinned */
   padding: 4px;
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -2502,6 +2495,35 @@ body.resizing-rows * {
   box-shadow: 0 8px 20px rgba(0, 0, 0, 0.45);
   overscroll-behavior: contain;
   font-size: 13px;
+}
+.col1-value-search {
+  flex: 0 0 auto;
+  box-sizing: border-box;
+  width: 100%;
+  height: 28px;
+  margin: 0;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--cell-bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+  outline: none;
+}
+.col1-value-search:focus {
+  border-color: var(--accent);
+}
+.col1-value-search::placeholder {
+  color: var(--muted);
+}
+.col1-value-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
   scrollbar-width: thin;
   scrollbar-color: rgba(154, 163, 176, 0.45) transparent;
 }
@@ -2818,6 +2840,15 @@ body.resizing-rows * {
 }
 .cell.cell-col1-validated {
   padding-right: 100px;
+}
+
+/* Col B ▾ — same reserved space as Col A so nothing jumps when Col A changes */
+.cell.cell-col2-validated {
+  padding-right: 100px;
+}
+.col2-dropdown-btn.is-off {
+  visibility: hidden;
+  pointer-events: none;
 }
 
 /* v0.143 — Col A has no nests: keep the gutter slot, hide the + */
