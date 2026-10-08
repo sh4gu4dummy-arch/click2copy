@@ -710,19 +710,20 @@ body {
 
 .cell.search-hit,
 .cell-nest-input.search-hit {
-  box-shadow: inset 0 0 0 2px rgba(var(--accent-rgb), 0.55);
-  background: rgba(var(--accent-rgb), 0.12);
+  /* Amber edge, no fill — never looks like the teal multi-cell selection (Ash). */
+  box-shadow: inset 0 0 0 2px rgba(245, 158, 11, 0.7);
+  background: transparent;
 }
 
 .cell.search-hit-current,
 .cell-nest-input.search-hit-current {
-  box-shadow: inset 0 0 0 2px var(--accent);
-  background: rgba(var(--accent-rgb), 0.22);
+  box-shadow: inset 0 0 0 2px rgba(245, 158, 11, 0.95);
+  background: transparent;
 }
 
 .cell-wrap.search-hit-wrap,
 .cell-nest.search-hit-wrap {
-  outline: 1px solid rgba(var(--accent-rgb), 0.35);
+  outline: 1px solid rgba(245, 158, 11, 0.45);
   outline-offset: 1px;
 }
 

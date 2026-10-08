@@ -7611,8 +7611,12 @@
     if (e.detail > 1 || suppressCellAutoCopy) return;
     if (ta.classList.contains('col1-editing') || ta.classList.contains('master-cell-editing')) return;
     if (cellRangeDrag && cellRangeDrag.mode) return;
+    // Selecting text / dragging / Shift+click in Col A must not toggle the row filter.
+    // Use the press's own gesture (not the leftover caret range — a plain click collapses
+    // selection after mousedown but before click, so that check would race).
     const tab = activeTab();
     const idx = parseInt(ta.dataset.idx, 10);
+    if (lastCellGesture && lastCellGesture.idx === idx && (lastCellGesture.moved || lastCellGesture.shift)) return;
     if (!tab || !isPartTabCol1Cell(tab, idx)) return;
     if (!(tab.cells[idx] || '').trim()) {
       // Nothing to filter by: an empty Col A cell just starts typing.
@@ -8952,8 +8956,9 @@
   // selects + copies the entire cell (including paragraph breaks) + status toast.
   // Enter moves to the next cell without copying (Shift+Enter = newline). Combined
   // click/focus copies Combined; Ctrl/Cmd+C copies cell or sticky multi-cell TSV. A
-  // fresh drag selects a rectangle; only a later drag started inside that sticky
-  // selection moves/swaps the block. Shift+Arrow extends the sticky multi-cell highlight.
+  // drag that goes clearly into another cell selects a rectangle (never moves/swaps
+  // cells). Shift+Arrow / Shift+click extend the sticky multi-cell highlight. A block
+  // and a native text selection are never shown together.
   // Delete/Backspace clears every cell in the sticky multi-cell range (current page).
   let lastAutoCopyKey = '';
   let lastAutoCopyAt = 0;
@@ -8965,6 +8970,12 @@
   let keyboardRangeAnchor = null;
   let keyboardRangeFocus = null;
   const CELL_DRAG_MOVE_PX = 8;
+  /** A text-select drag only becomes a cell block this far past the start cell's edge. */
+  const CELL_DRIFT_PX = 20;
+  /** Movement above this between press and release is a drag, not a click (Col A filter). */
+  const CELL_CLICK_SLOP_PX = 4;
+  /** Last press on a cell: { idx, shift, moved } — lets click handlers skip drags / Shift+click. */
+  let lastCellGesture = null;
 
   function writeTextToClipboard(text) {
     if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
@@ -9200,7 +9211,8 @@
     const col = parseInt(ta.dataset.col, 10);
     if (Number.isNaN(row) || Number.isNaN(col)) return false;
 
-    if (!keyboardRangeAnchor || keyboardRangeAnchor.tabId !== tab.id) {
+    // No lit block → start fresh from this cell (a stale anchor must not jump).
+    if (!getStickyCellRange() || !keyboardRangeAnchor || keyboardRangeAnchor.tabId !== tab.id) {
       keyboardRangeAnchor = { tabId: tab.id, row: row, col: col };
       keyboardRangeFocus = { row: row, col: col };
     }
@@ -9217,8 +9229,13 @@
       keyboardRangeAnchor.row, keyboardRangeAnchor.col,
       keyboardRangeFocus.row, keyboardRangeFocus.col
     );
-    if (isMultiCellBounds(b)) setStickyCellRange(b, tab.id);
-    else clearStickyCellRange();
+    if (isMultiCellBounds(b)) {
+      // Never show the block and a text selection together.
+      collapseCellTextSelection();
+      setStickyCellRange(b, tab.id);
+    } else {
+      clearStickyCellRange();
+    }
     return true;
   }
 
@@ -9263,178 +9280,6 @@
     return wrap;
   }
 
-  /**
-   * Move/swap a rectangular cell block so its top-left lands at destRMin/destCMin.
-   * Non-overlapping + dest has content ⇒ rectangle swap; otherwise move (overwrite dest,
-   * clear vacated source). Combined-link indices follow content.
-   * Returns { swapped, bounds } or null on failure.
-   */
-  function relocateOrSwapCellBlock(tab, srcBounds, destRMin, destCMin) {
-    if (!tab || !srcBounds || !isMultiCellBounds(srcBounds)) return null;
-    const nRows = srcBounds.rMax - srcBounds.rMin + 1;
-    const nCols = srcBounds.cMax - srcBounds.cMin + 1;
-    if (destRMin < 0 || destCMin < 0) return null;
-    if (destRMin + nRows - 1 >= tab.rows || destCMin + nCols - 1 >= tab.cols) return null;
-    if (destRMin === srcBounds.rMin && destCMin === srcBounds.cMin) return null;
-
-    const srcIndices = [];
-    const dstIndices = [];
-    for (let r = 0; r < nRows; r++) {
-      for (let c = 0; c < nCols; c++) {
-        srcIndices.push((srcBounds.rMin + r) * tab.cols + (srcBounds.cMin + c));
-        dstIndices.push((destRMin + r) * tab.cols + (destCMin + c));
-      }
-    }
-
-    const overlap = !(
-      srcBounds.rMax < destRMin ||
-      destRMin + nRows - 1 < srcBounds.rMin ||
-      srcBounds.cMax < destCMin ||
-      destCMin + nCols - 1 < srcBounds.cMin
-    );
-
-    ensureNestedCells(tab);
-    ensureCellLocks(tab);
-    ensureCellPages(tab);
-    ensureCellShades(tab);
-    const srcCells = srcIndices.map(function (i) { return tab.cells[i]; });
-    const srcNested = srcIndices.map(function (i) { return normalizeNestList(tab.nestedCells[i]); });
-    const srcLocks = srcIndices.map(function (i) { return tab.cellLocks[i]; });
-    const srcPages = srcIndices.map(function (i) { return cloneCellPagesEntry(tab.cellPages[i]); });
-    const srcShades = srcIndices.map(function (i) { return tab.cellShades[i] || null; });
-    const dstCells = dstIndices.map(function (i) { return tab.cells[i]; });
-    const dstNested = dstIndices.map(function (i) { return normalizeNestList(tab.nestedCells[i]); });
-    const dstLocks = dstIndices.map(function (i) { return tab.cellLocks[i]; });
-    const dstPages = dstIndices.map(function (i) { return cloneCellPagesEntry(tab.cellPages[i]); });
-    const dstShades = dstIndices.map(function (i) { return tab.cellShades[i] || null; });
-
-    let destHadContent = false;
-    if (!overlap) {
-      for (let i = 0; i < dstCells.length; i++) {
-        if ((dstCells[i] || '').trim()) {
-          destHadContent = true;
-          break;
-        }
-      }
-    }
-
-    pushHistory();
-
-    const indexMap = {};
-    const destroyed = {};
-
-    if (!overlap && destHadContent) {
-      for (let i = 0; i < srcIndices.length; i++) {
-        tab.cells[dstIndices[i]] = srcCells[i];
-        tab.nestedCells[dstIndices[i]] = srcNested[i];
-        tab.cellLocks[dstIndices[i]] = srcLocks[i];
-        tab.cellPages[dstIndices[i]] = srcPages[i];
-        tab.cellShades[dstIndices[i]] = srcShades[i];
-        tab.cells[srcIndices[i]] = dstCells[i];
-        tab.nestedCells[srcIndices[i]] = dstNested[i];
-        tab.cellLocks[srcIndices[i]] = dstLocks[i];
-        tab.cellPages[srcIndices[i]] = dstPages[i];
-        tab.cellShades[srcIndices[i]] = dstShades[i];
-        indexMap[srcIndices[i]] = dstIndices[i];
-        indexMap[dstIndices[i]] = srcIndices[i];
-      }
-    } else {
-      const srcSet = {};
-      for (let i = 0; i < srcIndices.length; i++) srcSet[srcIndices[i]] = true;
-      for (let i = 0; i < dstIndices.length; i++) {
-        if (!srcSet[dstIndices[i]]) destroyed[dstIndices[i]] = true;
-      }
-      for (let i = 0; i < srcIndices.length; i++) {
-        tab.cells[srcIndices[i]] = '';
-        tab.nestedCells[srcIndices[i]] = [];
-        tab.cellLocks[srcIndices[i]] = null;
-        tab.cellPages[srcIndices[i]] = makeEmptyCellPages('');
-        tab.cellShades[srcIndices[i]] = null;
-      }
-      for (let i = 0; i < srcIndices.length; i++) {
-        tab.cells[dstIndices[i]] = srcCells[i];
-        tab.nestedCells[dstIndices[i]] = srcNested[i];
-        tab.cellLocks[dstIndices[i]] = srcLocks[i];
-        tab.cellPages[dstIndices[i]] = srcPages[i];
-        tab.cellShades[dstIndices[i]] = srcShades[i];
-        indexMap[srcIndices[i]] = dstIndices[i];
-      }
-    }
-
-    state.confirmedLinks = state.confirmedLinks.filter(function (link) {
-      if (link.tabId !== tab.id) return true;
-      return !destroyed[link.cellIndex];
-    });
-    // Remap in two passes so swap cycles do not collide.
-    const pending = [];
-    state.confirmedLinks.forEach(function (link) {
-      if (link.tabId !== tab.id) return;
-      if (Object.prototype.hasOwnProperty.call(indexMap, link.cellIndex)) {
-        pending.push({ link: link, to: indexMap[link.cellIndex] });
-      }
-    });
-    pending.forEach(function (item) {
-      item.link.cellIndex = item.to;
-    });
-    // v0.142: dragging a Master block moved the text but part-tab links kept
-    // pointing at the old Master spots (now empty or holding other text), so
-    // editing/clearing the vacated Master cell overwrote or emptied the linked
-    // part cell ("empty cell is still locked"). Follow the move like row ↑/↓
-    // and sort do, then run the existing repair for overwritten spots.
-    if (isMasterTab(tab)) {
-      remapMasterIndexWith(function (idx) {
-        return Object.prototype.hasOwnProperty.call(indexMap, idx) ? indexMap[idx] : idx;
-      });
-      reportLockRepair(reconcileMasterLocks());
-    }
-
-    return {
-      swapped: !overlap && destHadContent,
-      bounds: {
-        rMin: destRMin,
-        rMax: destRMin + nRows - 1,
-        cMin: destCMin,
-        cMax: destCMin + nCols - 1
-      }
-    };
-  }
-
-  function clampBlockDest(tab, srcBounds, destRMin, destCMin) {
-    const nRows = srcBounds.rMax - srcBounds.rMin + 1;
-    const nCols = srcBounds.cMax - srcBounds.cMin + 1;
-    const maxR = Math.max(0, tab.rows - nRows);
-    const maxC = Math.max(0, tab.cols - nCols);
-    return {
-      destRMin: Math.max(0, Math.min(destRMin, maxR)),
-      destCMin: Math.max(0, Math.min(destCMin, maxC))
-    };
-  }
-
-  function applyBlockRelocateHighlight(srcBounds, destBounds) {
-    clearCellRangeHighlight();
-    clearCellRelocateHighlight();
-    if (!el.cellGrid || !srcBounds) return;
-    function markRect(b, cls) {
-      for (let r = b.rMin; r <= b.rMax; r++) {
-        for (let c = b.cMin; c <= b.cMax; c++) {
-          const wrap = el.cellGrid.querySelector(
-            '.cell-wrap[data-row="' + r + '"][data-col="' + c + '"]'
-          );
-          if (!wrap) continue;
-          wrap.classList.add(cls);
-          const ta = wrap.querySelector('textarea.cell');
-          if (ta) ta.classList.add(cls);
-        }
-      }
-    }
-    markRect(srcBounds, 'cell-relocate-source');
-    if (destBounds &&
-        (destBounds.rMin !== srcBounds.rMin || destBounds.cMin !== srcBounds.cMin ||
-         destBounds.rMax !== srcBounds.rMax || destBounds.cMax !== srcBounds.cMax)) {
-      markRect(destBounds, 'cell-relocate-target');
-    }
-  }
-
   function finishCellRangeListeners() {
     document.removeEventListener('pointermove', onCellRangePointerMove);
     document.removeEventListener('pointerup', onCellRangePointerUp);
@@ -9472,47 +9317,45 @@
 
   function beginMultiCellRangeDrag() {
     if (!cellRangeDrag || cellRangeDrag.mode === 'multi') return;
-    if (cellRangeDrag.mode === 'block-relocate') return;
+    // Remember the in-cell text selection so returning to the start cell can
+    // put it back (drifting past the edge must not lose the user's selection).
+    const ta = cellRangeDrag.captureEl;
+    if (ta && ta.tagName === 'TEXTAREA') {
+      cellRangeDrag.savedSel = {
+        start: ta.selectionStart,
+        end: ta.selectionEnd,
+        dir: ta.selectionDirection || 'none',
+        scrollTop: ta.scrollTop
+      };
+    }
     cellRangeDrag.mode = 'multi';
     cellRangeDrag.multi = true;
     suppressCellAutoCopy = true;
-    document.body.classList.remove('relocating-cell');
     document.body.classList.add('selecting-cell-range');
     clearStickyCellRange();
     clearCellRelocateHighlight();
     collapseCellTextSelection();
   }
 
-  function beginBlockRelocateDrag() {
-    if (!cellRangeDrag || cellRangeDrag.mode === 'block-relocate') return;
-    if (cellRangeDrag.mode === 'multi') return;
-    if (!cellRangeDrag.blockBounds || !isMultiCellBounds(cellRangeDrag.blockBounds)) return;
-    cellRangeDrag.mode = 'block-relocate';
-    cellRangeDrag.multi = false;
-    suppressCellAutoCopy = true;
+  /** Pointer came back into the start cell: drop the block, restore the text selection. */
+  function returnToTextSelectDrag() {
+    const drag = cellRangeDrag;
+    if (!drag) return;
+    drag.mode = null;
+    drag.multi = false;
+    drag.endRow = drag.startRow;
+    drag.endCol = drag.startCol;
+    suppressCellAutoCopy = false;
     document.body.classList.remove('selecting-cell-range');
-    document.body.classList.add('relocating-cell');
-    collapseCellTextSelection();
-    const tab = activeTab();
-    const b = cellRangeDrag.blockBounds;
-    const deltaR = cellRangeDrag.endRow - cellRangeDrag.grabRow;
-    const deltaC = cellRangeDrag.endCol - cellRangeDrag.grabCol;
-    let destRMin = b.rMin + deltaR;
-    let destCMin = b.cMin + deltaC;
-    if (tab) {
-      const clamped = clampBlockDest(tab, b, destRMin, destCMin);
-      destRMin = clamped.destRMin;
-      destCMin = clamped.destCMin;
+    clearCellRangeHighlight();
+    const ta = drag.captureEl;
+    const s = drag.savedSel;
+    if (ta && s && ta.isConnected && typeof ta.setSelectionRange === 'function') {
+      try {
+        ta.setSelectionRange(s.start, s.end, s.dir);
+        ta.scrollTop = s.scrollTop;
+      } catch (err) { /* no-op */ }
     }
-    const destBounds = {
-      rMin: destRMin,
-      rMax: destRMin + (b.rMax - b.rMin),
-      cMin: destCMin,
-      cMax: destCMin + (b.cMax - b.cMin)
-    };
-    cellRangeDrag.destRMin = destRMin;
-    cellRangeDrag.destCMin = destCMin;
-    applyBlockRelocateHighlight(b, destBounds);
   }
 
   function onCellRangePointerMove(e) {
@@ -9520,6 +9363,7 @@
     const dx = e.clientX - cellRangeDrag.startX;
     const dy = e.clientY - cellRangeDrag.startY;
     const distSq = dx * dx + dy * dy;
+    if (distSq > CELL_CLICK_SLOP_PX * CELL_CLICK_SLOP_PX) cellRangeDrag.movedSlop = true;
     const moved = distSq >= (CELL_DRAG_MOVE_PX * CELL_DRAG_MOVE_PX);
 
     const wrap = cellWrapFromPoint(e.clientX, e.clientY);
@@ -9534,49 +9378,42 @@
       }
     }
 
-    // Stay in native text-select (I-beam) while the pointer remains in the
-    // starting cell. Multi-cell range / sticky block-relocate only begin once
-    // the drag actually crosses into another cell — that is what was hijacking
-    // in-cell character selection and flipping the cursor via body classes.
+    // Stay in native text-select while the pointer is in (or just past) the
+    // start cell. The block only starts once the pointer is clearly inside
+    // another cell (CELL_DRIFT_PX past the start cell's edge); coming back into
+    // the start cell drops the block and restores the text selection.
+    const startWrap = cellRangeDrag.startWrap;
+    const sr = startWrap && startWrap.isConnected ? startWrap.getBoundingClientRect() : null;
+    const x = e.clientX;
+    const y = e.clientY;
+    const insideStart = sr
+      ? (x >= sr.left && x <= sr.right && y >= sr.top && y <= sr.bottom)
+      : (row === cellRangeDrag.startRow && col === cellRangeDrag.startCol);
+    const clearlyOut = sr
+      ? (x < sr.left - CELL_DRIFT_PX || x > sr.right + CELL_DRIFT_PX ||
+         y < sr.top - CELL_DRIFT_PX || y > sr.bottom + CELL_DRIFT_PX)
+      : true;
     const leftStartCell =
       row !== cellRangeDrag.startRow || col !== cellRangeDrag.startCol;
-    if (!cellRangeDrag.mode && moved && leftStartCell) {
-      if (cellRangeDrag.fromStickyBlock) beginBlockRelocateDrag();
-      else beginMultiCellRangeDrag();
+    if (!cellRangeDrag.mode && moved && leftStartCell && clearlyOut) {
+      beginMultiCellRangeDrag();
     }
+    if (cellRangeDrag.mode === 'multi' && insideStart) {
+      returnToTextSelectDrag();
+      return;
+    }
+    if (cellRangeDrag.mode !== 'multi') return;
 
     if (row === cellRangeDrag.endRow && col === cellRangeDrag.endCol) {
       return;
     }
     cellRangeDrag.endRow = row;
     cellRangeDrag.endCol = col;
-
-    if (cellRangeDrag.mode === 'multi') {
-      if (e.cancelable) e.preventDefault();
-      applyCellRangeHighlight(
-        cellRangeDrag.startRow, cellRangeDrag.startCol,
-        cellRangeDrag.endRow, cellRangeDrag.endCol
-      );
-      return;
-    }
-
-    if (cellRangeDrag.mode === 'block-relocate') {
-      if (e.cancelable) e.preventDefault();
-      const tab = activeTab();
-      const b = cellRangeDrag.blockBounds;
-      if (!tab || !b) return;
-      const deltaR = cellRangeDrag.endRow - cellRangeDrag.grabRow;
-      const deltaC = cellRangeDrag.endCol - cellRangeDrag.grabCol;
-      const clamped = clampBlockDest(tab, b, b.rMin + deltaR, b.cMin + deltaC);
-      cellRangeDrag.destRMin = clamped.destRMin;
-      cellRangeDrag.destCMin = clamped.destCMin;
-      applyBlockRelocateHighlight(b, {
-        rMin: clamped.destRMin,
-        rMax: clamped.destRMin + (b.rMax - b.rMin),
-        cMin: clamped.destCMin,
-        cMax: clamped.destCMin + (b.cMax - b.cMin)
-      });
-    }
+    if (e.cancelable) e.preventDefault();
+    applyCellRangeHighlight(
+      cellRangeDrag.startRow, cellRangeDrag.startCol,
+      cellRangeDrag.endRow, cellRangeDrag.endCol
+    );
   }
 
   function onCellRangePointerUp(e) {
@@ -9584,28 +9421,31 @@
     const drag = cellRangeDrag;
     drag.active = false;
     finishCellRangeListeners();
-
-    // Refresh end cell from release point when possible.
-    const wrap = cellWrapFromPoint(e.clientX, e.clientY);
-    if (wrap) {
-      const row = parseInt(wrap.dataset.row, 10);
-      const col = parseInt(wrap.dataset.col, 10);
-      if (!Number.isNaN(row) && !Number.isNaN(col)) {
-        drag.endRow = row;
-        drag.endCol = col;
-      }
-    }
+    if (lastCellGesture) lastCellGesture.moved = !!drag.movedSlop;
 
     if (drag.mode === 'multi') {
+      // Refresh end cell from release point when possible.
+      const wrap = cellWrapFromPoint(e.clientX, e.clientY);
+      if (wrap) {
+        const row = parseInt(wrap.dataset.row, 10);
+        const col = parseInt(wrap.dataset.col, 10);
+        if (!Number.isNaN(row) && !Number.isNaN(col)) {
+          drag.endRow = row;
+          drag.endCol = col;
+        }
+      }
       const b = normalizeRangeBounds(drag.startRow, drag.startCol, drag.endRow, drag.endCol);
-      const rows = b.rMax - b.rMin + 1;
-      const cols = b.cMax - b.cMin + 1;
-      const isMulti = rows > 1 || cols > 1;
-      if (isMulti) {
+      if (isMultiCellBounds(b)) {
         suppressCellAutoCopy = true;
         const tab = activeTab();
         // Sticky multi-cell selection only — copy via Ctrl/Cmd+C (no auto-copy on release).
         setStickyCellRange(b, tab && tab.id);
+        // Shift+Arrow / Shift+click keep growing this block from the start cell.
+        if (tab) {
+          keyboardRangeAnchor = { tabId: tab.id, row: drag.startRow, col: drag.startCol };
+          keyboardRangeFocus = { row: drag.endRow, col: drag.endCol };
+        }
+        collapseCellTextSelection();
         window.setTimeout(function () {
           suppressCellAutoCopy = false;
           cellRangeDrag = null;
@@ -9616,88 +9456,65 @@
       clearCellRangeHighlight();
       suppressCellAutoCopy = false;
       cellRangeDrag = null;
-      // Jittered drag that never left the cell — leave caret (no auto-copy).
       return;
     }
 
-    if (drag.mode === 'block-relocate') {
-      suppressCellAutoCopy = true;
-      clearCellRelocateHighlight();
-      const tab = activeTab();
-      const b = drag.blockBounds;
-      if (tab && b && isMultiCellBounds(b)) {
-        const deltaR = drag.endRow - drag.grabRow;
-        const deltaC = drag.endCol - drag.grabCol;
-        const clamped = clampBlockDest(tab, b, b.rMin + deltaR, b.cMin + deltaC);
-        const same = clamped.destRMin === b.rMin && clamped.destCMin === b.cMin;
-        if (!same) {
-          const result = relocateOrSwapCellBlock(tab, b, clamped.destRMin, clamped.destCMin);
-          if (result) {
-            stickyCellRange = null;
-            renderTabs();
-            renderGrid();
-            renderMasterLibrary();
-            renderCombinedPrompt();
-            scheduleSave();
-            setStickyCellRange(result.bounds, tab.id);
-            const rows = result.bounds.rMax - result.bounds.rMin + 1;
-            const cols = result.bounds.cMax - result.bounds.cMin + 1;
-            const sizeLabel = rows + '\u00d7' + cols;
-            const toLabel = cellAddress(result.bounds.rMin, result.bounds.cMin);
-            setStatus(
-              result.swapped
-                ? ('Swapped ' + sizeLabel + ' block \u2194 ' + toLabel)
-                : ('Moved ' + sizeLabel + ' block \u2192 ' + toLabel),
-              'ok'
-            );
-            window.setTimeout(function () {
-              suppressCellAutoCopy = false;
-              cellRangeDrag = null;
-              restoreStickyCellRangeHighlight();
-              const focusIdx = result.bounds.rMin * tab.cols + result.bounds.cMin;
-              focusCell(focusIdx);
-              const ta = el.cellGrid.querySelector('textarea.cell[data-idx="' + focusIdx + '"]');
-              if (ta) selectWholeCellContents(ta);
-            }, 0);
-            return;
-          }
-        }
-      }
-      // Cancelled / same place: keep sticky selection highlight.
-      restoreStickyCellRangeHighlight();
-      suppressCellAutoCopy = false;
-      cellRangeDrag = null;
-      return;
-    }
-
-    // Short click / hold-without-drag: place the caret and clear any sticky
-    // multi-cell selection, including when the clicked cell is inside it.
-    // A real drag from inside the range was handled above as block relocation.
-    clearStickyCellRange();
+    // Short click / in-cell text drag: leave the caret / text selection as is.
     clearCellRelocateHighlight();
     suppressCellAutoCopy = false;
     cellRangeDrag = null;
   }
 
+  /**
+   * Shift+click another cell: extend the block from the current cell (or the
+   * existing block's anchor), Excel-style. Focus stays on the anchor cell.
+   */
+  function extendRangeToCellByShiftClick(ta, row, col) {
+    const tab = activeTab();
+    const active = document.activeElement;
+    if (!tab || !el.cellGrid || !active || active === ta || active.tagName !== 'TEXTAREA' ||
+        !active.classList.contains('cell') || !el.cellGrid.contains(active)) {
+      return false;
+    }
+    const ar = parseInt(active.dataset.row, 10);
+    const ac = parseInt(active.dataset.col, 10);
+    if (Number.isNaN(ar) || Number.isNaN(ac)) return false;
+    if (!getStickyCellRange() || !keyboardRangeAnchor || keyboardRangeAnchor.tabId !== tab.id) {
+      keyboardRangeAnchor = { tabId: tab.id, row: ar, col: ac };
+    }
+    keyboardRangeFocus = { row: row, col: col };
+    const b = normalizeRangeBounds(keyboardRangeAnchor.row, keyboardRangeAnchor.col, row, col);
+    collapseCellTextSelection();
+    if (isMultiCellBounds(b)) setStickyCellRange(b, tab.id);
+    else clearStickyCellRange();
+    return true;
+  }
+
   function onCellPointerDownSelect(e) {
     if (e.button != null && e.button !== 0) return;
     const ta = e.currentTarget;
-    clearKeyboardCellRange();
     const row = parseInt(ta.dataset.row, 10);
     const col = parseInt(ta.dataset.col, 10);
     if (Number.isNaN(row) || Number.isNaN(col)) return;
-    // Re-click / fresh drag; do not disturb Combined toggles (those are outside the textarea).
     if (cellRangeDrag && cellRangeDrag.active) {
       finishCellRangeListeners();
     }
+    const idx = parseInt(ta.dataset.idx, 10);
 
-    const insideSticky = cellInStickyRange(row, col);
-    if (!insideSticky && stickyCellRange) {
-      // Click outside sticky multi-cell selection clears it (Excel-ish).
-      clearStickyCellRange();
+    if (e.shiftKey && extendRangeToCellByShiftClick(ta, row, col)) {
+      // Keep focus + caret on the anchor cell; no native text extend.
+      e.preventDefault();
+      cellRangeDrag = null;
+      lastCellGesture = { idx: idx, shift: true, moved: false };
+      return;
     }
 
-    const sticky = insideSticky ? getStickyCellRange() : null;
+    clearKeyboardCellRange();
+    // A plain press always starts fresh: drop any lit block right away so a block
+    // and a text selection never show together. Drag never moves/swaps cells (Ash).
+    if (stickyCellRange) clearStickyCellRange();
+    lastCellGesture = { idx: idx, shift: false, moved: false };
+
     cellRangeDrag = {
       active: true,
       mode: null,
@@ -9710,18 +9527,9 @@
       startY: e.clientY,
       pointerId: e.pointerId,
       captureEl: ta,
-      fromStickyBlock: !!sticky,
-      blockBounds: sticky ? {
-        rMin: sticky.rMin,
-        rMax: sticky.rMax,
-        cMin: sticky.cMin,
-        cMax: sticky.cMax,
-        tabId: sticky.tabId
-      } : null,
-      grabRow: row,
-      grabCol: col,
-      destRMin: sticky ? sticky.rMin : row,
-      destCMin: sticky ? sticky.cMin : col
+      startWrap: ta.closest ? ta.closest('.cell-wrap') : null,
+      movedSlop: false,
+      savedSel: null
     };
     document.addEventListener('pointermove', onCellRangePointerMove);
     document.addEventListener('pointerup', onCellRangePointerUp);
@@ -9740,6 +9548,8 @@
   function onCellClickSelect(e) {
     // Leave caret at click position (or word select on double-click). Triple-click
     // selects + copies the entire cell (incl. paragraph breaks) + status toast.
+    // Shift+click that extended the block keeps the anchor cell as the focused one.
+    if (e.shiftKey && lastCellGesture && lastCellGesture.shift) return;
     rememberFocusedCell(e);
     if (e.detail !== 3) return;
     const ta = e.currentTarget;
@@ -9916,6 +9726,63 @@
     return ta.selectionStart === 0 && ta.selectionEnd === len;
   }
 
+  /**
+   * Is the collapsed caret on the first / last *visual* line of the textarea?
+   * Measures with a hidden mirror (same width/font/padding) so wrapped lines count.
+   */
+  function caretVisualLineEdges(ta) {
+    const out = { first: true, last: true };
+    if (!ta || ta.tagName !== 'TEXTAREA') return out;
+    try {
+      const cs = window.getComputedStyle(ta);
+      const val = ta.value == null ? '' : String(ta.value);
+      const pos = typeof ta.selectionStart === 'number' ? ta.selectionStart : 0;
+      const padL = parseFloat(cs.paddingLeft) || 0;
+      const padR = parseFloat(cs.paddingRight) || 0;
+      const fontSize = parseFloat(cs.fontSize) || 12;
+      const lh = parseFloat(cs.lineHeight) || fontSize * 1.4;
+      const m = document.createElement('div');
+      const st = m.style;
+      st.position = 'absolute';
+      st.visibility = 'hidden';
+      st.left = '-10000px';
+      st.top = '0';
+      st.boxSizing = 'content-box';
+      st.width = Math.max(1, ta.clientWidth - padL - padR) + 'px';
+      st.padding = '0';
+      st.border = '0';
+      st.whiteSpace = 'pre-wrap';
+      st.overflowWrap = 'break-word';
+      st.wordBreak = cs.wordBreak;
+      ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'letterSpacing', 'wordSpacing',
+        'lineHeight', 'textTransform', 'textIndent', 'tabSize'].forEach(function (k) { st[k] = cs[k]; });
+      m.appendChild(document.createTextNode(val.slice(0, pos)));
+      const mark = document.createElement('span');
+      m.appendChild(mark);
+      m.appendChild(document.createTextNode(val.slice(pos) + (val.endsWith('\n') ? ' ' : '')));
+      document.body.appendChild(m);
+      const top = mark.offsetTop;
+      const h = m.offsetHeight;
+      m.remove();
+      out.first = top < lh / 2;
+      out.last = top + lh > h - lh / 2;
+    } catch (err) { /* fall back to "at edge" */ }
+    return out;
+  }
+
+  /** Shift+Arrow may start a cell block only from a real text edge (collapsed caret). */
+  function caretAtShiftBlockEdge(ta, key) {
+    if (!ta || ta.tagName !== 'TEXTAREA') return false;
+    const start = ta.selectionStart;
+    if (start !== ta.selectionEnd) return false;
+    const len = (ta.value == null ? '' : String(ta.value)).length;
+    if (key === 'ArrowLeft') return start === 0;
+    if (key === 'ArrowRight') return start === len;
+    if (key === 'ArrowUp') return start === 0 || caretVisualLineEdges(ta).first;
+    if (key === 'ArrowDown') return start === len || caretVisualLineEdges(ta).last;
+    return false;
+  }
+
   /** True when caret is collapsed at the text edge matching the arrow direction. */
   function caretAtArrowBoundary(ta, key) {
     if (!ta || ta.tagName !== 'TEXTAREA') return false;
@@ -10017,10 +9884,13 @@
 
     if (isArrow) {
       if (e.shiftKey && !e.altKey && !e.ctrlKey && !e.metaKey) {
-        // Shift+Arrow selects cells, not text, when the caret is at a grid boundary.
-        if (!isWholeCellSelected(e.currentTarget) && !caretAtArrowBoundary(e.currentTarget, e.key)) return;
+        // Once a block is lit, Shift+Arrow always grows/shrinks the block (never text).
+        // Otherwise a block starts only from a real text edge: Left/Right at the very
+        // start/end, Up/Down on the first/last *visual* (wrapped) line.
+        const sta = e.currentTarget;
+        if (!getStickyCellRange() && !isWholeCellSelected(sta) && !caretAtShiftBlockEdge(sta, e.key)) return;
         e.preventDefault();
-        extendKeyboardCellRange(e.currentTarget, e.key);
+        extendKeyboardCellRange(sta, e.key);
         return;
       }
       // Alt+Left/Right flips parent-cell pages (same idea as nest pages).
@@ -12060,9 +11930,50 @@
     rememberCombinedCaretFromDom();
   });
   document.addEventListener('selectionchange', function () {
+    // Invariant: a lit cell block and a text selection in the grid never show
+    // together — a new text selection (Ctrl+A, nest drag…) drops the block.
+    if (stickyCellRange && el.cellGrid) {
+      const a = document.activeElement;
+      if (a && (a.tagName === 'TEXTAREA' || a.tagName === 'INPUT') && el.cellGrid.contains(a) &&
+          typeof a.selectionStart === 'number' && a.selectionStart !== a.selectionEnd &&
+          !(cellRangeDrag && cellRangeDrag.mode)) {
+        clearStickyCellRange();
+        clearKeyboardCellRange();
+      }
+    }
     if (document.activeElement !== el.combined) return;
     rememberCombinedCaretFromDom();
   });
+
+  // Press outside the grid clears the lit block (menus that act on it are exempt).
+  document.addEventListener('pointerdown', function (e) {
+    if (!stickyCellRange) return;
+    const t = e.target;
+    if (el.cellGrid && t && el.cellGrid.contains(t)) return;
+    if (t && typeof t.closest === 'function' &&
+        t.closest('.part-page-menu, .tab-icon-picker, .add-page-choice-menu, .paste-confirm, .modal-overlay')) {
+      return;
+    }
+    clearStickyCellRange();
+    clearKeyboardCellRange();
+  }, true);
+
+  // Text never gets dragged/dropped between or into cells (no cut/move by drag).
+  // In-cell drag-select still works (that is selection, not drag-and-drop).
+  if (el.cellGrid) {
+    el.cellGrid.addEventListener('dragstart', function (e) {
+      const t = e.target;
+      if (t && (t.tagName === 'TEXTAREA' || t.tagName === 'INPUT' || t.nodeType === 3)) e.preventDefault();
+    }, true);
+    const blockTextDrop = function (e) {
+      const t = e.target;
+      if (!t || (t.tagName !== 'TEXTAREA' && t.tagName !== 'INPUT')) return;
+      e.preventDefault();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'none';
+    };
+    el.cellGrid.addEventListener('dragover', blockTextDrop, true);
+    el.cellGrid.addEventListener('drop', blockTextDrop, true);
+  }
 
   el.combined.addEventListener('keydown', function (event) {
     // Read-only view: Ctrl/Cmd+C copies Notes + generated text (what you see).
