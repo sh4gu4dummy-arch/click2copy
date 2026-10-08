@@ -3115,6 +3115,115 @@
     scheduleSave();
   }
 
+  /**
+   * Inline page chips on the page-nav row: fixed-width strip (always shown,
+   * even with one page) — click = jump, drag = reorder.
+   */
+  function buildPartPageStrip(tab, page) {
+    const strip = document.createElement('div');
+    strip.className = 'part-page-strip';
+    strip.setAttribute('role', 'tablist');
+    strip.setAttribute('aria-label', 'Part pages (drag to reorder)');
+    const count = tab.pages.length;
+    function clearDrop() {
+      const marked = strip.querySelectorAll('.drop-before, .drop-after');
+      for (let i = 0; i < marked.length; i++) marked[i].classList.remove('drop-before', 'drop-after');
+    }
+    for (let i = 0; i < count; i++) {
+      const snap = tab.pages[i];
+      // Auto names ("Page N" from +) show the live position; custom names show as typed.
+      const rawName = snap && typeof snap.name === 'string' ? snap.name.trim() : '';
+      const named = rawName && !/^page \d+$/i.test(rawName);
+      const chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = 'part-page-chip' + (i === page ? ' is-active' : '');
+      chip.setAttribute('role', 'tab');
+      chip.setAttribute('aria-selected', i === page ? 'true' : 'false');
+      chip.textContent = named ? rawName : String(i + 1);
+      chip.title = (rawName ? rawName + ' — ' : '') + 'page ' + (i + 1) + ' of ' + count +
+        (count > 1 ? ' (drag to reorder)' : '');
+      chip.dataset.page = String(i);
+      chip.draggable = count > 1;
+      chip.addEventListener('click', function (ev) {
+        ev.preventDefault();
+        if (i !== (tab.page || 0)) setTabPage(i);
+      });
+      chip.addEventListener('dragstart', function (ev) {
+        ev.stopPropagation();
+        ev.dataTransfer.setData('application/x-c2c-part-page', String(i));
+        ev.dataTransfer.effectAllowed = 'move';
+        chip.classList.add('dragging');
+      });
+      chip.addEventListener('dragend', function () {
+        chip.classList.remove('dragging');
+        clearDrop();
+      });
+      chip.addEventListener('dragover', function (ev) {
+        if (!ev.dataTransfer.types || ev.dataTransfer.types.indexOf('application/x-c2c-part-page') === -1) return;
+        ev.preventDefault();
+        ev.dataTransfer.dropEffect = 'move';
+        clearDrop();
+        const b = chip.getBoundingClientRect();
+        chip.classList.add(ev.clientX < b.left + b.width / 2 ? 'drop-before' : 'drop-after');
+      });
+      chip.addEventListener('dragleave', function () {
+        chip.classList.remove('drop-before', 'drop-after');
+      });
+      chip.addEventListener('drop', function (ev) {
+        const raw = ev.dataTransfer.getData('application/x-c2c-part-page');
+        if (raw === '') return;
+        ev.preventDefault();
+        ev.stopPropagation();
+        const b = chip.getBoundingClientRect();
+        clearDrop();
+        reorderTabPage(parseInt(raw, 10), i, ev.clientX >= b.left + b.width / 2);
+      });
+      strip.appendChild(chip);
+    }
+    // Wheel scrolls the chip strip sideways when it overflows.
+    strip.addEventListener('wheel', function (ev) {
+      if (strip.scrollWidth <= strip.clientWidth) return;
+      if (Math.abs(ev.deltaY) > Math.abs(ev.deltaX)) {
+        strip.scrollLeft += ev.deltaY;
+        ev.preventDefault();
+      }
+    }, { passive: false });
+    requestAnimationFrame(function () {
+      const active = strip.querySelector('.part-page-chip.is-active');
+      if (active && strip.scrollWidth > strip.clientWidth) {
+        const left = active.offsetLeft - strip.offsetLeft;
+        if (left < strip.scrollLeft) strip.scrollLeft = left;
+        else if (left + active.offsetWidth > strip.scrollLeft + strip.clientWidth) {
+          strip.scrollLeft = left + active.offsetWidth - strip.clientWidth;
+        }
+      }
+    });
+    return strip;
+  }
+
+  /** Move part page `from` before/after `target`; page data moves, current page stays selected. */
+  function reorderTabPage(from, target, afterTarget) {
+    const tab = activeTab();
+    if (!tab || isMasterTab(tab) || toolsTabActive) return;
+    ensureTabPages(tab);
+    const n = tab.pages.length;
+    if (!Number.isInteger(from) || from < 0 || from >= n || target < 0 || target >= n) return;
+    let insertAt = target + (afterTarget ? 1 : 0);
+    if (from < insertAt) insertAt--;
+    if (insertAt === from) return;
+    pushHistory();
+    // Flush the live grid into its page so the move carries current edits.
+    flushLiveCellInputs(tab);
+    tab.pages[tab.page] = captureTabPage(tab);
+    const current = tab.pages[tab.page];
+    const moved = tab.pages.splice(from, 1)[0];
+    tab.pages.splice(insertAt, 0, moved);
+    tab.page = tab.pages.indexOf(current);
+    renderPartTabPageChrome();
+    scheduleSave();
+    setStatus('Moved part page ' + (from + 1) + ' → ' + (insertAt + 1), 'ok');
+  }
+
   function renderPartTabPageChrome() {
     const host = el.partTabPageChrome;
     if (!host) return;
@@ -3229,6 +3338,7 @@
 
     host.appendChild(chrome);
     host.appendChild(nameInput);
+    host.appendChild(buildPartPageStrip(tab, page));
 
     if (keepNameFocus) {
       nameInput.focus();

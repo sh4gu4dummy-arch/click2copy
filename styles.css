@@ -2596,3 +2596,64 @@ body.resizing-rows * {
   white-space: nowrap;
   cursor: help;
 }
+
+/* Part page strip — inline chips on the page-nav row (fixed width, never wraps) */
+.part-page-strip {
+  display: flex;
+  flex: 0 0 168px;
+  width: 168px;
+  height: var(--find-bar-ctrl-h, 24px);
+  align-items: center;
+  gap: 3px;
+  padding: 0 3px;
+  box-sizing: border-box;
+  overflow-x: auto;
+  overflow-y: hidden;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: rgba(42, 48, 56, 0.92);
+  scrollbar-width: none;
+}
+.part-page-strip::-webkit-scrollbar {
+  display: none;
+}
+.part-page-chip {
+  appearance: none;
+  margin: 0;
+  flex: 0 0 auto;
+  min-width: 22px;
+  max-width: 76px;
+  height: 18px;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--muted);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 16px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+  position: relative;
+}
+.part-page-chip:hover {
+  border-color: rgba(var(--accent-rgb), 0.55);
+  color: var(--text);
+}
+.part-page-chip.is-active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--text);
+}
+.part-page-chip.dragging {
+  opacity: 0.45;
+}
+.part-page-chip.drop-before {
+  box-shadow: -2px 0 0 0 var(--accent);
+}
+.part-page-chip.drop-after {
+  box-shadow: 2px 0 0 0 var(--accent);
+}
