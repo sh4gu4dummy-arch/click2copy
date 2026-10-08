@@ -2966,6 +2966,103 @@
     setStatus('Added nest under ' + cellAddressFromIndex(tab, cellIndex));
   }
 
+  /** Last focused nest textarea (tab/cell/nest) — "current" nest for Copy current. */
+  let lastFocusedNest = null;
+  document.addEventListener('focusin', function (ev) {
+    const t = ev.target;
+    if (!t || !t.classList || !t.classList.contains('cell-nest-input')) return;
+    const tab = activeTab();
+    const idx = parseInt(t.dataset.idx, 10);
+    const ni = parseInt(t.dataset.nest, 10);
+    if (!tab || Number.isNaN(idx) || Number.isNaN(ni)) return;
+    lastFocusedNest = { tabId: tab.id, cellIndex: idx, nestIndex: ni };
+  });
+
+  /**
+   * Nest + → "Copy current": duplicate the current nest (last focused nest of
+   * this cell, else its last nest) with all pages, insert right after it and
+   * make it active. No nests yet → new nest seeded with the cell's own text.
+   * Combined nest checks are copied (like Duplicate page). Locks live on the
+   * cell (nests mirror Master), so the copy follows the cell's lock; on the
+   * Master tab the new nest syncs to every locked part cell. One undo step.
+   */
+  function copyNestFromCurrent(cellIndex) {
+    const tab = activeTab();
+    if (!tab || cellIndex < 0 || cellIndex >= tab.cells.length) return;
+    if (isCellMasterEditBlocked(tab, cellIndex)) {
+      setStatus('Locked Master cell — double-click to unlock before editing', 'err');
+      return;
+    }
+    ensureNestedCells(tab);
+    const nests = tab.nestedCells[cellIndex] || [];
+    let srcIdx = -1;
+    if (nests.length) {
+      srcIdx = nests.length - 1;
+      if (lastFocusedNest && lastFocusedNest.tabId === tab.id &&
+          lastFocusedNest.cellIndex === cellIndex &&
+          lastFocusedNest.nestIndex >= 0 && lastFocusedNest.nestIndex < nests.length) {
+        srcIdx = lastFocusedNest.nestIndex;
+      }
+    }
+    pushHistory();
+    ensureNestedCells(tab);
+    const list = tab.nestedCells[cellIndex].slice();
+    let insertAt;
+    let copy;
+    if (srcIdx >= 0) {
+      copy = cloneNestList([list[srcIdx]])[0];
+      insertAt = srcIdx + 1;
+    } else {
+      copy = { pages: [tab.cells[cellIndex] == null ? '' : String(tab.cells[cellIndex])], page: 0 };
+      insertAt = 0;
+    }
+    list.splice(insertAt, 0, copy);
+    tab.nestedCells[cellIndex] = list;
+
+    // Shift nest links after the insert point; copy the source nest's checks.
+    const scopes = Object.create(null);
+    const clones = [];
+    state.confirmedLinks.forEach(function (link) {
+      if (link.tabId !== tab.id || link.cellIndex !== cellIndex) return;
+      const ni = linkNestIndex(link);
+      if (ni === null) return;
+      if (ni >= insertAt) link.nestIndex = ni + 1;
+      if (srcIdx >= 0 && ni === srcIdx) {
+        clones.push({
+          id: linkUid(),
+          tabId: tab.id,
+          cellIndex: cellIndex,
+          nestIndex: insertAt,
+          text: '',
+          start: 0,
+          end: 0,
+          scope: link.scope,
+          seq: nextLinkSeq()
+        });
+        scopes[link.scope] = true;
+      }
+    });
+    clones.forEach(function (l) { state.confirmedLinks.push(l); });
+    Object.keys(scopes).forEach(function (s) { regenerateCombinedScope(s); });
+    liveSyncConfirmedLinksForCell(tab.id, cellIndex, undefined, { silent: true });
+    if (isMasterTab(tab)) syncLockedPartNestsFromMaster(cellIndex);
+
+    renderGrid();
+    refitRowHeightAt(Math.floor(cellIndex / tab.cols));
+    renderCombinedPrompt();
+    applyConfirmedCellHighlights();
+    applyAppendCheckedState();
+    if (isMasterTab(tab)) renderMasterLibrary();
+    scheduleSave();
+    const nestTa = el.cellGrid.querySelector(
+      'textarea.cell-nest-input[data-idx="' + cellIndex + '"][data-nest="' + insertAt + '"]'
+    );
+    if (nestTa) nestTa.focus();
+    setStatus(srcIdx >= 0
+      ? ('Added nest ' + (insertAt + 1) + ' — copy of nest ' + (srcIdx + 1) + ' (' + cellAddressFromIndex(tab, cellIndex) + ')')
+      : ('Added nest — copy of ' + cellAddressFromIndex(tab, cellIndex) + ' text'));
+  }
+
   function remapNestLinksAfterRemove(tabId, cellIndex, removedNestIndex) {
     const byScope = {};
     const toRemove = [];
@@ -4402,7 +4499,8 @@
     const t = ev.target;
     if (t && typeof t.closest === 'function' &&
         (t.closest('.add-page-choice-menu') ||
-         t.closest('.cell-page-add'))) {
+         t.closest('.cell-page-add') ||
+         t.closest('.cell-nest-add'))) {
       return;
     }
     closeAddPageChoiceMenu();
@@ -4415,9 +4513,15 @@
   function openAddPageChoiceMenu(anchorBtn, opts) {
     if (!anchorBtn) return;
     opts = opts || {};
-    const kind = opts.kind === 'part' ? 'part' : 'cell';
+    const kind = opts.kind === 'part' ? 'part' : (opts.kind === 'nest' ? 'nest' : 'cell');
     const cellIndex = Number.isInteger(opts.cellIndex) ? opts.cellIndex : -1;
-    if (kind === 'cell') {
+    // Same + clicked again while its menu is open → just close (toggle).
+    const already = document.querySelector('.add-page-choice-menu');
+    if (already && already.__anchor === anchorBtn) {
+      closeAddPageChoiceMenu();
+      return;
+    }
+    if (kind === 'cell' || kind === 'nest') {
       const tab = activeTab();
       if (!tab || cellIndex < 0 || cellIndex >= tab.cells.length) return;
       if (isCellMasterEditBlocked(tab, cellIndex)) {
@@ -4433,7 +4537,8 @@
     const menu = document.createElement('div');
     menu.className = 'add-page-choice-menu';
     menu.setAttribute('role', 'menu');
-    menu.setAttribute('aria-label', kind === 'part' ? 'Add part page' : 'Add cell page');
+    menu.setAttribute('aria-label', kind === 'part' ? 'Add part page' : (kind === 'nest' ? 'Add nest' : 'Add cell page'));
+    menu.__anchor = anchorBtn;
 
     function addChoice(label, mode) {
       const btn = document.createElement('button');
@@ -4446,7 +4551,10 @@
         ev.stopPropagation();
         closeAddPageChoiceMenu();
         if (kind === 'part') addTabPage(mode);
-        else addCellPage(cellIndex, mode);
+        else if (kind === 'nest') {
+          if (mode === 'copy') copyNestFromCurrent(cellIndex);
+          else addNestedCell(cellIndex);
+        } else addCellPage(cellIndex, mode);
       });
       menu.appendChild(btn);
     }
@@ -4459,12 +4567,14 @@
         anchorBtn.parentNode;
       host.appendChild(menu);
     } else {
+      // Portal + fixed (part page +, nest +): no layout change in the grid.
       document.body.appendChild(menu);
       const rect = anchorBtn.getBoundingClientRect();
       const pad = 6;
       menu.style.position = 'fixed';
       menu.style.left = '0px';
       menu.style.top = '0px';
+      menu.style.right = 'auto';
       const size = menu.getBoundingClientRect();
       let left = rect.left;
       let top = rect.bottom + 4;
@@ -9171,7 +9281,7 @@
         nestAddBtn.dataset.idx = String(idx);
         nestAddBtn.dataset.row = String(r);
         nestAddBtn.dataset.col = String(c);
-        nestAddBtn.title = 'Add nested cell under this cell';
+        nestAddBtn.title = 'Add nest under this cell (blank or copy current)';
         nestAddBtn.setAttribute('aria-label', 'Add nest under ' + cellAddress(r, c));
         nestAddBtn.innerHTML = '<span class="cell-nest-add-mark" aria-hidden="true">+</span>';
         if (isPartTabCol1Cell(tab, idx)) {
@@ -9191,7 +9301,7 @@
           ev.stopPropagation();
           const targetIdx = cellIndexFromNestAddEvent(ev, idx);
           if (targetIdx < 0) return;
-          addNestedCell(targetIdx);
+          openAddPageChoiceMenu(nestAddBtn, { kind: 'nest', cellIndex: targetIdx });
         });
         gutter.appendChild(nestAddBtn);
         wrap.appendChild(gutter);
