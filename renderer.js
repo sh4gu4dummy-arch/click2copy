@@ -9456,40 +9456,144 @@
         }
       }
     }
-    pushHistory();
-    const result = pasteMatrixAt(tab, startRow, startCol, matrix);
-    if (!result) return;
-    // Pasted cells that exactly match Master text become real Master links.
-    let pasteLinked = 0;
-    let pasteBlocked = 0;
-    if (!isMasterTab(tab)) {
-      for (let r = 0; r < result.rows; r++) {
-        for (let c = 0; c < result.cols; c++) {
-          const outcome = linkCellIfMasterMatch(tab, (startRow + r) * tab.cols + (startCol + c));
-          if (outcome === 'linked') pasteLinked++;
-          else if (outcome === 'blocked') pasteBlocked++;
+    const pasteAnchor = e.currentTarget;
+    function doPaste() {
+      pushHistory();
+      const result = pasteMatrixAt(tab, startRow, startCol, matrix);
+      if (!result) return;
+      // Pasted cells that exactly match Master text become real Master links.
+      let pasteLinked = 0;
+      let pasteBlocked = 0;
+      if (!isMasterTab(tab)) {
+        for (let r = 0; r < result.rows; r++) {
+          for (let c = 0; c < result.cols; c++) {
+            const outcome = linkCellIfMasterMatch(tab, (startRow + r) * tab.cols + (startCol + c));
+            if (outcome === 'linked') pasteLinked++;
+            else if (outcome === 'blocked') pasteBlocked++;
+          }
+        }
+        if (pasteLinked) {
+          renderCombinedPrompt();
+          applyConfirmedCellHighlights();
         }
       }
-      if (pasteLinked) {
-        renderCombinedPrompt();
-        applyConfirmedCellHighlights();
-      }
+
+      focusedCell = { tabId: tab.id, index: startIdx };
+      renderTabs();
+      renderGrid();
+      renderMasterLibrary();
+      scheduleSave();
+      const cell = el.cellGrid.querySelector('textarea.cell[data-idx="' + startIdx + '"]');
+      if (cell) cell.focus();
+      setStatus(
+        'Pasted ' + result.rows + '×' + result.cols + ' cells at ' + cellAddress(startRow, startCol) +
+        ' (' + tab.cols + '×' + tab.rows + ' grid)' +
+        (pasteLinked ? ' — ' + pasteLinked + ' matched Master (linked + locked)' : '') +
+        (pasteBlocked ? ' — ' + pasteBlocked + ' Master match(es) not linked (own nests/pages)' : ''),
+        'ok'
+      );
     }
 
-    focusedCell = { tabId: tab.id, index: startIdx };
-    renderTabs();
-    renderGrid();
-    renderMasterLibrary();
-    scheduleSave();
-    const cell = el.cellGrid.querySelector('textarea.cell[data-idx="' + startIdx + '"]');
-    if (cell) cell.focus();
-    setStatus(
-      'Pasted ' + result.rows + '×' + result.cols + ' cells at ' + cellAddress(startRow, startCol) +
-      ' (' + tab.cols + '×' + tab.rows + ' grid)' +
-      (pasteLinked ? ' — ' + pasteLinked + ' matched Master (linked + locked)' : '') +
-      (pasteBlocked ? ' — ' + pasteBlocked + ' Master match(es) not linked (own nests/pages)' : ''),
-      'ok'
-    );
+    // Ash: confirm before a multi-cell paste overwrites filled cells.
+    const filled = countFilledCellsInPasteRange(tab, startRow, startCol, matrix);
+    if (filled > 0) {
+      const dims = tab.cols + 'x' + tab.rows;
+      openPasteOverwriteConfirm(pasteAnchor, filled, function () {
+        if (activeTab() !== tab || (tab.cols + 'x' + tab.rows) !== dims) {
+          setStatus('Paste cancelled — grid changed', 'err');
+          return;
+        }
+        doPaste();
+      });
+      return;
+    }
+    doPaste();
+  }
+
+  function countFilledCellsInPasteRange(tab, startRow, startCol, matrix) {
+    let filled = 0;
+    for (let r = 0; r < matrix.length; r++) {
+      for (let c = 0; c < matrix[r].length; c++) {
+        const rr = startRow + r;
+        const cc = startCol + c;
+        if (rr >= tab.rows || cc >= tab.cols) continue;
+        if (String(tab.cells[rr * tab.cols + cc] || '').trim()) filled++;
+      }
+    }
+    return filled;
+  }
+
+  let pasteConfirmEl = null;
+
+  function closePasteOverwriteConfirm() {
+    if (pasteConfirmEl && pasteConfirmEl.parentNode) pasteConfirmEl.parentNode.removeChild(pasteConfirmEl);
+    pasteConfirmEl = null;
+    document.removeEventListener('pointerdown', onPasteConfirmOutside, true);
+    document.removeEventListener('keydown', onPasteConfirmKey, true);
+  }
+
+  function onPasteConfirmOutside(ev) {
+    if (pasteConfirmEl && pasteConfirmEl.contains(ev.target)) return;
+    closePasteOverwriteConfirm();
+    setStatus('Paste cancelled');
+  }
+
+  function onPasteConfirmKey(ev) {
+    if (!pasteConfirmEl) return;
+    if (ev.key === 'Escape') {
+      ev.preventDefault();
+      ev.stopPropagation();
+      closePasteOverwriteConfirm();
+      setStatus('Paste cancelled');
+    }
+  }
+
+  function openPasteOverwriteConfirm(anchorEl, count, onConfirm) {
+    closePasteOverwriteConfirm();
+    const pop = document.createElement('div');
+    pop.className = 'paste-confirm';
+    pop.setAttribute('role', 'alertdialog');
+    pop.setAttribute('aria-label', 'Confirm paste overwrite');
+    const msg = document.createElement('span');
+    msg.className = 'paste-confirm-text';
+    msg.textContent = 'Overwrite ' + count + ' filled cell' + (count === 1 ? '' : 's') + '?';
+    const ok = document.createElement('button');
+    ok.type = 'button';
+    ok.className = 'btn btn-danger paste-confirm-ok';
+    ok.textContent = 'Overwrite';
+    const cancel = document.createElement('button');
+    cancel.type = 'button';
+    cancel.className = 'btn btn-secondary paste-confirm-cancel';
+    cancel.textContent = 'Cancel';
+    ok.addEventListener('click', function (ev) {
+      ev.preventDefault();
+      closePasteOverwriteConfirm();
+      onConfirm();
+    });
+    cancel.addEventListener('click', function (ev) {
+      ev.preventDefault();
+      closePasteOverwriteConfirm();
+      setStatus('Paste cancelled');
+      if (anchorEl && anchorEl.isConnected) anchorEl.focus();
+    });
+    pop.appendChild(msg);
+    pop.appendChild(ok);
+    pop.appendChild(cancel);
+    document.body.appendChild(pop);
+    pasteConfirmEl = pop;
+    const rect = anchorEl && anchorEl.getBoundingClientRect
+      ? anchorEl.getBoundingClientRect()
+      : { left: 20, bottom: 20 };
+    const size = pop.getBoundingClientRect();
+    const pad = 6;
+    const left = Math.max(pad, Math.min(rect.left, window.innerWidth - size.width - pad));
+    let top = rect.bottom + 4;
+    if (top + size.height > window.innerHeight - pad) top = Math.max(pad, rect.top - size.height - 4);
+    pop.style.left = left + 'px';
+    pop.style.top = top + 'px';
+    document.addEventListener('pointerdown', onPasteConfirmOutside, true);
+    document.addEventListener('keydown', onPasteConfirmKey, true);
+    cancel.focus();
   }
 
   function onCellCopy(e) {

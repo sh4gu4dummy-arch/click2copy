@@ -2467,3 +2467,29 @@ body.painting-checkboxes .cell-append {
 .theme-soft-dark .btn-icon {
   border-radius: 999px;
 }
+
+/* Multi-cell paste overwrite confirm — compact Soft-dark popover */
+.paste-confirm {
+  position: fixed;
+  z-index: 1300;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.45);
+  color: var(--text);
+  font-size: 12px;
+}
+.paste-confirm-text {
+  font-weight: 600;
+  white-space: nowrap;
+  padding-right: 2px;
+}
+.paste-confirm .btn {
+  height: 24px;
+  padding: 0 10px;
+  font-size: 12px;
+}
