@@ -57,8 +57,11 @@ const DEFAULT_DATA = {
   ],
   activeTabId: 'tab-1',
   combinedPrompt: '',
+  combinedModel: 2,
+  combinedNotes: '',
+  partNotes: {},
   globalCombined: true,
-  matchSourceOrder: false,
+  matchSourceOrder: true,
   partPrompts: {},
   separators: { ...DEFAULT_SEPARATORS },
   confirmedLinks: []
@@ -348,6 +351,7 @@ function normalizeTabConfirmedKeys(raw) {
     seen[id] = true;
     const entry = { cellIndex };
     if (nestIndex !== null) entry.nestIndex = nestIndex;
+    if (typeof item.seq === 'number' && Number.isFinite(item.seq)) entry.seq = item.seq;
     out.push(entry);
   }
   return out;
@@ -556,7 +560,11 @@ function toNonNegInt(value) {
   return null;
 }
 
-/** Keep Combined↔cell green links across save/load/session/.c2copy. */
+/**
+ * Combined check keys across save/load/session/.c2copy. v0.140+ saves keys
+ * only ({id, tabId, cellIndex, nestIndex?, scope, seq?}); pre-0.140 links
+ * also carry text/start/end, kept verbatim so the renderer can migrate them.
+ */
 function normalizeConfirmedLinks(raw) {
   if (!Array.isArray(raw)) return [];
   const links = [];
@@ -564,30 +572,20 @@ function normalizeConfirmedLinks(raw) {
     if (!item || typeof item !== 'object') continue;
     if (typeof item.id !== 'string' || !item.id) continue;
     if (typeof item.tabId !== 'string' || !item.tabId) continue;
-    if (typeof item.text !== 'string') continue;
     const cellIndex = toNonNegInt(item.cellIndex);
+    if (cellIndex === null) continue;
+    const scope = typeof item.scope === 'string' && item.scope ? item.scope : 'global';
+    const link = { id: item.id, tabId: item.tabId, cellIndex, scope };
     const start = toNonNegInt(item.start);
     const end = toNonNegInt(item.end);
-    if (cellIndex === null || start === null || end === null || end < start) continue;
-    const scope = typeof item.scope === 'string' && item.scope ? item.scope : 'global';
-    const link = {
-      id: item.id,
-      tabId: item.tabId,
-      cellIndex,
-      text: item.text,
-      start,
-      end,
-      scope
-    };
+    if (typeof item.text === 'string' && start !== null && end !== null && end >= start) {
+      link.text = item.text;
+      link.start = start;
+      link.end = end;
+    }
     const nestIndex = toNonNegInt(item.nestIndex);
     if (nestIndex !== null) link.nestIndex = nestIndex;
-    if (item.masterOrigin === true) link.masterOrigin = true;
-    if (item.masterOrigin === false) link.masterOrigin = false;
-    if (item.locked === true) link.locked = true;
-    if (item.locked === false) link.locked = false;
-    const masterCellIndex = toNonNegInt(item.masterCellIndex);
-    if (masterCellIndex !== null) link.masterCellIndex = masterCellIndex;
-    if (link.masterOrigin === true && item.locked === undefined) link.locked = true;
+    if (typeof item.seq === 'number' && Number.isFinite(item.seq)) link.seq = item.seq;
     links.push(link);
   }
   return links;
@@ -622,6 +620,13 @@ function normalizeData(parsed) {
     tabs,
     activeTabId,
     combinedPrompt: typeof parsed.combinedPrompt === 'string' ? parsed.combinedPrompt : '',
+    // v0.140 model marker: absent ⇒ legacy stored-text Combined (renderer migrates once).
+    ...(parsed.combinedModel === 2 ? { combinedModel: 2 } : {}),
+    combinedNotes: typeof parsed.combinedNotes === 'string' ? parsed.combinedNotes : '',
+    partNotes: parsed.partNotes && typeof parsed.partNotes === 'object' && !Array.isArray(parsed.partNotes)
+      ? Object.fromEntries(Object.entries(parsed.partNotes)
+        .filter(([, notes]) => typeof notes === 'string'))
+      : {},
     globalCombined: typeof parsed.globalCombined === 'boolean' ? parsed.globalCombined : true,
     matchSourceOrder: typeof parsed.matchSourceOrder === 'boolean' ? parsed.matchSourceOrder : false,
     partPrompts: parsed.partPrompts && typeof parsed.partPrompts === 'object' && !Array.isArray(parsed.partPrompts)
@@ -648,11 +653,35 @@ function loadData() {
   return structuredClone(DEFAULT_DATA);
 }
 
+const PRE_V140_SESSION_BACKUP = 'click2copy-session-pre-v0.140-backup.json';
+
+/**
+ * Before the v0.140 Combined migration rewrites a legacy session, keep a
+ * verbatim copy of the old session JSON in userData (written once; never
+ * overwritten, so the first pre-0.140 state is what is preserved).
+ */
+function backupLegacySessionOnce(rawText, parsed) {
+  try {
+    const legacy = parsed && Array.isArray(parsed.documents) && parsed.documents.some((document) =>
+      document && document.data && document.data.combinedModel !== 2);
+    if (!legacy) return null;
+    const target = path.join(app.getPath('userData'), PRE_V140_SESSION_BACKUP);
+    if (fs.existsSync(target)) return target;
+    writeFileAtomic(target, rawText);
+    return target;
+  } catch (err) {
+    console.error('Failed to back up pre-v0.140 session:', err);
+    return null;
+  }
+}
+
 function loadSession() {
   try {
     const file = sessionPath();
     if (fs.existsSync(file)) {
-      const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+      const rawText = fs.readFileSync(file, 'utf8');
+      const parsed = JSON.parse(rawText);
+      backupLegacySessionOnce(rawText, parsed);
       if (parsed && Array.isArray(parsed.documents)) {
         const documents = parsed.documents.map((document) => {
           const data = normalizeData(document.data);

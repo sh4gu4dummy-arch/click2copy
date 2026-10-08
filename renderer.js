@@ -87,14 +87,22 @@
     return cellAddress(Math.floor(cellIndex / cols), cellIndex % cols);
   }
 
+  /** v0.140 single-source-of-truth Combined (checks → generated text + Notes). */
+  const COMBINED_MODEL = 2;
+
   const state = {
     documents: [],
     activeDocumentId: null,
     tabs: [],
     activeTabId: null,
     combinedPrompt: '',
+    // v0.140: Combined text is DERIVED from check keys (confirmedLinks) — the
+    // only stored user text is Notes (global + per-tab when Global is off).
+    combinedModel: COMBINED_MODEL,
+    combinedNotes: '',
+    partNotes: {},
     globalCombined: true,
-    matchSourceOrder: false,
+    matchSourceOrder: true,
     partPrompts: {},
     separators: {
       part: DEFAULT_SEPARATORS.part,
@@ -173,6 +181,8 @@
     btnAppend: document.getElementById('btn-append'),
     btnCopy: document.getElementById('btn-copy'),
     btnClear: document.getElementById('btn-clear'),
+    btnUncheckAll: document.getElementById('btn-uncheck-all'),
+    combinedNotes: document.getElementById('combined-notes'),
     btnUndoClear: document.getElementById('btn-undo-clear'),
     btnExport: document.getElementById('btn-export'),
     btnImport: document.getElementById('btn-import'),
@@ -834,8 +844,11 @@
       ],
       activeTabId: 'tab-1',
       combinedPrompt: '',
+      combinedModel: COMBINED_MODEL,
+      combinedNotes: '',
+      partNotes: {},
       globalCombined: true,
-      matchSourceOrder: false,
+      matchSourceOrder: true,
       partPrompts: {},
       separators: Object.assign({}, DEFAULT_SEPARATORS),
       confirmedLinks: []
@@ -1105,31 +1118,28 @@
     return {
       tabs: state.tabs,
       activeTabId: state.activeTabId,
+      // combinedPrompt / partPrompts are a derived cache (what the checks
+      // generate) — kept for older builds; never read back as user text.
       combinedPrompt: state.combinedPrompt,
+      combinedModel: COMBINED_MODEL,
+      combinedNotes: state.combinedNotes || '',
+      partNotes: Object.assign({}, state.partNotes),
       globalCombined: state.globalCombined,
       matchSourceOrder: state.matchSourceOrder,
       partPrompts: Object.assign({}, state.partPrompts),
       separators: state.separators,
+      // Check keys only: which cell / nest is checked, in which scope, and when.
       confirmedLinks: state.confirmedLinks.map(function (link) {
         const out = {
           id: link.id,
           tabId: link.tabId,
           cellIndex: link.cellIndex,
-          text: link.text,
-          start: link.start,
-          end: link.end,
           scope: link.scope
         };
         if (Number.isInteger(link.nestIndex) && link.nestIndex >= 0) {
           out.nestIndex = link.nestIndex;
         }
-        if (link.masterOrigin === true) out.masterOrigin = true;
-        if (link.masterOrigin === false) out.masterOrigin = false;
-        if (link.locked === true) out.locked = true;
-        if (link.locked === false) out.locked = false;
-        if (Number.isInteger(link.masterCellIndex) && link.masterCellIndex >= 0) {
-          out.masterCellIndex = link.masterCellIndex;
-        }
+        if (Number.isFinite(link.seq)) out.seq = link.seq;
         return out;
       })
     };
@@ -1149,6 +1159,9 @@
       tabs: data.tabs || [],
       activeTabId: data.activeTabId || null,
       combinedPrompt: typeof data.combinedPrompt === 'string' ? data.combinedPrompt : '',
+      combinedModel: data.combinedModel,
+      combinedNotes: typeof data.combinedNotes === 'string' ? data.combinedNotes : '',
+      partNotes: data.partNotes && typeof data.partNotes === 'object' ? data.partNotes : {},
       globalCombined: typeof data.globalCombined === 'boolean' ? data.globalCombined : true,
       matchSourceOrder: typeof data.matchSourceOrder === 'boolean' ? data.matchSourceOrder : false,
       partPrompts: data.partPrompts && typeof data.partPrompts === 'object' ? data.partPrompts : {},
@@ -1278,7 +1291,26 @@
     };
   }
 
+  /**
+   * Safety net for the single source of truth: every mutation ends in
+   * scheduleSave, so re-derive the visible Combined here and repaint only
+   * when it differs from what is on screen (paths that forgot to repaint).
+   */
+  let lastCombinedViewKey = '';
+  function combinedViewKey(scope) {
+    return scope + '\u0000' + getNotes(scope) + '\u0000' + getPromptText(scope) + '\u0000' +
+      linksForScope(scope).map(function (link) { return link.id; }).join(',');
+  }
+
+  function refreshCombinedViewIfStale() {
+    if (!el.combined || !state.tabs.length) return;
+    const scope = currentPromptScope();
+    regenerateCombinedScope(scope);
+    if (combinedViewKey(scope) !== lastCombinedViewKey) renderCombinedPrompt();
+  }
+
   function scheduleSave() {
+    refreshCombinedViewIfStale();
     const document = activeDocument();
     if (document) document.data = snapshot();
     clearTimeout(state.saveTimer);
@@ -1387,6 +1419,7 @@
       { label: 'Global combined', value: state.globalCombined ? 'yes' : 'no' },
       { label: 'Match source order', value: state.matchSourceOrder ? 'yes' : 'no' },
       { label: 'Confirmed links', value: String(state.confirmedLinks.length) },
+      { label: 'Notes length', value: String(getNotes(currentPromptScope()).length) },
       { label: 'Open documents', value: String(state.documents.length) },
       { label: 'Event log size', value: String(eventLog.length) }
     ];
@@ -1477,7 +1510,7 @@
       const nests = tab.nestedCells[i] || [];
       return nests.some(function (n) { return nestHasContent(n); });
     });
-    return hasCell || !!(state.partPrompts[tab.id] || '').trim();
+    return hasCell || !!(state.partNotes[tab.id] || '').trim();
   }
 
   function linkUid() {
@@ -1698,31 +1731,28 @@
       if (!item || typeof item !== 'object') continue;
       if (typeof item.id !== 'string' || !item.id) continue;
       if (typeof item.tabId !== 'string' || !item.tabId) continue;
-      if (typeof item.text !== 'string') continue;
       const cellIndex = toNonNegInt(item.cellIndex);
-      const start = toNonNegInt(item.start);
-      const end = toNonNegInt(item.end);
-      if (cellIndex === null || start === null || end === null || end < start) continue;
+      if (cellIndex === null) continue;
       const scope = typeof item.scope === 'string' && item.scope ? item.scope : 'global';
       const nestIndex = toNonNegInt(item.nestIndex);
+      // v0.140: a link is a CHECK KEY. text/start/end are a derived cache
+      // (rebuilt by regenerateCombinedScope); legacy values are only read by
+      // the one-time migration. Master lock fields live on cells only.
+      const start = toNonNegInt(item.start);
+      const end = toNonNegInt(item.end);
+      const hasRange = typeof item.text === 'string' && start !== null && end !== null && end >= start;
       const link = {
         id: item.id,
         tabId: item.tabId,
         cellIndex: cellIndex,
-        text: item.text,
-        start: start,
-        end: end,
+        text: hasRange ? item.text : '',
+        start: hasRange ? start : 0,
+        end: hasRange ? end : 0,
         scope: scope
       };
+      if (hasRange) link.legacyRange = true;
       if (nestIndex !== null) link.nestIndex = nestIndex;
-      if (item.masterOrigin === true) link.masterOrigin = true;
-      if (item.masterOrigin === false) link.masterOrigin = false;
-      if (item.locked === true) link.locked = true;
-      if (item.locked === false) link.locked = false;
-      const masterCellIndex = toNonNegInt(item.masterCellIndex);
-      if (masterCellIndex !== null) link.masterCellIndex = masterCellIndex;
-      // Master-origin segments default to locked when flag omitted.
-      if (link.masterOrigin === true && item.locked === undefined) link.locked = true;
+      if (typeof item.seq === 'number' && Number.isFinite(item.seq)) link.seq = item.seq;
       links.push(link);
     }
     return links;
@@ -1745,31 +1775,235 @@
     return true;
   }
 
-  function repairConfirmedLinksForScope(scope) {
-    var target = scope || currentPromptScope();
-    var text = getPromptText(target);
+  /* ── v0.140 single source of truth ─────────────────────────────────────
+   * Checks (state.confirmedLinks = check keys) are the ONLY truth. The
+   * Combined text for a scope is generated from them every time:
+   *   Match source order ON  → grid order (tab bar → row-major → parent, nests)
+   *   Match source order OFF → the order cells were checked (link.seq)
+   * joined with the Tools part / column / row separators. Col1 (filter-only)
+   * contributes nothing. The user's own words live in Notes (per scope),
+   * copied ahead of the generated text. Nothing can drift because there is no
+   * stored Combined text to drift from.
+   *
+   * Part pages: only the CURRENT part page's checks are live (switching pages
+   * swaps them via tab.pages[].confirmed — see restoreTabCombinedFromPage).
+   * NOTE(all-pages): to include every part page later, also walk
+   * tab.pages[p].confirmed for p !== tab.page here and read text from
+   * tab.pages[p].cells / nestedCells instead of the live arrays.
+   */
+  let linkSeqCounter = 0;
+
+  function nextLinkSeq() {
+    linkSeqCounter += 1;
+    return linkSeqCounter;
+  }
+
+  function syncLinkSeqCounter() {
+    let max = 0;
+    state.confirmedLinks.forEach(function (link) {
+      if (Number.isFinite(link.seq) && link.seq > max) max = link.seq;
+    });
+    state.tabs.forEach(function (tab) {
+      (Array.isArray(tab.pages) ? tab.pages : []).forEach(function (page) {
+        (page && Array.isArray(page.confirmed) ? page.confirmed : []).forEach(function (key) {
+          if (key && Number.isFinite(key.seq) && key.seq > max) max = key.seq;
+        });
+      });
+    });
+    if (max > linkSeqCounter) linkSeqCounter = max;
+  }
+
+  function compareLinksByCheckOrder(a, b) {
+    const sa = Number.isFinite(a.seq) ? a.seq : Infinity;
+    const sb = Number.isFinite(b.seq) ? b.seq : Infinity;
+    if (sa !== sb) return sa < sb ? -1 : 1;
+    return compareLinksBySourceOrder(a, b);
+  }
+
+  function getNotes(scope) {
+    const target = scope || currentPromptScope();
+    if (target === 'global') return state.combinedNotes || '';
+    return state.partNotes[target] || '';
+  }
+
+  function setNotes(scope, text) {
+    const target = scope || currentPromptScope();
+    const value = typeof text === 'string' ? text : '';
+    if (target === 'global') state.combinedNotes = value;
+    else if (value) state.partNotes[target] = value;
+    else delete state.partNotes[target];
+  }
+
+  function notesSeparator() {
+    return separatorValue(state.separators.part) || '\n\n';
+  }
+
+  /** Text Copy / click-to-copy hand out: Notes first, then generated checks. */
+  function composeCombinedOutput(scope) {
+    const target = scope || currentPromptScope();
+    const notes = getNotes(target).replace(/\s+$/, '');
+    const generated = getPromptText(target);
+    if (notes && generated) return notes + notesSeparator() + generated;
+    return notes || generated;
+  }
+
+  /**
+   * Rebuild one scope's generated text + link ranges from the check keys.
+   * Drops only keys whose cell / nest no longer exists. Empty sources stay
+   * checked but contribute nothing (e.g. a blank cell page).
+   */
+  function regenerateCombinedScope(scope) {
+    const target = scope || currentPromptScope();
+    const prevText = getPromptText(target);
+    const seenKeys = Object.create(null);
     state.confirmedLinks = state.confirmedLinks.filter(function (link) {
       if (link.scope !== target) return true;
-      // Col1 filter-only: keep for checkbox UX; never re-anchor into Combined text.
-      if (isCol1FilterOnlyLink(link)) {
-        var expectedCol1 = sourceLinkText(link);
-        if (expectedCol1 === null || expectedCol1 === '') return false;
-        link.text = expectedCol1;
-        link.start = 0;
-        link.end = 0;
-        return true;
-      }
-      if (!linkMatchesSource(link, link.text)) return false;
-      return repairConfirmedLinkOffset(link, text);
+      if (sourceLinkText(link) === null) return false;
+      // One check per cell / nest per scope (legacy data could hold repeats).
+      const key = link.tabId + '|' + link.cellIndex + '|' + (linkNestIndex(link) === null ? '' : linkNestIndex(link));
+      if (seenKeys[key]) return false;
+      seenKeys[key] = true;
+      return true;
     });
+    const links = state.confirmedLinks.filter(function (link) { return link.scope === target; });
+    links.forEach(function (link) {
+      if (!Number.isFinite(link.seq)) link.seq = nextLinkSeq();
+      link.text = sourceLinkText(link) || '';
+      link.start = 0;
+      link.end = 0;
+      delete link.legacyRange;
+    });
+    const ordered = links.slice().sort(state.matchSourceOrder ? compareLinksBySourceOrder : compareLinksByCheckOrder);
+    let text = '';
+    let prev = null;
+    for (let i = 0; i < ordered.length; i++) {
+      const link = ordered[i];
+      if (isCol1FilterOnlyLink(link) || !link.text) continue;
+      if (prev) text += separatorBetweenSourceLinks(prev, link);
+      link.start = text.length;
+      text += link.text;
+      link.end = text.length;
+      prev = link;
+    }
+    if (target === 'global') state.combinedPrompt = text;
+    else if (text) state.partPrompts[target] = text;
+    else delete state.partPrompts[target];
+    return text !== prevText;
+  }
+
+  function combinedScopesInUse() {
+    const seen = Object.create(null);
+    const scopes = ['global'];
+    seen.global = true;
+    function add(scope) {
+      if (!scope || seen[scope]) return;
+      seen[scope] = true;
+      scopes.push(scope);
+    }
+    state.confirmedLinks.forEach(function (link) { add(link.scope); });
+    Object.keys(state.partPrompts || {}).forEach(add);
+    return scopes;
+  }
+
+  function regenerateAllCombined() {
+    let changed = false;
+    combinedScopesInUse().forEach(function (scope) {
+      if (regenerateCombinedScope(scope)) changed = true;
+    });
+    return changed;
+  }
+
+  /** Legacy names — every caller now just regenerates. */
+  function repairConfirmedLinksForScope(scope) {
+    regenerateCombinedScope(scope);
   }
 
   function repairAllConfirmedLinks() {
-    var scopes = {};
-    state.confirmedLinks.forEach(function (link) { scopes[link.scope] = true; });
-    Object.keys(scopes).forEach(function (scope) {
-      repairConfirmedLinksForScope(scope);
+    regenerateAllCombined();
+  }
+
+  /**
+   * One-time v0.140 migration of a pre-0.140 document (stored Combined text +
+   * offset links). Keeps every check the old build showed as checked (link
+   * text still matches its cell and is found in the text), records their
+   * visible order as check order, and moves every other character of the old
+   * Combined text (typed text, orphaned unchecked segments) into Notes.
+   */
+  function migrateLegacyCombined() {
+    const scopes = combinedScopesInUse();
+    let movedChars = 0;
+    let keptChecks = 0;
+    let droppedChecks = 0;
+    const colSep = separatorValue(state.separators.column);
+    const rowSep = separatorValue(state.separators.row);
+    const partSep = separatorValue(state.separators.part);
+    function cleanGap(gap) {
+      let g = gap;
+      let changed = true;
+      while (changed && g) {
+        changed = false;
+        [partSep, rowSep, colSep].forEach(function (sep) {
+          if (!sep) return;
+          if (g.startsWith(sep)) { g = g.slice(sep.length); changed = true; }
+          if (g.endsWith(sep)) { g = g.slice(0, g.length - sep.length); changed = true; }
+        });
+      }
+      return g.trim();
+    }
+    scopes.forEach(function (scope) {
+      const text = getPromptText(scope);
+      const valid = [];
+      state.confirmedLinks = state.confirmedLinks.filter(function (link) {
+        if (link.scope !== scope) return true;
+        const expected = sourceLinkText(link);
+        if (expected === null) { droppedChecks += 1; return false; }
+        if (isCol1FilterOnlyLink(link)) {
+          if (!expected) { droppedChecks += 1; return false; }
+          // Legacy Col1 text spans (pre-filter-only) are cut from the text too.
+          if (link.legacyRange && link.end > link.start &&
+              text.slice(link.start, link.end) === link.text) {
+            valid.push(link);
+          } else {
+            link.start = 0;
+            link.end = 0;
+            valid.push(link);
+          }
+          keptChecks += 1;
+          return true;
+        }
+        if (!link.legacyRange || link.text !== expected || !expected ||
+            !repairConfirmedLinkOffset(link, text)) {
+          droppedChecks += 1;
+          return false;
+        }
+        valid.push(link);
+        keptChecks += 1;
+        return true;
+      });
+      // Check order = the order the old build displayed them.
+      valid.sort(function (a, b) { return a.start - b.start || compareLinksBySourceOrder(a, b); });
+      valid.forEach(function (link) { link.seq = nextLinkSeq(); });
+      // Everything not covered by a kept segment is stray user text → Notes.
+      const ranges = valid
+        .filter(function (link) { return link.end > link.start; })
+        .map(function (link) { return [link.start, link.end]; })
+        .sort(function (a, b) { return a[0] - b[0]; });
+      const gaps = [];
+      let pos = 0;
+      ranges.forEach(function (r) {
+        if (r[0] > pos) gaps.push(text.slice(pos, r[0]));
+        pos = Math.max(pos, r[1]);
+      });
+      if (pos < text.length) gaps.push(text.slice(pos));
+      const stray = gaps.map(cleanGap).filter(Boolean).join('\n');
+      if (stray) {
+        const existing = getNotes(scope);
+        setNotes(scope, existing ? existing.replace(/\s+$/, '') + '\n' + stray : stray);
+        movedChars += stray.length;
+      }
     });
+    state.confirmedLinks.forEach(function (link) { delete link.legacyRange; });
+    return { keptChecks: keptChecks, droppedChecks: droppedChecks, movedChars: movedChars };
   }
 
   function linksForScope(scope) {
@@ -1807,10 +2041,12 @@
     return sourceNestText(link.tabId, link.cellIndex, nestIdx);
   }
 
-  function linkMatchesSource(link, segmentText) {
-    const expected = sourceLinkText(link);
-    if (expected === null) return false;
-    return String(segmentText) === expected;
+  /**
+   * v0.140: a check stays valid while its cell / nest exists — the text is
+   * always regenerated from the source, so there is nothing to mismatch.
+   */
+  function linkMatchesSource(link) {
+    return sourceLinkText(link) !== null;
   }
 
   function isCellConfirmed(tabId, cellIndex) {
@@ -2685,7 +2921,7 @@
     clearKeyboardCellRange();
     pushHistory({ coalesce: true });
     nest.pages[page] = e.target.value;
-    liveSyncConfirmedLinksForCell(tab.id, idx, nestIdx);
+    liveSyncConfirmedLinksForCell(tab.id, idx, nestIdx, { dropEmpty: true });
     refreshNestConfirmedUi(idx, nestIdx, e.target);
     // Master tab nest edits push to locked part cells pointing at this Master index.
     if (isMasterTab(tab)) syncLockedPartNestsFromMaster(idx);
@@ -2848,6 +3084,7 @@
     liveSyncConfirmedLinksForCell(tab.id, cellIndex, null, { silent: true });
     if (isMasterTab(tab)) syncLockedPartPagesFromMaster(cellIndex);
     renderGrid();
+    renderCombinedPrompt();
     refitRowHeightAt(Math.floor(cellIndex / tab.cols));
     scheduleSave();
     const ta = el.cellGrid.querySelector('textarea.cell[data-idx="' + cellIndex + '"]');
@@ -2913,6 +3150,7 @@
       seen[id] = true;
       const item = { cellIndex: link.cellIndex };
       if (nest !== null) item.nestIndex = nest;
+      if (Number.isFinite(link.seq)) item.seq = link.seq;
       keys.push(item);
     });
     return keys;
@@ -2934,6 +3172,7 @@
       seen[id] = true;
       const entry = { cellIndex: item.cellIndex };
       if (nest !== null) entry.nestIndex = nest;
+      if (typeof item.seq === 'number' && Number.isFinite(item.seq)) entry.seq = item.seq;
       out.push(entry);
     }
     return out;
@@ -3054,14 +3293,12 @@
 
   function restoreTabCombinedFromPage(tab, snap) {
     if (!tab || !snap) return;
+    // Default scope = the CURRENT part page only: drop this tab's live checks
+    // and re-add the page's stored keys (keys, not text — Combined regenerates).
+    // NOTE(all-pages): see regenerateCombinedScope for how to include every page.
     removeTabCombinedContribution(tab.id);
-    if (typeof snap.partPrompt === 'string' && snap.partPrompt) {
-      state.partPrompts[tab.id] = snap.partPrompt;
-    } else {
-      delete state.partPrompts[tab.id];
-    }
+    const scope = currentPromptScope();
     const keys = normalizeTabConfirmedKeys(snap.confirmed);
-    // Parents first, then nests — preserves a sensible Combined order.
     keys.sort(function (a, b) {
       if (a.cellIndex !== b.cellIndex) return a.cellIndex - b.cellIndex;
       const an = Number.isInteger(a.nestIndex) ? a.nestIndex : -1;
@@ -3070,12 +3307,27 @@
     });
     for (let i = 0; i < keys.length; i++) {
       const item = keys[i];
-      if (Number.isInteger(item.nestIndex)) {
-        ensureNestConfirmedState(item.cellIndex, item.nestIndex, true, { quiet: true });
-      } else {
-        ensureCellConfirmedState(item.cellIndex, true, { quiet: true, col1Cascade: false });
-      }
+      if (item.cellIndex >= tab.cells.length) continue;
+      const nest = Number.isInteger(item.nestIndex) ? item.nestIndex : null;
+      const exists = nest === null
+        ? isCellConfirmedInScope(tab.id, item.cellIndex, scope)
+        : isNestConfirmedInScope(tab.id, item.cellIndex, nest, scope);
+      if (exists) continue;
+      const link = {
+        id: linkUid(),
+        tabId: tab.id,
+        cellIndex: item.cellIndex,
+        text: '',
+        start: 0,
+        end: 0,
+        scope: scope,
+        seq: Number.isFinite(item.seq) ? item.seq : nextLinkSeq()
+      };
+      if (nest !== null) link.nestIndex = nest;
+      state.confirmedLinks.push(link);
     }
+    syncLinkSeqCounter();
+    regenerateCombinedScope(scope);
   }
 
   function flushLiveCellInputs(tab) {
@@ -3959,7 +4211,8 @@
       text: text,
       start: 0,
       end: 0,
-      scope: target
+      scope: target,
+      seq: nextLinkSeq()
     });
     return true;
   }
@@ -3969,40 +4222,8 @@
    * text while keeping zero-length filter links for checkbox state.
    */
   function stripCol1TextFromAllCombinedScopes() {
-    const seen = Object.create(null);
-    const scopes = [];
-    for (let i = 0; i < state.confirmedLinks.length; i++) {
-      const link = state.confirmedLinks[i];
-      if (!isCol1FilterOnlyLink(link)) continue;
-      if (!link.scope || seen[link.scope]) continue;
-      seen[link.scope] = true;
-      scopes.push(link.scope);
-    }
-    let changed = false;
-    for (let i = 0; i < scopes.length; i++) {
-      const target = scopes[i];
-      const links = state.confirmedLinks.filter(function (link) {
-        return link.scope === target;
-      });
-      if (!links.length) continue;
-      const ordered = state.matchSourceOrder
-        ? links.slice().sort(compareLinksBySourceOrder)
-        : links.slice().sort(function (a, b) { return a.start - b.start; });
-      if (rejoinConfirmedLinks(target, ordered)) changed = true;
-      else {
-        // Even when text unchanged, pin Col1 filter links to zero-length.
-        for (let j = 0; j < state.confirmedLinks.length; j++) {
-          const link = state.confirmedLinks[j];
-          if (link.scope !== target || !isCol1FilterOnlyLink(link)) continue;
-          if (link.start !== 0 || link.end !== 0) {
-            link.start = 0;
-            link.end = 0;
-            changed = true;
-          }
-        }
-      }
-    }
-    return changed;
+    // v0.140: Col1 never contributes to the generated text; nothing to strip.
+    return regenerateAllCombined();
   }
 
 
@@ -4365,47 +4586,9 @@
   }
 
   function syncConfirmedFromCombinedDom() {
-    const scope = currentPromptScope();
-    const snapshot = readCombinedDomTextAndSpans();
-    const keepIds = {};
-    const seen = {};
-
-    snapshot.spans.forEach(function (span) {
-      const link = state.confirmedLinks.find(function (item) {
-        return item.id === span.id && item.scope === scope;
-      });
-      const editingMaster = isMasterCombinedEditSession() && masterSegmentEdit.linkId === span.id;
-      const stillGood = link && !seen[span.id] &&
-        (editingMaster || linkMatchesSource(link, span.text));
-      if (!stillGood) {
-        unwrapConfirmedNode(span.node);
-        return;
-      }
-      seen[span.id] = true;
-      keepIds[span.id] = true;
-    });
-
-    state.confirmedLinks = state.confirmedLinks.filter(function (link) {
-      if (link.scope !== scope) return true;
-      return !!keepIds[link.id];
-    });
-
-    const after = readCombinedDomTextAndSpans();
-    setPromptText(scope, after.text);
-    after.spans.forEach(function (span) {
-      const link = state.confirmedLinks.find(function (item) {
-        return item.id === span.id && item.scope === scope;
-      });
-      if (!link) {
-        unwrapConfirmedNode(span.node);
-        return;
-      }
-      link.start = span.start;
-      link.end = span.end;
-      link.text = span.text;
-    });
-    el.combined.classList.toggle('is-empty', !after.text);
-    applyConfirmedCellHighlights();
+    // v0.140: the generated Combined view is read-only (type in Notes), so
+    // there is nothing to read back — just repaint from the checks.
+    renderCombinedPrompt();
   }
 
   /**
@@ -4413,30 +4596,8 @@
    * later links in the same scope. Returns false if the old span cannot be found.
    */
   function rewriteConfirmedLinkSegment(link, newText) {
-    if (!link || typeof newText !== 'string') return false;
-    const scope = link.scope;
-    let text = getPromptText(scope);
-    if (!repairConfirmedLinkOffset(link, text)) return false;
-    text = getPromptText(scope);
-    const oldStart = link.start;
-    const oldEnd = link.end;
-    const delta = newText.length - (oldEnd - oldStart);
-    if (delta === 0 && text.slice(oldStart, oldEnd) === newText) {
-      link.text = newText;
-      return true;
-    }
-    text = text.slice(0, oldStart) + newText + text.slice(oldEnd);
-    link.text = newText;
-    link.start = oldStart;
-    link.end = oldStart + newText.length;
-    state.confirmedLinks.forEach(function (other) {
-      if (other.scope !== scope || other.id === link.id) return;
-      if (other.start >= oldEnd) {
-        other.start += delta;
-        other.end += delta;
-      }
-    });
-    setPromptText(scope, text);
+    if (!link) return false;
+    regenerateCombinedScope(link.scope);
     return true;
   }
 
@@ -4447,128 +4608,44 @@
    * integer = that nest only.
    */
   function liveSyncConfirmedLinksForCell(tabId, cellIndex, nestIndexFilter, opts) {
+    // v0.140: Combined text is regenerated from the cell, so a live edit just
+    // repaints. opts.dropEmpty (user typed the cell empty) unchecks it, the
+    // familiar behaviour; page flips / Master syncs keep the check.
     const silent = !!(opts && opts.silent);
+    const dropEmpty = !!(opts && opts.dropEmpty);
     const candidates = state.confirmedLinks.filter(function (link) {
       if (link.tabId !== tabId || link.cellIndex !== cellIndex) return false;
       if (nestIndexFilter === undefined) return true;
       return linkNestIndex(link) === nestIndexFilter;
     });
     if (!candidates.length) return false;
-
-    const toRemove = [];
-    const toRewrite = [];
-    let filterMetaChanged = false;
+    const removeIds = {};
     candidates.forEach(function (link) {
       const expected = sourceLinkText(link);
-      // Col1 filter-only: sync metadata / drop when empty — never rewrite Combined.
-      if (isCol1FilterOnlyLink(link)) {
-        if (expected === null || expected === '') {
-          toRemove.push(link);
-          return;
-        }
-        if (link.text !== expected) {
-          link.text = expected;
-          filterMetaChanged = true;
-        }
-        link.start = 0;
-        link.end = 0;
-        return;
-      }
-      if (expected === null || expected === '') {
-        toRemove.push(link);
-        return;
-      }
-      if (link.text === expected) {
-        const text = getPromptText(link.scope);
-        if (repairConfirmedLinkOffset(link, text) &&
-            text.slice(link.start, link.end) === expected) {
-          return;
-        }
-        // Offset lost but source still has text — drop rather than guess.
-        toRemove.push(link);
-        return;
-      }
-      toRewrite.push(link);
+      if (expected === null || (dropEmpty && expected === '')) removeIds[link.id] = true;
     });
-
-    let changed = false;
-
-    // Rewrite before remove so removeLinksFromCombined sees up-to-date offsets.
-    if (toRewrite.length) {
-      const byScope = {};
-      toRewrite.forEach(function (link) {
-        if (!byScope[link.scope]) byScope[link.scope] = [];
-        byScope[link.scope].push(link);
-      });
-      Object.keys(byScope).forEach(function (scope) {
-        const links = byScope[scope].slice().sort(function (a, b) {
-          return b.start - a.start;
-        });
-        for (let i = 0; i < links.length; i++) {
-          const link = links[i];
-          if (!state.confirmedLinks.some(function (l) { return l.id === link.id; })) continue;
-          const expected = sourceLinkText(link);
-          if (expected === null || expected === '') {
-            toRemove.push(link);
-            continue;
-          }
-          if (rewriteConfirmedLinkSegment(link, expected)) changed = true;
-          else {
-            // Cannot locate old segment — drop the link record (Combined text kept).
-            state.confirmedLinks = state.confirmedLinks.filter(function (l) {
-              return l.id !== link.id;
-            });
-            changed = true;
-          }
-        }
-      });
+    const scopes = {};
+    candidates.forEach(function (link) { scopes[link.scope] = true; });
+    if (Object.keys(removeIds).length) {
+      state.confirmedLinks = state.confirmedLinks.filter(function (link) { return !removeIds[link.id]; });
     }
-
-    if (toRemove.length) {
-      const byScope = {};
-      toRemove.forEach(function (link) {
-        if (!byScope[link.scope]) byScope[link.scope] = [];
-        byScope[link.scope].push(link);
-      });
-      Object.keys(byScope).forEach(function (scope) {
-        // Deduplicate ids in case rewrite path also queued a remove.
-        const seen = {};
-        const list = byScope[scope].filter(function (link) {
-          if (seen[link.id]) return false;
-          seen[link.id] = true;
-          return state.confirmedLinks.some(function (l) { return l.id === link.id; });
-        });
-        if (list.length && removeLinksFromCombined(list)) changed = true;
-      });
-    }
-
-    if ((changed || filterMetaChanged) && !silent) {
+    let changed = Object.keys(removeIds).length > 0;
+    Object.keys(scopes).forEach(function (scope) {
+      if (regenerateCombinedScope(scope)) changed = true;
+    });
+    if (!silent) {
       renderCombinedPrompt();
       applyConfirmedCellHighlights();
     }
-    return changed || filterMetaChanged;
+    return changed;
   }
 
   function revalidateLinksForCell(tabId, cellIndex, opts) {
-    let removed = false;
-    state.confirmedLinks = state.confirmedLinks.filter(function (link) {
-      if (link.tabId !== tabId || link.cellIndex !== cellIndex) return true;
-      if (isCol1FilterOnlyLink(link)) {
-        const expected = sourceLinkText(link);
-        if (expected === null || expected === '') {
-          removed = true;
-          return false;
-        }
-        link.text = expected;
-        link.start = 0;
-        link.end = 0;
-        return true;
-      }
-      if (linkMatchesSource(link, link.text)) return true;
-      removed = true;
-      return false;
-    });
-    if (removed && !(opts && opts.silent)) {
+    // v0.140: checks follow the cell; only a vanished cell drops its check.
+    const before = state.confirmedLinks.length;
+    regenerateAllCombined();
+    const removed = state.confirmedLinks.length !== before;
+    if (!(opts && opts.silent)) {
       renderCombinedPrompt();
       applyConfirmedCellHighlights();
     }
@@ -4576,28 +4653,11 @@
   }
 
   function revalidateAllConfirmedLinks() {
-    let removed = false;
-    state.confirmedLinks = state.confirmedLinks.filter(function (link) {
-      if (isCol1FilterOnlyLink(link)) {
-        const expected = sourceLinkText(link);
-        if (expected === null || expected === '') {
-          removed = true;
-          return false;
-        }
-        link.text = expected;
-        link.start = 0;
-        link.end = 0;
-        return true;
-      }
-      if (linkMatchesSource(link, link.text)) return true;
-      removed = true;
-      return false;
-    });
-    if (removed) {
-      renderCombinedPrompt();
-      applyConfirmedCellHighlights();
-    }
-    return removed;
+    const before = state.confirmedLinks.length;
+    regenerateAllCombined();
+    renderCombinedPrompt();
+    applyConfirmedCellHighlights();
+    return state.confirmedLinks.length !== before;
   }
 
   function tabSourceOrderIndex(tabId) {
@@ -4639,97 +4699,8 @@
    * order: keep text before the first and after the last confirmed segment;
    * replace the middle. Link ids, text, and Master lock fields stay; ranges move.
    */
-  function rejoinConfirmedLinks(scope, ordered) {
-    if (!ordered || !ordered.length) return false;
-    const target = scope || currentPromptScope();
-    // Col1 filter-only links stay confirmed for checkbox UX but never enter Combined text.
-    const contentOrdered = [];
-    const filterLinks = [];
-    for (let i = 0; i < ordered.length; i++) {
-      if (isCol1FilterOnlyLink(ordered[i])) filterLinks.push(ordered[i]);
-      else contentOrdered.push(ordered[i]);
-    }
-    let middle = '';
-    const updated = [];
-    for (let i = 0; i < contentOrdered.length; i++) {
-      const link = contentOrdered[i];
-      if (i > 0) middle += separatorBetweenSourceLinks(contentOrdered[i - 1], link);
-      const start = middle.length;
-      middle += link.text || '';
-      const end = middle.length;
-      const next = {
-        id: link.id,
-        tabId: link.tabId,
-        cellIndex: link.cellIndex,
-        text: link.text,
-        start: start,
-        end: end,
-        scope: target
-      };
-      if (Number.isInteger(link.nestIndex) && link.nestIndex >= 0) {
-        next.nestIndex = link.nestIndex;
-      }
-      copyLinkMasterFields(link, next);
-      updated.push(next);
-    }
-
-    // Prefix/suffix from the full ordered set so legacy Col1 spans are sliced out
-    // of the replaced middle when content is rebuilt without them.
-    const byStart = ordered.slice().sort(function (a, b) { return a.start - b.start; });
-    const current = getPromptText(target);
-    const prefix = byStart.length ? current.slice(0, byStart[0].start) : '';
-    const suffix = byStart.length ? current.slice(byStart[byStart.length - 1].end) : '';
-    const shift = prefix.length;
-    for (let i = 0; i < updated.length; i++) {
-      updated[i].start += shift;
-      updated[i].end += shift;
-    }
-    // Pin filter-only Col1 links at zero-length (not painted in Combined).
-    const filterAnchor = shift + middle.length;
-    for (let i = 0; i < filterLinks.length; i++) {
-      const link = filterLinks[i];
-      const expected = sourceLinkText(link);
-      if (expected === null || expected === '') continue;
-      const next = {
-        id: link.id,
-        tabId: link.tabId,
-        cellIndex: link.cellIndex,
-        text: expected,
-        start: filterAnchor,
-        end: filterAnchor,
-        scope: target
-      };
-      copyLinkMasterFields(link, next);
-      updated.push(next);
-    }
-    const nextText = prefix + middle + suffix;
-
-    let unchanged = nextText === current && updated.length === ordered.length;
-    if (unchanged) {
-      const prevById = Object.create(null);
-      for (let i = 0; i < ordered.length; i++) prevById[ordered[i].id] = ordered[i];
-      for (let i = 0; i < updated.length; i++) {
-        const prev = prevById[updated[i].id];
-        if (!prev ||
-            updated[i].start !== prev.start ||
-            updated[i].end !== prev.end ||
-            updated[i].text !== prev.text) {
-          unchanged = false;
-          break;
-        }
-      }
-    }
-    if (unchanged) return false;
-
-    state.confirmedLinks = state.confirmedLinks.filter(function (link) {
-      return link.scope !== target;
-    }).concat(updated);
-    setPromptText(target, nextText);
-    if (target === currentPromptScope()) {
-      const caret = shift + middle.length;
-      lastCombinedCaret = { start: caret, end: caret, scope: target };
-    }
-    return true;
+  function rejoinConfirmedLinks(scope) {
+    return regenerateCombinedScope(scope || currentPromptScope());
   }
 
   /**
@@ -4738,13 +4709,7 @@
    * and after the last confirmed segment; replaces the middle.
    */
   function reorderCombinedToSourceOrder(scope) {
-    if (!state.matchSourceOrder) return false;
-    const target = scope || currentPromptScope();
-    const links = state.confirmedLinks.filter(function (link) {
-      return link.scope === target;
-    });
-    if (links.length === 0) return false;
-    return rejoinConfirmedLinks(target, links.slice().sort(compareLinksBySourceOrder));
+    return regenerateCombinedScope(scope || currentPromptScope());
   }
 
   /**
@@ -4753,28 +4718,7 @@
    * re-sorts; otherwise document order is kept so caret/append order is not wiped.
    */
   function rewriteCombinedForSeparators() {
-    const seen = Object.create(null);
-    const scopes = [];
-    for (let i = 0; i < state.confirmedLinks.length; i++) {
-      const scope = state.confirmedLinks[i].scope;
-      if (!scope || seen[scope]) continue;
-      seen[scope] = true;
-      scopes.push(scope);
-    }
-    let changed = false;
-    for (let i = 0; i < scopes.length; i++) {
-      const target = scopes[i];
-      if (state.matchSourceOrder) {
-        if (reorderCombinedToSourceOrder(target)) changed = true;
-        continue;
-      }
-      const links = state.confirmedLinks.filter(function (link) {
-        return link.scope === target;
-      });
-      if (!links.length) continue;
-      const ordered = links.slice().sort(function (a, b) { return a.start - b.start; });
-      if (rejoinConfirmedLinks(target, ordered)) changed = true;
-    }
+    const changed = regenerateAllCombined();
     if (!changed) return false;
     renderCombinedPrompt();
     scheduleSave();
@@ -4787,75 +4731,19 @@
    */
   function removeLinksFromCombined(linksToRemove) {
     if (!linksToRemove || !linksToRemove.length) return false;
-    const scope = linksToRemove[0].scope;
     const removeIds = {};
+    const scopes = {};
     for (let i = 0; i < linksToRemove.length; i++) {
-      if (linksToRemove[i].scope !== scope) continue;
+      if (!linksToRemove[i]) continue;
       removeIds[linksToRemove[i].id] = true;
+      scopes[linksToRemove[i].scope] = true;
     }
-    if (!Object.keys(removeIds).length) return false;
-
-    let text = getPromptText(scope);
-    const all = linksForScope(scope);
-    const partSep = separatorValue(state.separators.part);
-    const colSep = separatorValue(state.separators.column);
-    const rowSep = separatorValue(state.separators.row);
-
-    const ranges = [];
-    for (let i = 0; i < all.length; i++) {
-      if (!removeIds[all[i].id]) continue;
-      ranges.push({ start: all[i].start, end: all[i].end });
-    }
-    if (!ranges.length) return false;
-
-    ranges.sort(function (a, b) { return a.start - b.start; });
-    const merged = [];
-    for (let i = 0; i < ranges.length; i++) {
-      const range = ranges[i];
-      if (!merged.length) {
-        merged.push({ start: range.start, end: range.end });
-        continue;
-      }
-      const last = merged[merged.length - 1];
-      const gap = text.slice(last.end, range.start);
-      if (gap === '' || gap === colSep || gap === rowSep) {
-        last.end = range.end;
-      } else {
-        merged.push({ start: range.start, end: range.end });
-      }
-    }
-
-    for (let i = 0; i < merged.length; i++) {
-      const range = merged[i];
-      if (!partSep || range.start < partSep.length) continue;
-      const before = text.slice(range.start - partSep.length, range.start);
-      if (before !== partSep) continue;
-      const covered = all.some(function (link) {
-        if (removeIds[link.id]) return false;
-        return link.start < range.start && link.end > range.start - partSep.length;
-      });
-      if (!covered) range.start -= partSep.length;
-    }
-
-    merged.sort(function (a, b) { return b.start - a.start; });
-    for (let i = 0; i < merged.length; i++) {
-      const range = merged[i];
-      const len = range.end - range.start;
-      if (len <= 0) continue;
-      text = text.slice(0, range.start) + text.slice(range.end);
-      state.confirmedLinks.forEach(function (link) {
-        if (link.scope !== scope || removeIds[link.id]) return;
-        if (link.start >= range.end) {
-          link.start -= len;
-          link.end -= len;
-        }
-      });
-    }
-
+    const before = state.confirmedLinks.length;
     state.confirmedLinks = state.confirmedLinks.filter(function (link) {
       return !removeIds[link.id];
     });
-    setPromptText(scope, text);
+    if (state.confirmedLinks.length === before) return false;
+    Object.keys(scopes).forEach(function (scope) { regenerateCombinedScope(scope); });
     return true;
   }
 
@@ -4871,28 +4759,37 @@
     const tab = activeTab();
     if (!tab || cellIndex < 0 || cellIndex >= tab.cells.length) return;
     const scope = currentPromptScope();
-    if (scope !== 'global' && !tab) return;
     const wantOn = !isCellConfirmedInScope(tab.id, cellIndex, scope);
-    // Route through ensureCellConfirmedState so Col1 Combined cascades on both
-    // check and uncheck (nests stay independent inside that helper).
-    if (!wantOn) {
-      pushHistory();
-      const changed = ensureCellConfirmedState(cellIndex, false, { col1Cascade: true });
-      if (!changed) {
-        applyConfirmedCellHighlights();
-        return;
-      }
-      const row = Math.floor(cellIndex / tab.cols) + 1;
-      const col = (cellIndex % tab.cols) + 1;
-      setStatus('Removed ' + cellAddress(row - 1, col - 1) + ' from combined', 'ok');
-      return;
-    }
-    const value = cellParentText(tab, cellIndex);
-    if (!value) {
+    if (wantOn && !cellParentText(tab, cellIndex)) {
       setStatus('Nothing to append', 'err');
       return;
     }
-    ensureCellConfirmedState(cellIndex, true, { col1Cascade: true });
+    // ONE undo snapshot taken BEFORE anything changes — Col1 exclusive
+    // cascade used to uncheck rival categories before the snapshot (v0.140 fix).
+    const depth = undoStack.length;
+    pushHistory();
+    const tookSnapshot = undoStack.length > depth;
+    const wasSuspended = historySuspended;
+    historySuspended = true;
+    let changed = false;
+    try {
+      // Route through ensureCellConfirmedState so Col1 Combined cascades on both
+      // check and uncheck (nests stay independent inside that helper).
+      changed = ensureCellConfirmedState(cellIndex, wantOn, { col1Cascade: true });
+    } finally {
+      historySuspended = wasSuspended;
+    }
+    if (!changed) {
+      if (tookSnapshot) undoStack.pop();
+      applyConfirmedCellHighlights();
+      return;
+    }
+    refreshAfterConfirmedChange();
+    if (!wantOn) {
+      const row = Math.floor(cellIndex / tab.cols) + 1;
+      const col = (cellIndex % tab.cols) + 1;
+      setStatus('Removed ' + cellAddress(row - 1, col - 1) + ' from combined', 'ok');
+    }
   }
 
   function toggleNestConfirmed(cellIndex, nestIndex) {
@@ -4975,6 +4872,9 @@
    * pieces: [{ type:'plain'|'confirmed', text, tabId?, cellIndex? }]
    */
   function appendPieces(pieces, label, opts) {
+    // v0.140: "append" = add check keys. Plain separator pieces are ignored —
+    // the generated text inserts separators itself. Order comes from Match
+    // source order (grid) or check order (link.seq), never from a caret.
     const quiet = !!(opts && opts.quiet);
     if (!pieces || !pieces.length) {
       if (!quiet) setStatus('Nothing to append', 'err');
@@ -4982,145 +4882,47 @@
     }
     const scope = currentPromptScope();
     if (scope !== 'global' && !activeTab()) return;
-
-    let current = getPromptText(scope);
-    const insertRange = resolveCombinedInsertRange(scope, current.length);
-    const insertAt = insertRange.start;
-    const insertEnd = insertRange.end;
-    const before = current.slice(0, insertAt);
-    const after = current.slice(insertEnd);
-    const removedLen = insertEnd - insertAt;
-
-    const partSeparator = separatorValue(state.separators.part);
     const toAdd = [];
-    if (before && partSeparator && !before.endsWith(partSeparator)) {
-      toAdd.push({ type: 'plain', text: partSeparator });
+    for (let i = 0; i < pieces.length; i++) {
+      const piece = pieces[i];
+      if (!piece || piece.type !== 'confirmed') continue;
+      const nestIdx = Number.isInteger(piece.nestIndex) && piece.nestIndex >= 0 ? piece.nestIndex : null;
+      const exists = nestIdx === null
+        ? isCellConfirmedInScope(piece.tabId, piece.cellIndex, scope)
+        : isNestConfirmedInScope(piece.tabId, piece.cellIndex, nestIdx, scope);
+      if (exists) continue;
+      const pieceTab = state.tabs.find(function (t) { return t.id === piece.tabId; });
+      if (!pieceTab) continue;
+      const source = nestIdx === null
+        ? sourceCellText(piece.tabId, piece.cellIndex)
+        : sourceNestText(piece.tabId, piece.cellIndex, nestIdx);
+      if (!source) continue;
+      toAdd.push({ piece: piece, nestIdx: nestIdx, tab: pieceTab });
     }
-    for (let i = 0; i < pieces.length; i++) toAdd.push(pieces[i]);
-
-    // Preview that we will actually add something before snapshotting undo.
-    // Col1 filter-only parents contribute no Combined text (handled below).
-    let willAdd = '';
-    let willAddFilterOnly = false;
-    for (let i = 0; i < toAdd.length; i++) {
-      const piece = toAdd[i];
-      const text = piece.text || '';
-      if (!text && piece.type !== 'plain') continue;
-      if (piece.type === 'confirmed') {
-        const pieceTab = state.tabs.find(function (t) { return t.id === piece.tabId; });
-        const nestIdx = Number.isInteger(piece.nestIndex) && piece.nestIndex >= 0
-          ? piece.nestIndex
-          : null;
-        if (nestIdx === null && isPartTabCol1Cell(pieceTab, piece.cellIndex)) {
-          willAddFilterOnly = true;
-          continue;
-        }
-      }
-      willAdd += text;
-    }
-    if (!willAdd) {
-      if (willAddFilterOnly) {
-        for (let i = 0; i < toAdd.length; i++) {
-          const piece = toAdd[i];
-          if (piece.type !== 'confirmed') continue;
-          const pieceTab = state.tabs.find(function (t) { return t.id === piece.tabId; });
-          const nestIdx = Number.isInteger(piece.nestIndex) && piece.nestIndex >= 0
-            ? piece.nestIndex
-            : null;
-          if (nestIdx === null && isPartTabCol1Cell(pieceTab, piece.cellIndex)) {
-            ensureCol1FilterLink(pieceTab, piece.cellIndex, scope);
-          }
-        }
-        if (!quiet) refreshAfterConfirmedChange();
-        else scheduleSave();
-        return;
-      }
+    if (!toAdd.length) {
       if (!quiet) setStatus('Nothing to append', 'err');
       return;
     }
-
     pushHistory();
-
-    // Drop links overlapping a replaced selection; shift survivors after the hole
-    // into post-deletion coordinates (still relative to `before + after`).
-    if (removedLen > 0) {
-      state.confirmedLinks = state.confirmedLinks.filter(function (link) {
-        if (link.scope !== scope) return true;
-        if (link.end <= insertAt || link.start >= insertEnd) return true;
-        return false;
-      });
-      state.confirmedLinks.forEach(function (link) {
-        if (link.scope !== scope) return;
-        if (link.start >= insertEnd) {
-          link.start -= removedLen;
-          link.end -= removedLen;
-        }
-      });
-    }
-
-    // Shift surviving links that begin at/after the insert point to make room.
-    state.confirmedLinks.forEach(function (link) {
-      if (link.scope !== scope) return;
-      if (link.start >= insertAt) {
-        link.start += willAdd.length;
-        link.end += willAdd.length;
+    toAdd.forEach(function (item) {
+      if (item.nestIdx === null && isPartTabCol1Cell(item.tab, item.piece.cellIndex)) {
+        ensureCol1FilterLink(item.tab, item.piece.cellIndex, scope);
+        return;
       }
+      const link = {
+        id: linkUid(),
+        tabId: item.piece.tabId,
+        cellIndex: item.piece.cellIndex,
+        text: '',
+        start: 0,
+        end: 0,
+        scope: scope,
+        seq: nextLinkSeq()
+      };
+      if (item.nestIdx !== null) link.nestIndex = item.nestIdx;
+      state.confirmedLinks.push(link);
     });
-
-    let offset = insertAt;
-    let added = '';
-    for (let i = 0; i < toAdd.length; i++) {
-      const piece = toAdd[i];
-      const text = piece.text || '';
-      if (!text && piece.type !== 'plain') continue;
-      if (piece.type === 'confirmed') {
-        const pieceTab = state.tabs.find(function (t) { return t.id === piece.tabId; });
-        const nestIdx = Number.isInteger(piece.nestIndex) && piece.nestIndex >= 0
-          ? piece.nestIndex
-          : null;
-        // Part-tab Col1 parent: filter-only link, no Combined text.
-        if (nestIdx === null && isPartTabCol1Cell(pieceTab, piece.cellIndex)) {
-          if (!isCellConfirmedInScope(piece.tabId, piece.cellIndex, scope)) {
-            ensureCol1FilterLink(pieceTab, piece.cellIndex, scope);
-          }
-          continue;
-        }
-        const id = linkUid();
-        const link = {
-          id: id,
-          tabId: piece.tabId,
-          cellIndex: piece.cellIndex,
-          text: text,
-          start: offset,
-          end: offset + text.length,
-          scope: scope
-        };
-        if (nestIdx !== null) link.nestIndex = nestIdx;
-        applyMasterOriginToNewLink(link, piece);
-        state.confirmedLinks.push(link);
-      }
-      added += text;
-      offset += text.length;
-    }
-
-    if (!added) {
-      setStatus('Nothing to append', 'err');
-      return;
-    }
-
-    setPromptText(scope, before + added + after);
-    lastCombinedCaret = {
-      start: insertAt + added.length,
-      end: insertAt + added.length,
-      scope: scope
-    };
-
-    let addedConfirmed = false;
-    for (let i = 0; i < toAdd.length; i++) {
-      if (toAdd[i].type === 'confirmed') { addedConfirmed = true; break; }
-    }
-    if (addedConfirmed) reorderCombinedToSourceOrder(scope);
-
+    regenerateCombinedScope(scope);
     if (quiet) {
       scheduleSave();
       return;
@@ -5128,9 +4930,6 @@
     renderCombinedPrompt();
     applyConfirmedCellHighlights();
     renderMasterLibrary();
-    if (document.activeElement === el.combined) {
-      setCombinedCaretOffset(lastCombinedCaret.start);
-    }
     scheduleSave();
     setStatus('Appended' + (label ? ' "' + label + '"' : ''), 'ok');
   }
@@ -5614,54 +5413,34 @@
   }
 
   function renderCombinedPrompt() {
-    const tab = activeTab();
     const scope = currentPromptScope();
-    // Repair offsets before painting so greens survive restart / load drift.
-    repairConfirmedLinksForScope(scope);
+    // v0.140: always regenerate from the checks before painting.
+    regenerateCombinedScope(scope);
     const text = getPromptText(scope);
+    const notes = getNotes(scope).replace(/\s+$/, '');
     const links = linksForScope(scope).filter(function (link) {
-      // Col1 filter-only: keep for checkbox state; never paint into Combined.
-      if (isCol1FilterOnlyLink(link)) return true;
-      if (link.start < 0 || link.end > text.length || link.start > link.end) return false;
-      return text.slice(link.start, link.end) === link.text;
-    });
-
-    // Drop only links that still fail after repair (edited away or source mismatch).
-    const validIds = {};
-    links.forEach(function (link) { validIds[link.id] = true; });
-    state.confirmedLinks = state.confirmedLinks.filter(function (link) {
-      if (link.scope !== scope) return true;
-      return !!validIds[link.id];
+      return !isCol1FilterOnlyLink(link) && link.end > link.start;
     });
 
     el.combined.replaceChildren();
+    // Notes are shown first (muted) so the box shows exactly what Copy gives.
+    if (notes) {
+      const notesSpan = document.createElement('span');
+      notesSpan.className = 'combined-notes-preview';
+      notesSpan.textContent = notes + (text ? notesSeparator() : '');
+      notesSpan.title = 'Your Notes (edit them in the Notes box)';
+      el.combined.appendChild(notesSpan);
+    }
     let pos = 0;
     links.forEach(function (link) {
-      if (isCol1FilterOnlyLink(link)) return;
       if (link.start > pos) {
         el.combined.appendChild(document.createTextNode(text.slice(pos, link.start)));
       }
       const span = document.createElement('span');
       span.className = 'confirmed-segment';
       span.dataset.linkId = link.id;
-      span.textContent = link.text;
-      if (isMasterOriginLink(link)) {
-        span.classList.add('master-segment');
-        const editing = isMasterCombinedEditSession() && masterSegmentEdit.linkId === link.id;
-        if (editing) {
-          span.classList.add('master-segment-editing');
-          span.contentEditable = 'true';
-          span.title = 'Editing Master segment — blur or Enter to confirm; Esc to cancel';
-        } else if (isMasterLockedLink(link)) {
-          span.classList.add('master-segment-locked');
-          span.contentEditable = 'false';
-          span.title = 'Locked Master segment — double-click to unlock and edit';
-        } else {
-          span.title = 'Master-origin segment (local) — edit Combined to unlink; edit cell/nest to update live';
-        }
-      } else {
-        span.title = 'Confirmed from linked cell — edit Combined to unlink; edit cell/nest to update live';
-      }
+      span.textContent = text.slice(link.start, link.end);
+      span.title = 'From a checked cell — edit the cell to change it, uncheck it to remove it';
       el.combined.appendChild(span);
       pos = link.end;
     });
@@ -5669,7 +5448,12 @@
       el.combined.appendChild(document.createTextNode(text.slice(pos)));
     }
 
-    el.combined.classList.toggle('is-empty', !text);
+    el.combined.classList.toggle('is-empty', !text && !notes);
+    lastCombinedViewKey = combinedViewKey(scope);
+    if (el.combinedNotes && document.activeElement !== el.combinedNotes &&
+        el.combinedNotes.value !== getNotes(scope)) {
+      el.combinedNotes.value = getNotes(scope);
+    }
     el.globalCombined.checked = state.globalCombined;
     if (el.matchSourceOrder) el.matchSourceOrder.checked = !!state.matchSourceOrder;
     applyConfirmedCellHighlights();
@@ -5677,6 +5461,24 @@
   }
 
   function mergePartPrompts() {
+    // v0.140: Global ON pulls every per-tab check (and Notes) into Global.
+    state.confirmedLinks.forEach(function (link) {
+      if (link.scope === 'global') return;
+      link.scope = 'global';
+    });
+    Object.keys(state.partNotes || {}).forEach(function (tabId) {
+      const notes = (state.partNotes[tabId] || '').replace(/\s+$/, '');
+      if (!notes) return;
+      const base = (state.combinedNotes || '').replace(/\s+$/, '');
+      state.combinedNotes = base ? base + '\n' + notes : notes;
+    });
+    state.partNotes = {};
+    state.partPrompts = {};
+    regenerateCombinedScope('global');
+  }
+
+  /** Pre-0.140 text-based merge (only used before migrating legacy data). */
+  function legacyMergePartPrompts() {
     state.tabs.forEach(function (tab) {
       const prompt = state.partPrompts[tab.id];
       if (!prompt) return;
@@ -5697,10 +5499,11 @@
   }
 
   function getCombinedPlainText() {
-    return getPromptText(currentPromptScope());
+    return composeCombinedOutput(currentPromptScope());
   }
 
   let lastLockRepair = null;
+  let lastCombinedMigration = null;
   function applyData(data) {
     focusedCell = null;
     const tabs = [];
@@ -5748,11 +5551,24 @@
       : {};
     state.separators = normalizeSeparators(data.separators);
     state.confirmedLinks = normalizeConfirmedLinks(data.confirmedLinks);
+    state.combinedNotes = typeof data.combinedNotes === 'string' ? data.combinedNotes : '';
+    state.partNotes = data.partNotes && typeof data.partNotes === 'object'
+      ? Object.keys(data.partNotes).reduce(function (notes, id) {
+        if (typeof data.partNotes[id] === 'string' && data.partNotes[id]) notes[id] = data.partNotes[id];
+        return notes;
+      }, {})
+      : {};
+    syncLinkSeqCounter();
+    lastCombinedMigration = null;
+    if (data.combinedModel !== COMBINED_MODEL) {
+      // One-time: stored Combined text → checks + Notes (nothing lost).
+      if (state.globalCombined) legacyMergePartPrompts();
+      lastCombinedMigration = migrateLegacyCombined();
+    }
+    state.combinedModel = COMBINED_MODEL;
     if (state.globalCombined) mergePartPrompts();
-    // Re-anchor Combined ranges after merge so cell + Master-insert greens restore.
-    repairAllConfirmedLinks();
-    // Col1 is filter-only: drop any legacy Column A text from Combined prompts.
-    stripCol1TextFromAllCombinedScopes();
+    // Generated text is rebuilt from the checks (Col1 contributes nothing).
+    regenerateAllCombined();
     // Repair stale / orphaned Master locks (all part tabs + stored part pages).
     lastLockRepair = reconcileMasterLocks();
     if (el.partSeparator) el.partSeparator.value = state.separators.part;
@@ -5760,6 +5576,8 @@
     if (el.rowSeparator) el.rowSeparator.value = state.separators.row;
 
     renderCombinedPrompt();
+    // Undo/redo/doc switch: Notes box shows the restored text even if focused.
+    if (el.combinedNotes) el.combinedNotes.value = getNotes(currentPromptScope());
     renderTabs();
     renderGrid();
     renderMasterLibrary();
@@ -5855,6 +5673,7 @@
   function isEmptyDocument(data) {
     return data &&
       !data.combinedPrompt &&
+      !data.combinedNotes &&
       data.tabs.every(function (tab) {
         return tab.cells.every(function (cell) { return !cell; });
       });
@@ -9666,7 +9485,7 @@
     clearKeyboardCellRange();
     pushHistory({ coalesce: true });
     writeCellCurrentPage(tab, idx, e.target.value);
-    liveSyncConfirmedLinksForCell(tab.id, idx, null);
+    liveSyncConfirmedLinksForCell(tab.id, idx, null, { dropEmpty: true });
     const confirmed = isCellConfirmed(tab.id, idx);
     e.target.classList.toggle('cell-confirmed', confirmed);
     const wrap = e.target.closest ? e.target.closest('.cell-wrap') : null;
@@ -11018,18 +10837,36 @@
   }
 
   function clearCombined() {
+    // v0.140: Clear only empties the Notes — checks (and their text) stay.
     const scope = currentPromptScope();
+    if (!getNotes(scope)) {
+      setStatus('Notes already empty — use Uncheck all to remove checked cells');
+      return;
+    }
     // Snapshot before clear for the dedicated "Undo last clear" button (and undo stack).
     lastClearSnapshot = cloneCurrentDocument();
     pushHistory();
-    setPromptText(scope, '');
-    dropLinksForScope(scope);
-    lastCombinedCaret = { start: 0, end: 0, scope: scope };
+    setNotes(scope, '');
+    if (el.combinedNotes) el.combinedNotes.value = '';
     renderCombinedPrompt();
-    applyConfirmedCellHighlights();
     scheduleSave();
     showUndoClearButton(true);
-    setStatus('Cleared');
+    setStatus('Cleared notes (checks kept)');
+  }
+
+  /** Uncheck every cell / nest in the current Combined scope (one undo step). */
+  function uncheckAllCombined() {
+    const scope = currentPromptScope();
+    const count = state.confirmedLinks.filter(function (link) { return link.scope === scope; }).length;
+    if (!count) {
+      setStatus('Nothing is checked');
+      return;
+    }
+    dismissUndoClear();
+    pushHistory();
+    dropLinksForScope(scope);
+    refreshAfterConfirmedChange();
+    setStatus('Unchecked all (' + count + ') — Ctrl+Z to undo', 'ok');
   }
 
   function undoLastClear() {
@@ -11657,6 +11494,21 @@
   el.btnAppend.addEventListener('click', appendAll);
   el.btnCopy.addEventListener('click', copyCombined);
   el.btnClear.addEventListener('click', clearCombined);
+  if (el.btnUncheckAll) el.btnUncheckAll.addEventListener('click', uncheckAllCombined);
+  if (el.combinedNotes) {
+    el.combinedNotes.addEventListener('input', function () {
+      dismissUndoClear();
+      pushHistory({ coalesce: true });
+      setNotes(currentPromptScope(), el.combinedNotes.value);
+      renderCombinedPrompt();
+      scheduleSave();
+    });
+    el.combinedNotes.addEventListener('blur', function () {
+      if (el.combinedNotes.value !== getNotes(currentPromptScope())) {
+        el.combinedNotes.value = getNotes(currentPromptScope());
+      }
+    });
+  }
   el.btnUndoClear.addEventListener('click', undoLastClear);
   el.btnExport.addEventListener('click', exportBackup);
   el.btnImport.addEventListener('click', importBackup);
@@ -11737,37 +11589,8 @@
     // Focus often lacks modifier flags; remember Ctrl/Cmd from the press that activates Combined.
     combinedActivateSkipCopy = !!(e.ctrlKey || e.metaKey);
   });
-  el.combined.addEventListener('dblclick', function (e) {
-    const seg = e.target && e.target.closest
-      ? e.target.closest('.confirmed-segment.master-segment-locked')
-      : null;
-    if (!seg || !el.combined.contains(seg)) return;
-    e.preventDefault();
-    e.stopPropagation();
-    beginMasterSegmentEdit(seg);
-  });
-  el.combined.addEventListener('beforeinput', function (e) {
-    if (masterSegmentDialogOpen) {
-      e.preventDefault();
-      return;
-    }
-    // While editing an unlocked Master segment, allow input only outside other locked spans.
-    if (typeof e.getTargetRanges === 'function') {
-      const ranges = e.getTargetRanges();
-      for (let i = 0; i < ranges.length; i++) {
-        const hit = rangeTouchesLockedMasterSegment(ranges[i]);
-        if (hit) {
-          e.preventDefault();
-          setStatus('Locked Master segment — double-click to unlock before editing', 'err');
-          return;
-        }
-      }
-    }
-    if (selectionTouchesLockedMasterSegment()) {
-      e.preventDefault();
-      setStatus('Locked Master segment — double-click to unlock before editing', 'err');
-    }
-  });
+  // v0.140: the generated Combined view is read-only — no Master segment
+  // locking / unlocking here (Master locks live on the cells only).
   el.combined.addEventListener('focusout', function (e) {
     if (!isMasterCombinedEditSession() || masterSegmentDialogOpen) return;
     const next = e.relatedTarget;
@@ -11813,101 +11636,14 @@
     rememberCombinedCaretFromDom();
   });
 
-  el.combined.addEventListener('input', function () {
-    dismissUndoClear();
-    pushHistory({ coalesce: true });
-    syncConfirmedFromCombinedDom();
-    rememberCombinedCaretFromDom();
-    syncCombinedOverflowY();
-    scheduleSave();
-  });
-
   el.combined.addEventListener('keydown', function (event) {
-    if (isMasterCombinedEditSession() && !masterSegmentDialogOpen && !event.isComposing) {
-      if (event.key === 'Escape') {
-        event.preventDefault();
-        cancelMasterSegmentEdit();
-        return;
-      }
-      if (event.key === 'Enter' && !event.shiftKey) {
-        event.preventDefault();
-        requestMasterSegmentFinish();
-        return;
-      }
-    }
-    if (!event.isComposing && !masterSegmentDialogOpen) {
-      const editingCombined = isMasterCombinedEditSession();
-      if (event.key === 'Backspace' || event.key === 'Delete') {
-        const touched = selectionTouchesLockedMasterSegment() ||
-          lockedSegmentAdjacentToCaret(event.key);
-        if (touched) {
-          event.preventDefault();
-          setStatus('Locked Master segment — double-click to unlock before editing', 'err');
-          return;
-        }
-      } else if (!editingCombined) {
-        // Block printable / modifying keys when caret sits in a locked span.
-        const isMod = event.ctrlKey || event.metaKey || event.altKey;
-        const isNav = event.key === 'Escape' || event.key === 'Tab' ||
-          event.key === 'ArrowUp' || event.key === 'ArrowDown' ||
-          event.key === 'ArrowLeft' || event.key === 'ArrowRight' ||
-          event.key === 'Home' || event.key === 'End' ||
-          event.key === 'PageUp' || event.key === 'PageDown';
-        if (!isMod && !isNav && event.key.length === 1 &&
-            selectionTouchesLockedMasterSegment()) {
-          event.preventDefault();
-          setStatus('Locked Master segment — double-click to unlock before editing', 'err');
-          return;
-        }
-      }
-    }
-    if (event.key !== 'Enter' || event.isComposing) return;
-    event.preventDefault();
-    if (document.queryCommandSupported && document.queryCommandSupported('insertText')) {
-      document.execCommand('insertText', false, '\n');
-    } else {
-      const selection = window.getSelection();
-      if (!selection || !selection.rangeCount) return;
-      const range = selection.getRangeAt(0);
-      range.deleteContents();
-      const node = document.createTextNode('\n');
-      range.insertNode(node);
-      range.setStartAfter(node);
-      range.collapse(true);
-      selection.removeAllRanges();
-      selection.addRange(range);
-      dismissUndoClear();
-      pushHistory({ coalesce: true });
-      syncConfirmedFromCombinedDom();
-      scheduleSave();
-    }
-  });
-
-  el.combined.addEventListener('paste', function (event) {
-    if (masterSegmentDialogOpen || selectionTouchesLockedMasterSegment()) {
+    // Read-only view: Ctrl/Cmd+C copies Notes + generated text (what you see).
+    const mod = event.ctrlKey || event.metaKey;
+    if (mod && !event.altKey && (event.key === 'c' || event.key === 'C')) {
+      const sel = window.getSelection();
+      if (sel && !sel.isCollapsed && el.combined.contains(sel.anchorNode)) return;
       event.preventDefault();
-      setStatus('Locked Master segment — double-click to unlock before editing', 'err');
-      return;
-    }
-    event.preventDefault();
-    const pasted = (event.clipboardData || window.clipboardData).getData('text/plain');
-    if (document.queryCommandSupported && document.queryCommandSupported('insertText')) {
-      document.execCommand('insertText', false, pasted || '');
-    } else {
-      const selection = window.getSelection();
-      if (!selection || !selection.rangeCount) return;
-      const range = selection.getRangeAt(0);
-      range.deleteContents();
-      const node = document.createTextNode(pasted || '');
-      range.insertNode(node);
-      range.setStartAfter(node);
-      range.collapse(true);
-      selection.removeAllRanges();
-      selection.addRange(range);
-      dismissUndoClear();
-      pushHistory({ coalesce: true });
-      syncConfirmedFromCombinedDom();
-      scheduleSave();
+      copyCombined();
     }
   });
 
@@ -11958,8 +11694,8 @@
       scheduleSave();
       setStatus(
         state.matchSourceOrder
-          ? 'Match source order on — Combined segments follow grid order'
-          : 'Match source order off — Combined uses caret/append order',
+          ? 'Match source order on — Combined follows grid order'
+          : 'Match source order off — Combined follows the order you checked',
         'ok'
       );
     });
@@ -12096,6 +11832,11 @@
       const repairMsg = 'Repaired stale Master links on load: ' + reconcileSummary(lastLockRepair);
       pushEvent(repairMsg, 'ok');
       setStatus(repairMsg, 'ok');
+    }
+    if (lastCombinedMigration) {
+      const m = lastCombinedMigration;
+      pushEvent('Combined v0.140 migration: kept ' + m.keptChecks + ' checks, moved ' +
+        m.movedChars + ' chars of typed text to Notes, dropped ' + m.droppedChecks + ' stale links', 'ok');
     }
     // Capture repaired greens back onto the document before launch persist.
     if (current) current.data = snapshot();

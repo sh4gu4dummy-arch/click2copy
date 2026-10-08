@@ -1646,6 +1646,30 @@ body.relocating-cell * {
   overflow-y: auto;
 }
 
+/* v0.140 Notes: fixed two-line strip above the generated Combined view —
+   fixed height (scrolls inside) so typing never bounces the layout. */
+.combined-notes {
+  flex: 0 0 auto;
+  height: 46px;
+  min-height: 46px;
+  max-height: 46px;
+  padding: 4px 10px;
+  overflow-y: auto;
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+.combined-notes::placeholder {
+  color: var(--muted);
+  opacity: 0.75;
+}
+.combined-notes-preview {
+  color: var(--muted);
+}
+#btn-uncheck-all,
+#btn-clear {
+  white-space: nowrap;
+}
+
 .textarea-combined.is-empty:before {
   content: attr(data-placeholder);
   color: var(--muted);
