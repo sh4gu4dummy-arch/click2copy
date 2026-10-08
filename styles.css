@@ -282,7 +282,7 @@ body {
 .tab-bar {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 7px;
   flex: 1;
   min-width: 0;
 }
@@ -292,11 +292,14 @@ body {
   border: 1px solid var(--border);
   background: transparent;
   color: var(--muted);
-  padding: 6px 12px;
+  height: 32px; /* Roomier (Draft C): one fixed tab height */
+  padding: 0 13px;
   border-radius: 999px;
   cursor: pointer;
   font: inherit;
-  font-weight: 550;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1;
   max-width: 200px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -304,7 +307,7 @@ body {
   transition: background 0.12s, color 0.12s, border-color 0.12s, box-shadow 0.12s;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 7px;
 }
 
 .tab-icon {
@@ -388,7 +391,7 @@ body {
 .tab.tools-tab {
   border-style: solid;
   border-color: rgba(var(--tools-rgb), 0.55);
-  font-weight: 700;
+  font-weight: 600;
   color: #f0c674;
   margin-left: auto; /* pin Tools to the far right of the tab bar */
   background: var(--tools-soft);
@@ -537,11 +540,11 @@ body {
 }
 
 .part-search-bar {
-  --find-bar-ctrl-h: 24px; /* one fixed height for ALL Find-bar controls (Ash) */
+  --find-bar-ctrl-h: 30px; /* one fixed height for ALL Find-bar controls (Ash; Roomier Draft C) */
   display: flex;
   flex-wrap: nowrap;
   align-items: center;
-  gap: 3px;
+  gap: 8px;
   flex-shrink: 0;
   padding: 0;
   overflow-x: auto;
@@ -553,8 +556,6 @@ body {
 
 /* Lock every Find-bar control to the same height (no mismatched button heights). */
 .part-search-bar .part-search-input,
-.part-search-bar .part-tab-page-name,
-.part-search-bar .part-find-actions > .btn,
 .part-search-bar .part-actions > .btn,
 .part-search-bar .row-filter-btn,
 .part-search-bar .row-filter-buttons,
@@ -565,29 +566,20 @@ body {
   max-height: var(--find-bar-ctrl-h);
 }
 
-.part-search-bar .part-find-actions > .btn,
 .part-search-bar .part-actions > .btn,
 .part-search-bar .row-filter-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  padding: 0 5px;
-  font-size: 11px;
+  padding: 0 12px;
+  font-size: 13px;
+  font-weight: 500;
   line-height: 1;
   flex: 0 0 auto;
   white-space: nowrap;
 }
 
-/* Find / Find All / Replace — compact cluster on the Soft-dark Find bar */
-.part-find-actions {
-  display: inline-flex;
-  flex: 0 0 auto;
-  flex-wrap: nowrap;
-  align-items: center;
-  gap: 1px;
-}
-
-/* Part-tab pages — Soft dark chrome (◀ n/n ▶ +) + editable page name */
+/* Part-tab pages — Soft dark chrome (◀ n/n ▶ +); rename = right-click a page chip */
 .part-tab-page-chrome {
   display: flex;
   flex: 0 0 auto;
@@ -603,10 +595,10 @@ body {
   flex-direction: row;
   flex-wrap: nowrap;
   align-items: center;
-  gap: 2px;
+  gap: 3px;
   padding: 0 4px;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 8px;
   background: rgba(42, 48, 56, 0.92);
   color: var(--muted);
   height: var(--find-bar-ctrl-h, 24px);
@@ -616,13 +608,13 @@ body {
   appearance: none;
   margin: 0;
   padding: 0;
-  width: 20px;
-  height: 20px;
+  width: 24px;
+  height: 24px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   border: 0;
-  border-radius: 4px;
+  border-radius: 6px;
   background: transparent;
   color: var(--muted);
   font-size: 12px;
@@ -640,57 +632,55 @@ body {
 .part-tab-page-label {
   flex: 0 0 auto;
   box-sizing: border-box;
-  min-width: 34px; /* fits 99/99 — label never changes the nav width (Ash) */
+  min-width: 38px; /* fits 99/99 — label never changes the nav width (Ash) */
   padding: 0 2px;
   font-variant-numeric: tabular-nums;
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: -0.02em;
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0;
   line-height: 1.1;
   text-align: center;
   color: var(--muted);
   user-select: none;
   white-space: nowrap;
 }
-.part-tab-page-name {
-  flex: 0 0 auto; /* fixed width — no grow/shrink bounce */
-  width: 52px;
-  min-width: 52px;
-  max-width: 52px;
-  height: var(--find-bar-ctrl-h, 24px);
+/* Right-click → Rename: input floats over the chip (fixed; nothing in the row moves) */
+.part-page-rename-input {
+  position: fixed;
+  z-index: 1000;
+  box-sizing: border-box;
+  height: 22px;
   margin: 0;
-  padding: 0 5px;
-  border: 1px solid var(--border);
-  border-radius: 5px;
+  padding: 0 7px;
+  border: 1px solid var(--accent);
+  border-radius: 999px;
   background: var(--cell-bg);
   color: var(--text);
   font: inherit;
-  font-size: 10px;
-  font-weight: 600;
+  font-size: 13px;
+  font-weight: 500;
   line-height: 1;
   outline: none;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
 }
-.part-tab-page-name:focus {
-  border-color: var(--accent);
-}
-.part-tab-page-name::placeholder {
+.part-page-rename-input::placeholder {
   color: var(--muted);
   font-weight: 500;
-  opacity: 0.85;
 }
 
 .part-search-input {
-  flex: 0 1 84px;
+  flex: 0 1 128px; /* wider since Find/Find All/Replace buttons are gone (Enter / Shift+Enter) */
   min-width: 56px;
-  max-width: 110px;
+  max-width: 132px;
   height: var(--find-bar-ctrl-h, 24px);
-  padding: 0 5px;
+  padding: 0 10px;
   border: 1px solid var(--border);
-  border-radius: calc(var(--radius) - 2px);
+  border-radius: 8px;
   background: var(--cell-bg);
   color: #f0f3f7; /* slightly brighter than --text for Find bar eye-care */
   font: inherit;
-  font-size: 11px;
+  font-size: 13px;
+  font-weight: 400;
   line-height: 1;
   outline: none;
 }
@@ -706,16 +696,16 @@ body {
 
 .part-search-status {
   color: var(--muted);
-  font-size: 0.62rem;
-  min-width: 0;
-  max-width: 3.5em;
-  flex: 0 1 auto;
+  font-size: 11.5px;
+  /* Fixed slot, always reserved — match counts appearing never shift the filters (no bounce). */
+  box-sizing: border-box;
+  width: 4.6em;
+  min-width: 4.6em;
+  max-width: 4.6em;
+  flex: 0 0 4.6em;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-.part-search-status:empty {
-  display: none;
 }
 
 .cell.search-hit,
@@ -745,21 +735,22 @@ body {
 
 
 .tab.editing {
-  padding: 4px 8px;
-  max-width: 220px;
+  /* Width is pinned inline to the tab's pre-edit width (no row re-wrap / bounce). */
+  padding: 0 4px;
 }
 
 .tab.editing .tab-icon {
-  pointer-events: none;
+  display: none; /* give the input the whole tab while renaming */
 }
 
 .tab-rename-input {
-  width: 120px;
+  width: 0;
   min-width: 0;
-  flex: 1;
-  padding: 2px 6px;
+  flex: 1 1 0;
+  height: 24px;
+  padding: 0 8px;
   border: 1px solid var(--accent);
-  border-radius: 4px;
+  border-radius: 999px;
   background: var(--bg);
   color: var(--text);
   font: inherit;
@@ -874,7 +865,7 @@ body.resizing-sections * {
   gap: 0;
   margin-right: 0;
   border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border-radius: 8px;
   overflow: hidden;
   height: var(--find-bar-ctrl-h, 24px);
   box-sizing: border-box;
@@ -913,16 +904,19 @@ body.resizing-sections * {
 
 .part-actions {
   display: flex;
-  gap: 3px;
+  gap: 8px;
   flex-wrap: nowrap;
   align-items: center;
-  margin-left: 2px;
+  margin-left: auto; /* filters + Fit sit at the right end (fixed spot; no bounce) */
   flex: 0 0 auto;
   /* Must NOT use flex-basis 100% — that forced a second row under Find (pre-v0.120). */
 }
 .part-actions > .btn {
   flex: 0 0 auto;
   white-space: nowrap;
+}
+.part-search-bar .part-actions > .btn {
+  border-radius: 8px;
 }
 
 .combined-actions {
@@ -1287,7 +1281,7 @@ body.relocating-cell * {
   border-radius: 0;
   background: transparent;
   color: var(--text);
-  font-family: "Cascadia Code", "Consolas", "SF Mono", ui-monospace, monospace;
+  font-family: var(--font); /* same as Global / Match source order toggles (Ash) */
   font-size: 12.5px;
   line-height: 1.45;
   outline: none;
@@ -1566,7 +1560,7 @@ body.relocating-cell * {
   border-radius: 0;
   background: transparent;
   color: var(--text);
-  font-family: "Cascadia Code", "Consolas", "SF Mono", ui-monospace, monospace;
+  font-family: var(--font); /* same as Global / Match source order toggles (Ash) */
   font-size: 12px;
   line-height: 1.4;
   outline: none;
@@ -1626,7 +1620,7 @@ body.relocating-cell * {
   border-radius: var(--radius);
   background: var(--panel);
   color: var(--text);
-  font-family: "Cascadia Code", "Consolas", "SF Mono", ui-monospace, monospace;
+  font-family: var(--font); /* same as Global / Match source order toggles (Ash) */
   font-size: 13px;
   line-height: 1.5;
   outline: none;
@@ -1830,10 +1824,10 @@ body.relocating-cell * {
   top: 0;
   z-index: 3;
   flex-shrink: 0;
-  padding: 8px 10px;
+  padding: 9px 12px;
   color: #9fe8de;
-  font-size: 0.8rem;
-  font-weight: 600;
+  font-size: 13px;
+  font-weight: 500;
   cursor: pointer;
   background: rgba(var(--accent-rgb), 0.1);
   border-bottom: 1px solid rgba(var(--accent-rgb), 0.22);
@@ -1842,6 +1836,7 @@ body.relocating-cell * {
 
 .master-library-hint {
   color: var(--muted);
+  font-size: 12.5px;
   font-weight: 400;
 }
 
@@ -1898,7 +1893,7 @@ body.relocating-cell * {
   background: var(--cell-bg);
   color: var(--text);
   font: inherit;
-  font-family: "Cascadia Code", "Consolas", "SF Mono", ui-monospace, monospace;
+  font-family: var(--font); /* same as Global / Match source order toggles (Ash) */
   font-size: 0.75rem;
   line-height: 1.35;
   text-align: left;
@@ -1980,13 +1975,14 @@ body.relocating-cell * {
 }
 
 .btn-icon {
-  width: 36px;
-  height: 36px;
+  width: 32px; /* matches 32px tabs (Draft C) */
+  height: 32px;
   padding: 0;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: 1.35rem;
+  font-size: 18px;
+  font-weight: 500;
   line-height: 1;
   background: var(--surface-2);
   border: 1px solid var(--border);
@@ -2628,17 +2624,17 @@ body.resizing-rows * {
 /* Part page strip — inline chips on the page-nav row (fixed width, never wraps) */
 .part-page-strip {
   display: flex;
-  flex: 0 0 168px;
-  width: 168px;
+  flex: 0 0 150px;
+  width: 150px;
   height: var(--find-bar-ctrl-h, 24px);
   align-items: center;
-  gap: 3px;
-  padding: 0 3px;
+  gap: 5px;
+  padding: 0 4px;
   box-sizing: border-box;
   overflow-x: auto;
   overflow-y: hidden;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 8px;
   background: rgba(42, 48, 56, 0.92);
   scrollbar-width: none;
 }
@@ -2651,16 +2647,16 @@ body.resizing-rows * {
   flex: 0 0 auto;
   min-width: 22px;
   max-width: 76px;
-  height: 18px;
-  padding: 0 6px;
+  height: 22px;
+  padding: 0 9px;
   border: 1px solid var(--border);
   border-radius: 999px;
   background: var(--surface-2);
   color: var(--muted);
   font: inherit;
-  font-size: 11px;
-  font-weight: 600;
-  line-height: 16px;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 20px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;

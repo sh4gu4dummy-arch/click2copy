@@ -77,13 +77,8 @@
     <section class="part-section panel-soft">
       <div class="part-search-bar" id="part-search-bar" role="search" aria-label="Find, replace, and part filters">
         <div class="part-tab-page-chrome" id="part-tab-page-chrome" hidden aria-label="Part pages"></div>
-        <input type="search" id="part-find-input" class="part-search-input" placeholder="Find…" spellcheck="false" aria-label="Find in current part" />
-        <input type="search" id="part-replace-input" class="part-search-input" placeholder="Replace…" spellcheck="false" aria-label="Replace with" />
-        <div class="part-find-actions" role="group" aria-label="Find and replace">
-          <button type="button" class="btn btn-secondary" id="btn-find" title="Find next match in this part (Ctrl+F)">Find</button>
-          <button type="button" class="btn btn-secondary" id="btn-find-all" title="Highlight all matches in this part">Find All</button>
-          <button type="button" class="btn btn-secondary" id="btn-replace" title="Replace current match (Shift+click = replace all)">Replace</button>
-        </div>
+        <input type="search" id="part-find-input" class="part-search-input" placeholder="Find…" spellcheck="false" aria-label="Find in current part" title="Enter: next match · Shift+Enter: highlight all matches · Ctrl+F: focus · searches this part tab only" />
+        <input type="search" id="part-replace-input" class="part-search-input" placeholder="Replace…" spellcheck="false" aria-label="Replace with" title="Enter: replace current match · Shift+Enter: replace all matches · this part tab only" />
         <span class="part-search-status" id="part-search-status" aria-live="polite"></span>
         <div class="part-actions" role="group" aria-label="Part filters and actions">
           <div class="row-filter-buttons" role="group" aria-label="Row filters">

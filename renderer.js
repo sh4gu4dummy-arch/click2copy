@@ -214,9 +214,6 @@
     partTabPageChrome: document.getElementById('part-tab-page-chrome'),
     partFindInput: document.getElementById('part-find-input'),
     partReplaceInput: document.getElementById('part-replace-input'),
-    btnFind: document.getElementById('btn-find'),
-    btnFindAll: document.getElementById('btn-find-all'),
-    btnReplace: document.getElementById('btn-replace'),
     partSearchStatus: document.getElementById('part-search-status'),
     updateBanner: document.getElementById('update-banner'),
     updateBannerText: document.getElementById('update-banner-text'),
@@ -3486,7 +3483,12 @@
     return normalizeTabPage(snap);
   }
 
-  function addTabPage(mode) {
+  /**
+   * Add a part page right after page `afterIndex` (default: the current page)
+   * and switch to it. mode 'copy' = unlocked copy of that page, else blank with
+   * that page's grid size. Undoable (Ctrl+Z). Right-click a page chip to use.
+   */
+  function addTabPage(mode, afterIndex) {
     const tab = activeTab();
     if (!tab || isMasterTab(tab) || toolsTabActive) return;
     const copyMode = mode === 'copy';
@@ -3494,18 +3496,22 @@
     pushHistory();
     flushLiveCellInputs(tab);
     tab.pages[tab.page] = captureTabPage(tab);
+    const srcIndex = Number.isInteger(afterIndex) && afterIndex >= 0 && afterIndex < tab.pages.length
+      ? afterIndex : (tab.page || 0);
+    const src = tab.pages[srcIndex];
     let nextPage;
     if (copyMode) {
-      // Ash: copy current but not locked — unlock Master cell locks on the copy.
-      nextPage = cloneTabPage(tab.pages[tab.page], { unlock: true });
+      // Ash: copy but not locked — unlock Master cell locks on the copy.
+      nextPage = cloneTabPage(src, { unlock: true });
     } else {
-      nextPage = makeBlankTabPage(tab);
+      nextPage = makeBlankTabPage({ cols: src.cols, rows: src.rows, columnWidths: src.columnWidths });
     }
     if (!nextPage) return;
-    // Fresh page name — do not reuse the source page's label.
-    nextPage.name = 'Page ' + (tab.pages.length + 1);
-    tab.pages.push(nextPage);
-    tab.page = tab.pages.length - 1;
+    // Fresh page (no name → chip shows its live position number).
+    nextPage.name = '';
+    const insertAt = srcIndex + 1;
+    tab.pages.splice(insertAt, 0, nextPage);
+    tab.page = insertAt;
     applyTabPageGrid(tab, nextPage);
     restoreTabCombinedFromPage(tab, nextPage);
     focusedCell = null;
@@ -3520,8 +3526,8 @@
     renderPartTabPageChrome();
     scheduleSave();
     setStatus(copyMode
-      ? ('Added part page (' + tab.pages.length + ') — unlocked copy of previous')
-      : ('Added part page (' + tab.pages.length + ') — blank'));
+      ? ('Added part page ' + (insertAt + 1) + ' — unlocked copy of page ' + (srcIndex + 1))
+      : ('Added part page ' + (insertAt + 1) + ' — blank, after page ' + (srcIndex + 1)));
   }
 
   /**
@@ -3589,6 +3595,19 @@
     const count = tab.pages.length;
     openPageCtxMenu({
       heading: tabPageDisplayName(tab.pages[pageIndex], pageIndex) + ' (' + (pageIndex + 1) + '/' + count + ')',
+      leading: [{
+        label: 'Rename',
+        title: 'Rename this part page (Enter saves, Esc cancels)',
+        onClick: function () { startPartPageRename(tab, pageIndex); }
+      }, {
+        label: 'Add page after this',
+        title: 'Insert a blank page right after this one and go to it (Ctrl+Z to undo)',
+        onClick: function () { addTabPage('blank', pageIndex); }
+      }, {
+        label: 'Duplicate this page',
+        title: 'Insert an unlocked copy of this page right after it and go to it (Ctrl+Z to undo)',
+        onClick: function () { addTabPage('copy', pageIndex); }
+      }],
       disabled: count <= 1,
       disabledTitle: 'Only one page — the last page cannot be deleted',
       enabledTitle: 'Delete this part page (Ctrl+Z to undo)',
@@ -3600,13 +3619,14 @@
 
   /** Shared small page menu (part-page chips, cell/nest page labels): heading + Delete page (+ extra). */
   function openPageCtxMenu(opts) {
-    const items = [{
+    const items = (opts.leading || []).slice();
+    items.push({
       label: 'Delete page',
       danger: opts.pageDanger !== false,
       disabled: !!opts.disabled,
       title: opts.disabled ? opts.disabledTitle : opts.enabledTitle,
       onClick: opts.onDelete
-    }];
+    });
     if (opts.extra) {
       items.push({
         label: opts.extra.label,
@@ -3700,21 +3720,85 @@
     return defaultTabPageName(pageIndex);
   }
 
-  function setTabPageName(name, opts) {
-    const tab = activeTab();
-    if (!tab || isMasterTab(tab) || toolsTabActive) return;
+  /** Rename part page `pageIndex` of `tab` (empty = back to its number). Page + scroll stay put. */
+  function renameTabPage(tab, pageIndex, name) {
+    if (!tab || isMasterTab(tab)) return;
     ensureTabPages(tab);
-    const page = tab.pages[tab.page];
-    if (!page) return;
+    if (!tab.pages[pageIndex]) return;
     const next = typeof name === 'string' ? name.trim() : '';
-    if ((page.name || '') === next) {
-      if (opts && opts.forceRender) renderPartTabPageChrome();
-      return;
-    }
+    if ((tab.pages[pageIndex].name || '') === next) return;
     pushHistory();
+    // Re-read after pushHistory (never hold a page object across it).
+    const page = tab.pages[pageIndex];
+    if (!page) return;
     page.name = next;
-    renderPartTabPageChrome();
+    if (tab === activeTab() && !toolsTabActive) {
+      const oldStrip = el.partTabPageChrome && el.partTabPageChrome.querySelector('.part-page-strip');
+      const keepScroll = oldStrip ? oldStrip.scrollLeft : 0;
+      renderPartTabPageChrome();
+      const strip = el.partTabPageChrome && el.partTabPageChrome.querySelector('.part-page-strip');
+      if (strip) {
+        strip.scrollLeft = keepScroll;
+        requestAnimationFrame(function () { strip.scrollLeft = keepScroll; });
+      }
+    }
     scheduleSave();
+    setStatus(next ? 'Renamed part page ' + (pageIndex + 1) + ' → ' + next
+      : 'Part page ' + (pageIndex + 1) + ' name cleared', 'ok');
+  }
+
+  /**
+   * Right-click → Rename on a page chip: a small input floats over the chip
+   * (fixed position, nothing in the row moves). Enter/blur save, Esc cancels.
+   */
+  let partPageRenameEl = null;
+  function startPartPageRename(tab, pageIndex) {
+    if (partPageRenameEl) partPageRenameEl.blur();
+    const host = el.partTabPageChrome;
+    const chip = host && host.querySelector('.part-page-chip[data-page="' + pageIndex + '"]');
+    if (!chip || !tab || !tab.pages || !tab.pages[pageIndex]) return;
+    const snap = tab.pages[pageIndex];
+    const rawName = typeof snap.name === 'string' ? snap.name.trim() : '';
+    const r = chip.getBoundingClientRect();
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'part-page-rename-input';
+    input.value = rawName && !/^page \d+$/i.test(rawName) ? rawName : '';
+    input.placeholder = defaultTabPageName(pageIndex);
+    input.spellcheck = false;
+    input.setAttribute('aria-label', 'Rename part page ' + (pageIndex + 1));
+    const w = Math.max(120, Math.ceil(r.width));
+    const h = 22;
+    input.style.width = w + 'px';
+    input.style.left = Math.max(4, Math.min(r.left, window.innerWidth - w - 4)) + 'px';
+    input.style.top = Math.round(r.top + r.height / 2 - h / 2) + 'px';
+    document.body.appendChild(input);
+    partPageRenameEl = input;
+    input.focus();
+    input.select();
+    let done = false;
+    function finish(commit) {
+      if (done) return;
+      done = true;
+      const value = input.value;
+      if (input.parentNode) input.parentNode.removeChild(input);
+      if (partPageRenameEl === input) partPageRenameEl = null;
+      if (commit) renameTabPage(tab, pageIndex, value);
+    }
+    input.addEventListener('keydown', function (ev) {
+      if (ev.key === 'Enter') {
+        ev.preventDefault();
+        ev.stopPropagation();
+        finish(true);
+      } else if (ev.key === 'Escape') {
+        ev.preventDefault();
+        ev.stopPropagation();
+        finish(false);
+      }
+    });
+    input.addEventListener('blur', function () { finish(true); });
+    input.addEventListener('mousedown', function (ev) { ev.stopPropagation(); });
+    input.addEventListener('click', function (ev) { ev.stopPropagation(); });
   }
 
   /**
@@ -3733,7 +3817,7 @@
     }
     for (let i = 0; i < count; i++) {
       const snap = tab.pages[i];
-      // Auto names ("Page N" from +) show the live position; custom names show as typed.
+      // Auto names ("Page N" from older + adds) show the live position; custom names show as typed.
       const rawName = snap && typeof snap.name === 'string' ? snap.name.trim() : '';
       const named = rawName && !/^page \d+$/i.test(rawName);
       const chip = document.createElement('button');
@@ -3742,8 +3826,8 @@
       chip.setAttribute('role', 'tab');
       chip.setAttribute('aria-selected', i === page ? 'true' : 'false');
       chip.textContent = named ? rawName : String(i + 1);
-      chip.title = (rawName ? rawName + ' — ' : '') + 'page ' + (i + 1) + ' of ' + count +
-        (count > 1 ? ' (drag to reorder, right-click to delete)' : '');
+      chip.title = (named ? rawName + ' — ' : '') + 'page ' + (i + 1) + ' of ' + count +
+        (count > 1 ? ' (drag to reorder; right-click to rename, add a page after, or delete)' : ' (right-click to rename or add a page after)');
       chip.dataset.page = String(i);
       chip.draggable = count > 1;
       chip.addEventListener('click', function (ev) {
@@ -3837,13 +3921,6 @@
     const tab = activeTab();
     const show = !!(tab && !isMasterTab(tab) && !toolsTabActive);
     host.hidden = !show;
-    // Keep focus in the name field across re-renders when the user is typing.
-    const active = document.activeElement;
-    const keepNameFocus = !!(active && active.classList &&
-      active.classList.contains('part-tab-page-name') && host.contains(active));
-    const keepSelStart = keepNameFocus ? active.selectionStart : null;
-    const keepSelEnd = keepNameFocus ? active.selectionEnd : null;
-    const keepValue = keepNameFocus ? active.value : null;
     host.textContent = '';
     if (!show) return;
     ensureTabPages(tab);
@@ -3886,62 +3963,13 @@
       stepTabPage(1);
     });
 
-    const addBtn = document.createElement('button');
-    addBtn.type = 'button';
-    addBtn.className = 'part-tab-page-btn part-tab-page-add';
-    addBtn.textContent = '+';
-    addBtn.title = 'Add part page';
-    addBtn.setAttribute('aria-label', 'Add part page');
-    addBtn.addEventListener('click', function (ev) {
-      ev.preventDefault();
-      openAddPageChoiceMenu(addBtn, { kind: 'part' });
-    });
-
     chrome.appendChild(prevBtn);
     chrome.appendChild(label);
     chrome.appendChild(nextBtn);
-    chrome.appendChild(addBtn);
-
-
-    const nameInput = document.createElement('input');
-    nameInput.type = 'text';
-    nameInput.className = 'part-tab-page-name';
-    nameInput.value = keepNameFocus && keepValue != null
-      ? keepValue
-      : (snap && typeof snap.name === 'string' ? snap.name : '');
-    nameInput.placeholder = defaultTabPageName(page);
-    nameInput.title = 'Name this part page';
-    nameInput.setAttribute('aria-label', 'Part page name');
-    nameInput.spellcheck = false;
-    nameInput.addEventListener('keydown', function (ev) {
-      if (ev.key === 'Enter') {
-        ev.preventDefault();
-        nameInput.blur();
-      } else if (ev.key === 'Escape') {
-        ev.preventDefault();
-        nameInput.value = snap && typeof snap.name === 'string' ? snap.name : '';
-        nameInput.blur();
-      }
-    });
-    nameInput.addEventListener('blur', function () {
-      setTabPageName(nameInput.value);
-    });
-    // Typing should not steal focus via other key handlers / save churn.
-    nameInput.addEventListener('mousedown', function (ev) { ev.stopPropagation(); });
-    nameInput.addEventListener('click', function (ev) { ev.stopPropagation(); });
+    // No + here: right-click a page chip → Add page after this / Duplicate this page.
 
     host.appendChild(chrome);
-    host.appendChild(nameInput);
     host.appendChild(buildPartPageStrip(tab, page));
-
-    if (keepNameFocus) {
-      nameInput.focus();
-      try {
-        if (keepSelStart != null && keepSelEnd != null) {
-          nameInput.setSelectionRange(keepSelStart, keepSelEnd);
-        }
-      } catch (err) { /* ignore */ }
-    }
   }
 
 
@@ -4029,8 +4057,7 @@
     const t = ev.target;
     if (t && typeof t.closest === 'function' &&
         (t.closest('.add-page-choice-menu') ||
-         t.closest('.cell-page-add') ||
-         t.closest('.part-tab-page-add'))) {
+         t.closest('.cell-page-add'))) {
       return;
     }
     closeAddPageChoiceMenu();
@@ -10075,6 +10102,14 @@
   function startInlineRename(btn, tab) {
     if (btn.classList.contains('editing')) return;
     closeTabIconPicker();
+    // Keep the tab at its current width while renaming (input fills it, text
+    // scrolls inside) so the tab row never re-wraps or bounces (Ash).
+    const lockedWidth = btn.getBoundingClientRect().width; // exact (sub-pixel) — no 1px shift
+    if (lockedWidth > 0) {
+      btn.style.width = lockedWidth + 'px';
+      btn.style.minWidth = lockedWidth + 'px';
+      btn.style.maxWidth = lockedWidth + 'px';
+    }
     btn.classList.add('editing');
     const parts = fillTabButtonContent(btn, tab);
     if (parts.title) parts.title.remove();
@@ -10092,6 +10127,9 @@
     function finish(commit) {
       if (done) return;
       done = true;
+      btn.style.width = '';
+      btn.style.minWidth = '';
+      btn.style.maxWidth = '';
       const next = input.value.trim();
       if (commit && next && next !== tab.title) {
         if (next.toLowerCase() === 'master') {
@@ -11317,7 +11355,9 @@
   // --- Part Find / Find All / Replace (active tab cells + nest pages) ---
 
   function setPartSearchStatus(text) {
-    if (el.partSearchStatus) el.partSearchStatus.textContent = text || '';
+    if (!el.partSearchStatus) return;
+    el.partSearchStatus.textContent = text || '';
+    el.partSearchStatus.title = text || '';
   }
 
   function clearPartSearchDomHighlights() {
@@ -11931,19 +11971,15 @@
   if (el.columnSeparator) onSeparatorInput('column', el.columnSeparator);
   if (el.rowSeparator) onSeparatorInput('row', el.rowSeparator);
 
-  if (el.btnFind) el.btnFind.addEventListener('click', function () { partFindNext(); });
-  if (el.btnFindAll) el.btnFindAll.addEventListener('click', partFindAll);
-  if (el.btnReplace) {
-    el.btnReplace.addEventListener('click', function (e) {
-      partReplace({ replaceAll: !!(e && e.shiftKey) });
-    });
-  }
   if (el.partFindInput) {
     el.partFindInput.addEventListener('keydown', function (e) {
       if (e.key === 'Enter') {
         e.preventDefault();
         if (e.shiftKey) partFindAll();
         else partFindNext();
+        // No Find button any more: keep typing focus here so Enter steps to the next match
+        // (the current hit stays marked + scrolled into view in the grid).
+        if (document.activeElement !== el.partFindInput) el.partFindInput.focus({ preventScroll: true });
       }
     });
     el.partFindInput.addEventListener('input', function () {
@@ -12260,7 +12296,8 @@
     if (!mod || event.altKey) return;
     // Skip when renaming a tab inline (native text field undo is fine there).
     const target = event.target;
-    if (target && target.classList && target.classList.contains('tab-rename-input')) return;
+    if (target && target.classList && (target.classList.contains('tab-rename-input') ||
+      target.classList.contains('part-page-rename-input'))) return;
 
     const key = event.key.length === 1 ? event.key.toLowerCase() : event.key;
     if (key === 'z' && !event.shiftKey) {
