@@ -164,7 +164,6 @@
     statusPanelClose: document.getElementById('status-panel-close'),
     btnAdd: document.getElementById('btn-add-tab'),
     btnRename: document.getElementById('btn-rename-tab'),
-    btnDelete: document.getElementById('btn-delete-tab'),
     btnAddRow: document.getElementById('btn-add-row'),
     btnAddCol: document.getElementById('btn-add-col'),
     btnFilterAll: document.getElementById('btn-filter-all'),
@@ -3053,7 +3052,12 @@
       : ('Added part page (' + tab.pages.length + ') — blank'));
   }
 
-  function removeTabPage() {
+  /**
+   * Remove part page `index` (default: the current page). Removing the current
+   * page selects the page that slides into its slot (or the new last page);
+   * removing another page keeps the current page selected with its live edits.
+   */
+  function removeTabPage(index) {
     const tab = activeTab();
     if (!tab || isMasterTab(tab) || toolsTabActive) return;
     ensureTabPages(tab);
@@ -3061,11 +3065,18 @@
       setStatus('Part already has only one page', 'err');
       return;
     }
+    const cur = tab.page || 0;
+    const removeAt = Number.isInteger(index) ? index : cur;
+    if (removeAt < 0 || removeAt >= tab.pages.length) return;
     pushHistory();
     flushLiveCellInputs(tab);
-    const removeAt = tab.page || 0;
+    if (removeAt !== cur) {
+      // Save the live grid into its page before shifting indices.
+      tab.pages[cur] = captureTabPage(tab);
+    }
     tab.pages.splice(removeAt, 1);
-    if (tab.page >= tab.pages.length) tab.page = tab.pages.length - 1;
+    if (removeAt < cur) tab.page = cur - 1;
+    else if (removeAt === cur && tab.page >= tab.pages.length) tab.page = tab.pages.length - 1;
     applyTabPageGrid(tab, tab.pages[tab.page]);
     restoreTabCombinedFromPage(tab, tab.pages[tab.page]);
     focusedCell = null;
@@ -3079,7 +3090,98 @@
     renderMasterLibrary();
     renderPartTabPageChrome();
     scheduleSave();
-    setStatus('Removed part page (' + tab.pages.length + ' left)');
+    setStatus('Removed part page ' + (removeAt + 1) + ' (' + tab.pages.length + ' left)');
+  }
+
+  /* Right-click a page chip → small menu (like the tab right-click menu). */
+  let partPageMenuEl = null;
+  function closePartPageMenu() {
+    if (partPageMenuEl && partPageMenuEl.parentNode) partPageMenuEl.parentNode.removeChild(partPageMenuEl);
+    partPageMenuEl = null;
+    document.removeEventListener('pointerdown', onPartPageMenuOutside, true);
+    document.removeEventListener('keydown', onPartPageMenuKey, true);
+    window.removeEventListener('blur', closePartPageMenu);
+  }
+  function onPartPageMenuOutside(e) {
+    if (partPageMenuEl && !partPageMenuEl.contains(e.target)) closePartPageMenu();
+  }
+  function onPartPageMenuKey(e) {
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      e.stopPropagation();
+      closePartPageMenu();
+    }
+  }
+  function openPartPageMenu(tab, pageIndex, x, y) {
+    ensureTabPages(tab);
+    const count = tab.pages.length;
+    openPageCtxMenu({
+      heading: tabPageDisplayName(tab.pages[pageIndex], pageIndex) + ' (' + (pageIndex + 1) + '/' + count + ')',
+      disabled: count <= 1,
+      disabledTitle: 'Only one page — the last page cannot be deleted',
+      enabledTitle: 'Delete this part page (Ctrl+Z to undo)',
+      onDelete: function () { removeTabPage(pageIndex); },
+      x: x,
+      y: y
+    });
+  }
+
+  /** Shared small page menu (part-page chips, cell page labels): heading + red Delete page. */
+  function openPageCtxMenu(opts) {
+    closePartPageMenu();
+    closeTabIconPicker();
+    const pop = document.createElement('div');
+    pop.className = 'tab-icon-picker part-page-menu';
+    pop.setAttribute('role', 'menu');
+    const heading = document.createElement('div');
+    heading.className = 'tab-icon-picker-heading';
+    heading.textContent = opts.heading;
+    pop.appendChild(heading);
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.className = 'tab-icon-picker-action' + (opts.pageDanger === false ? '' : ' is-danger');
+    del.setAttribute('role', 'menuitem');
+    del.textContent = 'Delete page';
+    del.disabled = !!opts.disabled;
+    del.title = opts.disabled ? opts.disabledTitle : opts.enabledTitle;
+    del.addEventListener('click', function (ev) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      closePartPageMenu();
+      if (!opts.disabled) opts.onDelete();
+    });
+    pop.appendChild(del);
+    let extraBtn = null;
+    if (opts.extra) {
+      const ex = opts.extra;
+      extraBtn = document.createElement('button');
+      extraBtn.type = 'button';
+      extraBtn.className = 'tab-icon-picker-action is-danger';
+      extraBtn.setAttribute('role', 'menuitem');
+      extraBtn.textContent = ex.label;
+      extraBtn.disabled = !!ex.disabled;
+      extraBtn.title = ex.title || '';
+      extraBtn.addEventListener('click', function (ev) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        closePartPageMenu();
+        if (!ex.disabled) ex.onClick();
+      });
+      pop.appendChild(extraBtn);
+    }
+    document.body.appendChild(pop);
+    partPageMenuEl = pop;
+    const pad = 6;
+    const r = pop.getBoundingClientRect();
+    const left = Math.max(pad, Math.min(opts.x, window.innerWidth - r.width - pad));
+    const top = Math.max(pad, Math.min(opts.y, window.innerHeight - r.height - pad));
+    pop.style.left = left + 'px';
+    pop.style.top = top + 'px';
+    document.addEventListener('pointerdown', onPartPageMenuOutside, true);
+    document.addEventListener('keydown', onPartPageMenuKey, true);
+    window.addEventListener('blur', closePartPageMenu);
+    if (!del.disabled) del.focus({ preventScroll: true });
+    else if (extraBtn && !extraBtn.disabled) extraBtn.focus({ preventScroll: true });
   }
 
   function stepTabPage(delta) {
@@ -3144,12 +3246,17 @@
       chip.setAttribute('aria-selected', i === page ? 'true' : 'false');
       chip.textContent = named ? rawName : String(i + 1);
       chip.title = (rawName ? rawName + ' — ' : '') + 'page ' + (i + 1) + ' of ' + count +
-        (count > 1 ? ' (drag to reorder)' : '');
+        (count > 1 ? ' (drag to reorder, right-click to delete)' : '');
       chip.dataset.page = String(i);
       chip.draggable = count > 1;
       chip.addEventListener('click', function (ev) {
         ev.preventDefault();
         if (i !== (tab.page || 0)) setTabPage(i);
+      });
+      chip.addEventListener('contextmenu', function (ev) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        openPartPageMenu(tab, i, ev.clientX, ev.clientY);
       });
       chip.addEventListener('dragstart', function (ev) {
         ev.stopPropagation();
@@ -3298,19 +3405,6 @@
     chrome.appendChild(nextBtn);
     chrome.appendChild(addBtn);
 
-    if (pageCount > 1) {
-      const removeBtn = document.createElement('button');
-      removeBtn.type = 'button';
-      removeBtn.className = 'part-tab-page-btn part-tab-page-remove';
-      removeBtn.textContent = '×';
-      removeBtn.title = 'Remove current part page';
-      removeBtn.setAttribute('aria-label', 'Remove current part page');
-      removeBtn.addEventListener('click', function (ev) {
-        ev.preventDefault();
-        removeTabPage();
-      });
-      chrome.appendChild(removeBtn);
-    }
 
     const nameInput = document.createElement('input');
     nameInput.type = 'text';
@@ -5835,7 +5929,6 @@
     el.tabBar.appendChild(toolsBtn);
 
     const tab = activeTab();
-    el.btnDelete.disabled = !tab || isMasterTab(tab) || partTabs().length <= 1 || toolsTabActive;
     el.masterLibrary.hidden = toolsTabActive || isMasterTab(tab);
     updateToolsChrome();
     renderPartTabPageChrome();
@@ -7775,7 +7868,24 @@
         const pageLabel = document.createElement('span');
         pageLabel.className = 'cell-page-label';
         pageLabel.textContent = (page + 1) + '/' + pageCount;
-        pageLabel.title = 'Cell page ' + (page + 1) + ' of ' + pageCount;
+        pageLabel.title = 'Cell page ' + (page + 1) + ' of ' + pageCount + ' — right-click to delete';
+        pageLabel.addEventListener('contextmenu', function (ev) {
+          ev.preventDefault();
+          ev.stopPropagation();
+          const blocked = isCellMasterEditBlocked(tab, idx);
+          const onlyOne = pageCount <= 1;
+          openPageCtxMenu({
+            heading: 'Page ' + (page + 1) + ' (' + (page + 1) + '/' + pageCount + ')',
+            disabled: onlyOne || blocked,
+            disabledTitle: onlyOne
+              ? 'Only one page — the last page cannot be deleted'
+              : 'Locked Master cell — double-click to unlock before deleting a page',
+            enabledTitle: 'Delete this cell page (Ctrl+Z to undo)',
+            onDelete: function () { removeCellPage(idx); },
+            x: ev.clientX,
+            y: ev.clientY
+          });
+        });
 
         const nextBtn = document.createElement('button');
         nextBtn.type = 'button';
@@ -7808,21 +7918,6 @@
         pageChrome.appendChild(nextBtn);
         pageChrome.appendChild(addPageBtn);
 
-        if (pageCount > 1) {
-          const removePageBtn = document.createElement('button');
-          removePageBtn.type = 'button';
-          removePageBtn.className = 'cell-page-btn cell-page-remove';
-          removePageBtn.textContent = '×';
-          removePageBtn.title = 'Remove current cell page';
-          removePageBtn.setAttribute('aria-label', 'Remove current cell page');
-          removePageBtn.disabled = cellLocked && !cellEditing;
-          removePageBtn.addEventListener('click', function (ev) {
-            ev.preventDefault();
-            ev.stopPropagation();
-            removeCellPage(idx);
-          });
-          pageChrome.appendChild(removePageBtn);
-        }
 
         corner.appendChild(pageChrome);
         stack.appendChild(corner);
@@ -7938,7 +8033,29 @@
               const pageLabel = document.createElement('span');
               pageLabel.className = 'cell-nest-page-label';
               pageLabel.textContent = (page + 1) + '/' + pageCount;
-              pageLabel.title = 'Nest page ' + (page + 1) + ' of ' + pageCount;
+              pageLabel.title = 'Nest page ' + (page + 1) + ' of ' + pageCount + ' — right-click to delete';
+              pageLabel.addEventListener('contextmenu', function (ev) {
+                ev.preventDefault();
+                ev.stopPropagation();
+                const blocked = isCellMasterEditBlocked(tab, idx);
+                const lockTip = 'Locked Master cell — double-click to unlock before deleting';
+                openPageCtxMenu({
+                  heading: 'Nest page ' + (page + 1) + ' (' + (page + 1) + '/' + pageCount + ')',
+                  disabled: pageCount <= 1 || blocked,
+                  pageDanger: false,
+                  disabledTitle: blocked ? lockTip : 'Only one page — use Delete nest to remove it',
+                  enabledTitle: 'Delete this nest page (Ctrl+Z to undo)',
+                  onDelete: function () { removeNestPage(idx, nestIndex); },
+                  extra: {
+                    label: 'Delete nest',
+                    disabled: blocked,
+                    title: blocked ? lockTip : 'Delete this whole nest, all pages (Ctrl+Z to undo)',
+                    onClick: function () { removeNestedCell(idx, nestIndex); }
+                  },
+                  x: ev.clientX,
+                  y: ev.clientY
+                });
+              });
 
               const nextBtn = document.createElement('button');
               nextBtn.type = 'button';
@@ -7964,25 +8081,11 @@
                 addNestPage(idx, nestIndex);
               });
 
-              const removeBtn = document.createElement('button');
-              removeBtn.type = 'button';
-              removeBtn.className = 'cell-nest-remove';
-              removeBtn.textContent = '\u00d7';
-              removeBtn.title = pageCount > 1
-                ? 'Remove current nest page'
-                : 'Remove nested cell';
-              removeBtn.setAttribute('aria-label', removeBtn.title);
-              removeBtn.addEventListener('click', function (ev) {
-                ev.preventDefault();
-                ev.stopPropagation();
-                removeNestPage(idx, nestIndex);
-              });
 
               nestChrome.appendChild(prevBtn);
               nestChrome.appendChild(pageLabel);
               nestChrome.appendChild(nextBtn);
               nestChrome.appendChild(addPageBtn);
-              nestChrome.appendChild(removeBtn);
 
               const nestTa = document.createElement('textarea');
               nestTa.className = 'cell-nest-input';
@@ -11108,9 +11211,6 @@
 
   el.btnAdd.addEventListener('click', addTab);
   el.btnRename.addEventListener('click', renameActiveTab);
-  el.btnDelete.addEventListener('click', function () {
-    if (state.activeTabId) deleteTab(state.activeTabId);
-  });
   el.btnAddRow.addEventListener('click', addRow);
   el.btnAddCol.addEventListener('click', addColumn);
   if (el.btnFilterAll) el.btnFilterAll.addEventListener('click', function () { setGridRowFilter('all'); });

@@ -639,8 +639,10 @@ body {
 }
 .part-tab-page-label {
   flex: 0 0 auto;
-  min-width: 2em;
+  box-sizing: border-box;
+  min-width: 34px; /* fits 99/99 — label never changes the nav width (Ash) */
   padding: 0 2px;
+  font-variant-numeric: tabular-nums;
   font-size: 11px;
   font-weight: 700;
   letter-spacing: -0.02em;
@@ -1492,7 +1494,7 @@ body.relocating-cell * {
   overflow: hidden;
 }
 
-/* One horizontal row: checkbox, ◀, 1/n, ▶, +, × (wider indent OK vs tall rows). */
+/* One horizontal row: checkbox, ◀, 1/n, ▶, + (right-click 1/n for Delete page / nest). */
 .cell-nest-chrome {
   display: flex;
   flex-direction: row;
@@ -1507,8 +1509,7 @@ body.relocating-cell * {
   color: var(--muted);
 }
 
-.cell-nest-page-btn,
-.cell-nest-remove {
+.cell-nest-page-btn {
   appearance: none;
   margin: 0;
   padding: 0;
@@ -1526,8 +1527,7 @@ body.relocating-cell * {
   cursor: pointer;
 }
 
-.cell-nest-page-btn:hover:not(:disabled),
-.cell-nest-remove:hover {
+.cell-nest-page-btn:hover:not(:disabled) {
   background: var(--accent);
   color: #fff;
 }
@@ -1539,8 +1539,11 @@ body.relocating-cell * {
 
 .cell-nest-page-label {
   flex: 0 0 auto;
-  min-width: 1.6em;
+  box-sizing: border-box;
+  min-width: 26px; /* fits 99/99 — nest controls width never changes (Ash) */
   padding: 0 1px;
+  font-variant-numeric: tabular-nums;
+  cursor: context-menu;
   font-size: 9px;
   font-weight: 700;
   letter-spacing: -0.02em;
@@ -2317,8 +2320,11 @@ body.painting-checkboxes .cell-append {
 }
 .cell-page-label {
   flex: 0 0 auto;
-  min-width: 1.5em;
+  box-sizing: border-box;
+  min-width: 24px; /* fits 99/99 — cluster width never changes (Ash) */
   padding: 0 1px;
+  font-variant-numeric: tabular-nums;
+  cursor: context-menu;
   font-size: 8px;
   font-weight: 700;
   letter-spacing: -0.02em;
@@ -2727,4 +2733,17 @@ body.resizing-rows * {
   border-color: var(--accent);
   color: var(--text);
   outline: none;
+}
+
+/* Page chip right-click menu (reuses the tab right-click menu look) */
+.part-page-menu {
+  min-width: 140px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.part-page-menu .tab-icon-picker-action:disabled {
+  opacity: 0.4;
+  cursor: default;
+  background: var(--surface);
 }
