@@ -2559,6 +2559,46 @@ body.resizing-rows * {
   cursor: help;
 }
 
+/* v0.141 Master Column B duplicates: soft orange inset outline (distinct from
+   user shading, Combined green, and the Col1 amber left edge). Display only. */
+.cell-wrap.master-dupe {
+  box-shadow: inset 0 0 0 1.5px rgba(251, 146, 60, 0.62);
+}
+/* Keep selection / Combined-green edges on the outside; orange sits just inside. */
+.cell-wrap.master-dupe.cell-confirmed {
+  box-shadow: inset 0 0 0 1.5px var(--confirmed-border), inset 0 0 0 3px rgba(251, 146, 60, 0.62);
+}
+.cell-wrap.master-dupe:focus-within:not(.cell-confirmed) {
+  box-shadow: inset 0 0 0 1px var(--accent), inset 0 0 0 2.5px rgba(251, 146, 60, 0.62);
+}
+.cell-wrap.master-dupe.selected,
+.cell-wrap.master-dupe.cell-range-selected,
+.cell-wrap.master-dupe.selected:focus-within,
+.cell-wrap.master-dupe.cell-range-selected:focus-within {
+  box-shadow: inset 0 0 0 2px rgba(var(--accent-rgb), 0.9), inset 0 0 0 3.5px rgba(251, 146, 60, 0.62);
+}
+/* Focused textarea paints an opaque background over the wrap's inset edge —
+   carry the orange onto the textarea itself while editing. */
+.cell-wrap.master-dupe textarea.cell:focus {
+  box-shadow: inset 0 0 0 1.5px rgba(251, 146, 60, 0.62);
+}
+.cell-wrap.master-dupe textarea.cell {
+  text-decoration: underline dashed rgba(251, 146, 60, 0.55);
+  text-underline-offset: 3px;
+}
+.master-dupe-count {
+  margin-left: 4px;
+  padding: 0 4px;
+  border-radius: 3px;
+  color: rgb(251, 146, 60);
+  font-size: 10.5px;
+  font-weight: 700;
+  text-transform: none;
+  letter-spacing: 0;
+  white-space: nowrap;
+  cursor: help;
+}
+
 /* Part page strip — inline chips on the page-nav row (fixed width, never wraps) */
 .part-page-strip {
   display: flex;

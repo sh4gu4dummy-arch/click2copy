@@ -1311,6 +1311,9 @@
 
   function scheduleSave() {
     refreshCombinedViewIfStale();
+    // Master Column B duplicate marks follow every edit (debounced, no re-render).
+    const liveTab = activeTab();
+    if (liveTab && isMasterTab(liveTab)) scheduleMasterDupeMarks();
     const document = activeDocument();
     if (document) document.data = snapshot();
     clearTimeout(state.saveTimer);
@@ -7693,6 +7696,82 @@
     });
   }
 
+  /* ── Master Column B duplicate highlight (v0.141, display only) ─────────
+   * Compares what each Master B cell shows now (its current cell page),
+   * trimmed, inner whitespace collapsed, case-insensitive. Highlight only —
+   * never blocks edits or changes data.
+   */
+  function masterDupeKey(value) {
+    return String(value == null ? '' : value).trim().replace(/\s+/g, ' ').toLowerCase();
+  }
+
+  function computeMasterColBDupes(tab) {
+    const out = { byIdx: Object.create(null), count: 0 };
+    if (!tab || !isMasterTab(tab) || (tab.cols || 0) < 2) return out;
+    const groups = Object.create(null);
+    for (let r = 0; r < tab.rows; r++) {
+      const idx = r * tab.cols + 1;
+      if (idx >= tab.cells.length) break;
+      const key = masterDupeKey(tab.cells[idx]);
+      if (!key) continue;
+      (groups[key] = groups[key] || []).push(idx);
+    }
+    Object.keys(groups).forEach(function (key) {
+      const list = groups[key];
+      if (list.length < 2) return;
+      list.forEach(function (idx) {
+        out.byIdx[idx] = list.filter(function (other) { return other !== idx; });
+        out.count += 1;
+      });
+    });
+    return out;
+  }
+
+  function applyMasterDupeMarks() {
+    if (masterDupeTimer) {
+      clearTimeout(masterDupeTimer);
+      masterDupeTimer = null;
+    }
+    const tab = activeTab();
+    if (!tab || !el.cellGrid) return;
+    const isMaster = isMasterTab(tab);
+    const dupes = isMaster ? computeMasterColBDupes(tab) : { byIdx: {}, count: 0 };
+    const wraps = el.cellGrid.querySelectorAll('.cell-wrap.master-dupe, textarea.cell[data-col="1"]');
+    for (let i = 0; i < wraps.length; i++) {
+      const node = wraps[i];
+      const ta = node.matches('textarea') ? node : node.querySelector('textarea.cell');
+      const wrap = node.matches('textarea') ? node.closest('.cell-wrap') : node;
+      if (!ta || !wrap) continue;
+      const idx = parseInt(ta.dataset.idx, 10);
+      const others = isMaster && !Number.isNaN(idx) ? dupes.byIdx[idx] : null;
+      const on = !!(others && others.length);
+      wrap.classList.toggle('master-dupe', on);
+      if (!('baseTitle' in ta.dataset)) ta.dataset.baseTitle = ta.title || '';
+      if (on) {
+        ta.title = 'Duplicate of ' + others.map(function (o) {
+          return cellAddressFromIndex(tab, o);
+        }).join(', ') + ' (same text, ignoring case and extra spaces)';
+      } else {
+        ta.title = ta.dataset.baseTitle;
+      }
+    }
+    const badge = el.cellGrid.querySelector('.master-dupe-count');
+    if (badge) {
+      badge.textContent = dupes.count ? '⚠ ' + dupes.count + ' dup' : '';
+      badge.title = dupes.count
+        ? dupes.count + ' Column B cells share their text with another B cell (highlighted; nothing is blocked)'
+        : '';
+      badge.style.visibility = dupes.count ? 'visible' : 'hidden';
+    }
+  }
+
+  let masterDupeTimer = null;
+  /** Debounced live refresh while typing (no re-render, so no layout bounce). */
+  function scheduleMasterDupeMarks() {
+    if (masterDupeTimer) clearTimeout(masterDupeTimer);
+    masterDupeTimer = setTimeout(applyMasterDupeMarks, 160);
+  }
+
   function renderGrid() {
     const tab = activeTab();
     const scrollWrap = el.cellGrid.parentElement;
@@ -7742,6 +7821,14 @@
       label.textContent = columnLetter(c);
       label.title = 'Column ' + columnLetter(c);
       header.appendChild(label);
+
+      if (c === 1 && isMasterTab(tab)) {
+        // Always present (visibility toggled) so the count never shifts the header.
+        const dupBadge = document.createElement('span');
+        dupBadge.className = 'master-dupe-count';
+        dupBadge.style.visibility = 'hidden';
+        header.appendChild(dupBadge);
+      }
 
       if (c === 0) {
         header.classList.add('column-header-sortable');
@@ -8364,6 +8451,7 @@
 
     syncRowFilterButtons();
     applyAppendCheckedState();
+    applyMasterDupeMarks();
     if (col1FilterMenuOpen) {
       const menu = el.cellGrid.querySelector('.column-col1-filter-menu');
       if (menu) buildCol1FilterMenu(tab, menu);
