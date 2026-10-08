@@ -2614,7 +2614,7 @@
   }
 
   function reportLockRepair(r) {
-    if (!r || !(r.resynced || r.repointed || r.unlocked)) return;
+    if (!r || !(r.resynced || r.repointed || r.unlocked || r.relocked)) return;
     const msg = 'Repaired stale Master links: ' + reconcileSummary(r);
     pushEvent(msg, 'ok');
     scheduleSave();
@@ -2625,7 +2625,123 @@
     if (r.resynced) parts.push(r.resynced + ' re-synced');
     if (r.repointed) parts.push(r.repointed + ' re-linked');
     if (r.unlocked) parts.push(r.unlocked + ' unlocked (Master source gone, text kept)');
+    if (r.relocked) parts.push(r.relocked + ' re-locked (exact Master text)');
     return parts.join(', ');
+  }
+
+  /** Extra nests / other cell pages on a lock site (live or stored page snapshot). */
+  function siteHasOwnExtraContent(site, index) {
+    if (!site || index < 0) return false;
+    const nests = (site.nestedCells && site.nestedCells[index]) || [];
+    for (let n = 0; n < nests.length; n++) {
+      const pages = (nests[n] && nests[n].pages) || [];
+      for (let p = 0; p < pages.length; p++) {
+        if (String(pages[p] || '').trim()) return true;
+      }
+    }
+    const entry = site.cellPages && site.cellPages[index];
+    if (entry && entry.pages && entry.pages.length > 1) {
+      for (let p = 0; p < entry.pages.length; p++) {
+        if (p === (entry.page || 0)) continue;
+        if (String(entry.pages[p] || '').trim()) return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Exact-match Master index for a site cell (same scoring as findMasterMatchForCell,
+   * but Col A comes from site.cells so stored part pages work).
+   */
+  function findMasterMatchForSite(site, index, text) {
+    const master = state.tabs.find(isMasterTab);
+    const tab = site && site.tab;
+    if (!master || !tab || isMasterTab(tab)) return -1;
+    const want = trimEndText(text);
+    if (!want.trim()) return -1;
+    const cols = master.cols || 1;
+    const tabCols = tab.cols || 1;
+    const targetCol = index % tabCols;
+    const targetRow = Math.floor(index / tabCols);
+    const cells = site.cells || tab.cells;
+    const rowColA = targetCol === 0 ? '' : ((cells[targetRow * tabCols] || '').trim());
+    const filter = getMasterLibPrefs(tab.id).valueFilter;
+    let best = -1;
+    let bestScore = -1;
+    for (let i = 0; i < master.cells.length; i++) {
+      if (trimEndText(master.cells[i]) !== want) continue;
+      const mRow = Math.floor(i / cols);
+      const mColA = (master.cells[mRow * cols] || '').trim();
+      let score = 0;
+      if (rowColA && mColA === rowColA) score += 4;
+      if (filter === null || filter.has(mColA)) score += 2;
+      if ((i % cols) === targetCol) score += 1;
+      if (score > bestScore) {
+        best = i;
+        bestScore = score;
+      }
+    }
+    return best;
+  }
+
+  /**
+   * Visit every cell on every part page (live + stored snapshots).
+   * cb(site, i) — site shape matches forEachPartLockSite.
+   */
+  function forEachPartCellSite(cb) {
+    state.tabs.forEach(function (tab) {
+      if (!tab || isMasterTab(tab)) return;
+      ensureCellLocks(tab);
+      ensureCellPages(tab);
+      ensureNestedCells(tab);
+      const live = {
+        tab: tab, live: true, cells: tab.cells, cellLocks: tab.cellLocks,
+        cellPages: tab.cellPages, nestedCells: tab.nestedCells
+      };
+      for (let i = 0; i < tab.cells.length; i++) cb(live, i);
+      if (!Array.isArray(tab.pages)) return;
+      for (let k = 0; k < tab.pages.length; k++) {
+        if (k === (tab.page || 0)) continue;
+        const snap = tab.pages[k];
+        if (!snap || !Array.isArray(snap.cells)) continue;
+        const n = snap.cells.length;
+        if (!Array.isArray(snap.cellLocks)) snap.cellLocks = emptyCellLocks(snap.cols || tab.cols, snap.rows || 1);
+        while (snap.cellLocks.length < n) snap.cellLocks.push(null);
+        if (!Array.isArray(snap.cellPages)) snap.cellPages = [];
+        if (!Array.isArray(snap.nestedCells)) snap.nestedCells = [];
+        const site = {
+          tab: tab, live: false, cells: snap.cells, cellLocks: snap.cellLocks,
+          cellPages: snap.cellPages, nestedCells: snap.nestedCells
+        };
+        for (let i = 0; i < n; i++) cb(site, i);
+      }
+    });
+  }
+
+  /**
+   * Startup / load: re-lock unlocked part cells whose text exactly matches a
+   * Master cell (same rules as exact-match auto-link). Restores locks that
+   * Duplicate-this-page used to clear. Never changes cell text / nests / pages.
+   */
+  function repairMissingMasterLocksFromExactMatch() {
+    const out = { relocked: 0 };
+    const master = state.tabs.find(isMasterTab);
+    if (!master) return out;
+    forEachPartCellSite(function (site, i) {
+      const lock = site.cellLocks[i];
+      if (lock && lock.masterOrigin === true) return;
+      if (site.live && isMasterCellEditFor(site.tab, i)) return;
+      const text = siteCellText(site, i);
+      if (!String(text).trim()) return;
+      if (siteHasOwnExtraContent(site, i)) return;
+      const masterIdx = findMasterMatchForSite(site, i, text);
+      if (masterIdx < 0) return;
+      // Set lock only — do not rewrite text/nests/pages from Master.
+      const next = { masterOrigin: true, locked: true, masterCellIndex: masterIdx };
+      site.cellLocks[i] = next;
+      out.relocked++;
+    });
+    return out;
   }
 
 
@@ -3268,7 +3384,11 @@
     return snap;
   }
 
-  /** Deep copy a page snapshot. opts.unlock clears Master cell locks on the copy. */
+  /**
+   * Deep copy a page snapshot (cells, nests, cell pages, shades, Combined keys,
+   * Master cellLocks). opts.unlock (legacy) clears locks — Duplicate no longer
+   * uses it so copies stay real Master links.
+   */
   function cloneTabPage(snap, opts) {
     const base = normalizeTabPage(snap);
     if (!base) return null;
@@ -3484,7 +3604,7 @@
 
   /**
    * Add a part page right after page `afterIndex` (default: the current page)
-   * and switch to it. mode 'copy' = unlocked copy of that page, else blank with
+   * and switch to it. mode 'copy' = full copy including Master locks, else blank with
    * that page's grid size. Undoable (Ctrl+Z). Right-click a page chip to use.
    */
   function addTabPage(mode, afterIndex) {
@@ -3500,8 +3620,9 @@
     const src = tab.pages[srcIndex];
     let nextPage;
     if (copyMode) {
-      // Ash: copy but not locked — unlock Master cell locks on the copy.
-      nextPage = cloneTabPage(src, { unlock: true });
+      // Keep Master cellLocks so duplicated cells stay true Master links
+      // (sync when Master changes; same lock / Clear / overwrite rules).
+      nextPage = cloneTabPage(src);
     } else {
       nextPage = makeBlankTabPage({ cols: src.cols, rows: src.rows, columnWidths: src.columnWidths });
     }
@@ -3525,7 +3646,7 @@
     renderPartTabPageChrome();
     scheduleSave();
     setStatus(copyMode
-      ? ('Added part page ' + (insertAt + 1) + ' — unlocked copy of page ' + (srcIndex + 1))
+      ? ('Added part page ' + (insertAt + 1) + ' — copy of page ' + (srcIndex + 1) + ' (Master locks kept)')
       : ('Added part page ' + (insertAt + 1) + ' — blank, after page ' + (srcIndex + 1)));
   }
 
@@ -3604,7 +3725,7 @@
         onClick: function () { addTabPage('blank', pageIndex); }
       }, {
         label: 'Duplicate this page',
-        title: 'Insert an unlocked copy of this page right after it and go to it (Ctrl+Z to undo)',
+        title: 'Insert a copy of this page (keeps Master locks) right after it and go to it (Ctrl+Z to undo)',
         onClick: function () { addTabPage('copy', pageIndex); }
       }],
       disabled: count <= 1,
@@ -5777,6 +5898,13 @@
     regenerateAllCombined();
     // Repair stale / orphaned Master locks (all part tabs + stored part pages).
     lastLockRepair = reconcileMasterLocks();
+    // Re-lock cells that still match Master text exactly (e.g. old Duplicate
+    // pages that cleared cellLocks). Never changes user text.
+    const relock = repairMissingMasterLocksFromExactMatch();
+    if (relock.relocked) {
+      lastLockRepair = lastLockRepair || { checked: 0, resynced: 0, repointed: 0, unlocked: 0 };
+      lastLockRepair.relocked = (lastLockRepair.relocked || 0) + relock.relocked;
+    }
     if (el.partSeparator) el.partSeparator.value = state.separators.part;
     if (el.columnSeparator) el.columnSeparator.value = state.separators.column;
     if (el.rowSeparator) el.rowSeparator.value = state.separators.row;
@@ -12739,7 +12867,8 @@
     const current = activeDocument();
     clearHistory();
     applyData(current.data);
-    if (lastLockRepair && (lastLockRepair.resynced || lastLockRepair.repointed || lastLockRepair.unlocked)) {
+    if (lastLockRepair && (lastLockRepair.resynced || lastLockRepair.repointed ||
+        lastLockRepair.unlocked || lastLockRepair.relocked)) {
       const repairMsg = 'Repaired stale Master links on load: ' + reconcileSummary(lastLockRepair);
       pushEvent(repairMsg, 'ok');
       setStatus(repairMsg, 'ok');
