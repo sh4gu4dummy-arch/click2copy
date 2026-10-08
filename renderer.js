@@ -4372,8 +4372,102 @@
               : ('Row ' + (rowIndex + 1) + ' cleared (unlinked from Master)')
           });
         }
+      }, {
+        label: 'Delete this row',
+        title: isMasterTab(tab)
+          ? 'Remove this Master row; rows below move up (part cells linked to it keep their text, unlocked)'
+          : 'Remove this row; rows below move up one (empty row added at the bottom)',
+        onClick: function () { deleteRowFromMenu(tab, rowIndex); }
       }]
     });
+  }
+
+  /**
+   * Row-number menu → Delete this row. Removes `rowIndex` on the current page;
+   * rows below shift up one (reorderRowInTab remap: cells, nests, locks, cell
+   * pages, shades, rowHeights, Combined links, Master→part indices). Row count
+   * stays the same — an empty row is left at the bottom. Deleted row's Combined
+   * checks are dropped. Part tab never touches Master. Master tab: part cells
+   * linked to the deleted Master row keep their text and are unlocked (same as
+   * stale-lock repair); links to rows below are remapped up. One undo step.
+   */
+  function deleteRowFromMenu(tab, rowIndex) {
+    if (!tab || tab !== activeTab() || rowIndex < 0 || rowIndex >= tab.rows) return;
+    const cols = tab.cols;
+    const rowStart = rowIndex * cols;
+    const rowEnd = rowStart + cols; // exclusive
+    // Drop an in-progress Master unlock session on this row (no dialog).
+    if (masterSegmentEdit && masterSegmentEdit.kind === 'cell' &&
+        masterSegmentEdit.tabId === tab.id &&
+        masterSegmentEdit.cellIndex >= rowStart && masterSegmentEdit.cellIndex < rowEnd) {
+      masterSegmentEdit = null;
+      hideMasterSegmentDialog();
+    }
+    pushHistory();
+    ensureNestedCells(tab);
+    ensureCellLocks(tab);
+    ensureCellPages(tab);
+    ensureCellShades(tab);
+
+    // 1) Drop Combined checks on the deleted row (all scopes).
+    const dead = state.confirmedLinks.filter(function (link) {
+      return link.tabId === tab.id && link.cellIndex >= rowStart && link.cellIndex < rowEnd;
+    });
+    if (dead.length) removeLinksFromCombined(dead);
+
+    // 2) Master tab: unlink part cells that point at the deleted Master row.
+    let unlocked = 0;
+    if (isMasterTab(tab)) {
+      const inDeleted = function (idx) {
+        return Number.isInteger(idx) && idx >= rowStart && idx < rowEnd;
+      };
+      const liveUnlocked = [];
+      forEachPartLockSite(function (site, i, lock) {
+        if (!inDeleted(lock.masterCellIndex)) return;
+        site.cellLocks[i] = null;
+        unlocked++;
+        if (site.live) liveUnlocked.push({ tabId: site.tab.id, cellIndex: i });
+      });
+      state.confirmedLinks.forEach(function (link) {
+        const hitLive = liveUnlocked.some(function (u) {
+          return u.tabId === link.tabId && u.cellIndex === link.cellIndex;
+        });
+        if (!hitLive && !inDeleted(link.masterCellIndex)) return;
+        if (!isMasterOriginLink(link) && !inDeleted(link.masterCellIndex)) return;
+        link.masterOrigin = false;
+        link.locked = false;
+        if ('masterCellIndex' in link) delete link.masterCellIndex;
+      });
+    }
+
+    // 3) Empty the row, then move it to the bottom (rows below shift up).
+    for (let c = 0; c < cols; c++) tab.cells[rowStart + c] = '';
+    clearNestedRow(tab, rowIndex);
+    clearCellLockRow(tab, rowIndex);
+    clearCellPagesRow(tab, rowIndex);
+    clearCellShadeRow(tab, rowIndex);
+    const last = tab.rows - 1;
+    if (rowIndex < last) reorderRowInTab(tab, rowIndex, last);
+    if (Array.isArray(tab.rowHeights) && tab.rowHeights.length === tab.rows) {
+      tab.rowHeights[last] = MIN_ROW_HEIGHT;
+    }
+
+    // Regenerate every Combined scope (indices moved; Match source order may reorder).
+    const scopes = Object.create(null);
+    state.confirmedLinks.forEach(function (l) { scopes[l.scope] = true; });
+    Object.keys(scopes).forEach(function (s) { regenerateCombinedScope(s); });
+
+    if (getStickyCellRange()) clearStickyCellRange();
+    clearKeyboardCellRange();
+    renderTabs();
+    renderGrid();
+    renderCombinedPrompt();
+    applyConfirmedCellHighlights();
+    applyAppendCheckedState();
+    renderMasterLibrary();
+    scheduleSave();
+    setStatus('Row ' + (rowIndex + 1) + ' deleted — rows below moved up' +
+      (unlocked ? (' (' + unlocked + ' linked part cell' + (unlocked === 1 ? '' : 's') + ' unlocked, text kept)') : ''), 'ok');
   }
 
   function openCellShadeMenu(cellIndex, x, y) {
