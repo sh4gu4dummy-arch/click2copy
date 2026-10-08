@@ -7469,7 +7469,21 @@
 
     const corner = document.createElement('div');
     corner.className = 'grid-corner';
-    corner.setAttribute('aria-hidden', 'true');
+    const jumpBtn = document.createElement('button');
+    jumpBtn.type = 'button';
+    jumpBtn.className = 'grid-jump-empty-btn';
+    jumpBtn.textContent = '⤓';
+    jumpBtn.title = 'Jump to next empty row';
+    jumpBtn.setAttribute('aria-label', 'Jump to next empty row');
+    jumpBtn.addEventListener('pointerdown', function (ev) {
+      // Keep the current cell as the search start (focus moves to the target cell).
+      ev.preventDefault();
+    });
+    jumpBtn.addEventListener('click', function (ev) {
+      ev.preventDefault();
+      jumpToNextEmptyRow();
+    });
+    corner.appendChild(jumpBtn);
     el.cellGrid.appendChild(corner);
 
     for (let c = 0; c < tab.cols; c++) {
@@ -10126,6 +10140,105 @@
     renderMasterLibrary();
     scheduleSave();
     setStatus('Row added to ' + tab.title + ' (' + tab.cols + '×' + tab.rows + ')');
+  }
+
+  /**
+   * Jump target rule: every cell in the row is empty on ALL of its cell pages
+   * (current part page) and has no nest content. Column A counts (a row with
+   * only a Col1 category is not empty). Rows hidden by the row/Values filter
+   * are skipped.
+   */
+  function rowIsFullyEmpty(tab, rowIndex) {
+    if (!rowIsEmpty(tab, rowIndex)) return false;
+    ensureCellPagesArray(tab);
+    for (let col = 0; col < tab.cols; col++) {
+      const nests = tab.nestedCells[rowIndex * tab.cols + col] || [];
+      for (let n = 0; n < nests.length; n++) {
+        const np = (nests[n] && nests[n].pages) || [];
+        for (let p = 0; p < np.length; p++) {
+          if (String(np[p] || '').trim()) return false;
+        }
+      }
+      const entry = tab.cellPages[rowIndex * tab.cols + col];
+      if (!entry || !Array.isArray(entry.pages)) continue;
+      for (let p = 0; p < entry.pages.length; p++) {
+        if (String(entry.pages[p] || '').trim()) return false;
+      }
+    }
+    return true;
+  }
+
+  /** Corner ⤓: instant scroll + caret to the next empty row (wraps to top). */
+  function jumpToNextEmptyRow() {
+    const tab = activeTab();
+    const wrap = el.cellGrid && el.cellGrid.parentElement;
+    if (!tab || !wrap || !tab.rows) return;
+    // Start below the selected row; else at the first row visible under the header.
+    let start = 0;
+    if (focusedCell && focusedCell.tabId === tab.id && Number.isInteger(focusedCell.index) &&
+        focusedCell.index >= 0 && focusedCell.index < tab.cells.length) {
+      start = Math.floor(focusedCell.index / tab.cols) + 1;
+    } else {
+      const header = el.cellGrid.querySelector('.grid-corner');
+      const visibleTop = wrap.getBoundingClientRect().top + (header ? header.getBoundingClientRect().height : 0);
+      start = tab.rows;
+      for (let r = 0; r < tab.rows; r++) {
+        const rc = el.cellGrid.querySelector('.row-controls[data-row="' + r + '"]');
+        if (rc && rc.getBoundingClientRect().top >= visibleTop - 2) {
+          start = r;
+          break;
+        }
+      }
+    }
+    function usable(r) {
+      if (!rowMatchesFilter(tab, r)) return false;
+      return rowIsFullyEmpty(tab, r);
+    }
+    let target = -1;
+    let wrapped = false;
+    for (let r = start; r < tab.rows; r++) {
+      if (usable(r)) { target = r; break; }
+    }
+    if (target < 0) {
+      for (let r = 0; r < Math.min(start, tab.rows); r++) {
+        if (usable(r)) { target = r; wrapped = true; break; }
+      }
+    }
+    if (target < 0) {
+      setStatus('No empty row in ' + tab.title + ' — use + Row in Tools (or Enter on the last cell)', 'err');
+      return;
+    }
+    const rowEl = el.cellGrid.querySelector('.row-controls[data-row="' + target + '"]');
+    const header = el.cellGrid.querySelector('.grid-corner');
+    if (rowEl) {
+      const headerH = header ? header.getBoundingClientRect().height : 0;
+      const delta = rowEl.getBoundingClientRect().top - wrap.getBoundingClientRect().top - headerH - 4;
+      wrap.scrollTop = Math.max(0, wrap.scrollTop + delta);
+      wrap.scrollLeft = 0;
+    }
+    // First editable cell; on part tabs skip the validated Col1 (dropdown-only)
+    // when another editable column exists, so typing isn't reverted.
+    let focusIdx = -1;
+    let col1Fallback = -1;
+    for (let c = 0; c < tab.cols; c++) {
+      const idx = target * tab.cols + c;
+      if (isCellMasterEditBlocked(tab, idx)) continue;
+      if (isPartTabCol1Cell(tab, idx)) {
+        if (col1Fallback < 0) col1Fallback = idx;
+        continue;
+      }
+      focusIdx = idx;
+      break;
+    }
+    if (focusIdx < 0) focusIdx = col1Fallback;
+    if (focusIdx >= 0) {
+      const ta = el.cellGrid.querySelector('textarea.cell[data-idx="' + focusIdx + '"]');
+      if (ta) {
+        ta.focus({ preventScroll: true });
+        try { ta.setSelectionRange(0, 0); } catch (err) { /* ignore */ }
+      }
+    }
+    setStatus('Row ' + (target + 1) + ' is empty' + (wrapped ? ' (wrapped to top)' : ''), 'ok');
   }
 
   function rowIsEmpty(tab, rowIndex) {

@@ -2698,3 +2698,33 @@ body.resizing-rows * {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+/* Corner ⤓ — jump to next empty row (fits the existing corner; no size change) */
+.grid-corner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.grid-jump-empty-btn {
+  appearance: none;
+  margin: 0;
+  padding: 0;
+  width: 22px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+.grid-jump-empty-btn:hover,
+.grid-jump-empty-btn:focus-visible {
+  border-color: var(--accent);
+  color: var(--text);
+  outline: none;
+}
