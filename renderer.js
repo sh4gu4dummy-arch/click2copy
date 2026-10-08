@@ -10663,17 +10663,26 @@
     }
   }
 
+  // Last block copied inside Click2Copy: its exact cell matrix, so a paste of
+  // that same text keeps the block shape (even one column, or cells with line
+  // breaks) while other plain text with line breaks stays one cell.
+  let lastBlockCopy = null;
+
   function buildCellRangeTsv(tab, r0, c0, r1, c1) {
     const b = normalizeRangeBounds(r0, c0, r1, c1);
     const lines = [];
+    const matrix = [];
     for (let r = b.rMin; r <= b.rMax; r++) {
       const cells = [];
       for (let c = b.cMin; c <= b.cMax; c++) {
         cells.push(tab.cells[r * tab.cols + c] || '');
       }
+      matrix.push(cells.slice());
       lines.push(cells.join('\t'));
     }
-    return lines.join('\n');
+    const text = lines.join('\n');
+    lastBlockCopy = { text: text, matrix: matrix };
+    return text;
   }
 
   function cellWrapFromPoint(clientX, clientY) {
@@ -11744,7 +11753,15 @@
     const fromHtml = parseHtmlTable(html);
     if (fromHtml && isMultiCellMatrix(fromHtml)) return fromHtml;
     const plain = clipboardData.getData('text/plain');
-    const fromTsv = parseTsv(plain);
+    // Our own block copy → paste back exactly that block.
+    if (lastBlockCopy && plain != null &&
+        String(plain).replace(/\r\n/g, '\n') === lastBlockCopy.text &&
+        isMultiCellMatrix(lastBlockCopy.matrix)) {
+      return lastBlockCopy.matrix.map(function (row) { return row.slice(); });
+    }
+    // Plain text with line breaks but no tabs is one cell's text (paragraphs),
+    // not a column of cells — Ash. Tabs still mean a sheet-style block.
+    const fromTsv = (plain != null && String(plain).indexOf('\t') >= 0) ? parseTsv(plain) : null;
     if (fromTsv && isMultiCellMatrix(fromTsv)) return fromTsv;
     // Single-cell HTML table with richer text than plain
     if (fromHtml && matrixCellCount(fromHtml) === 1) return fromHtml;
