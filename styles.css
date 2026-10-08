@@ -2253,6 +2253,61 @@ body.relocating-cell * {
   cursor: not-allowed;
 }
 
+/* v0.152: hold ↑/↓ + drag to move a row anywhere */
+.row-move:active:not(:disabled) {
+  cursor: grab;
+}
+body.row-dragging,
+body.row-dragging * {
+  cursor: grabbing !important;
+  user-select: none !important;
+}
+.row-drag-indicator {
+  position: fixed;
+  z-index: 1300;
+  height: 2px;
+  background: var(--accent);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35), 0 0 6px var(--accent);
+  border-radius: 1px;
+  pointer-events: none;
+}
+.row-drag-indicator::before {
+  content: '';
+  position: absolute;
+  left: -3px;
+  top: -3px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+.row-drag-indicator.is-noop {
+  opacity: 0.35;
+}
+.row-drag-ghost {
+  position: fixed;
+  z-index: 1290;
+  pointer-events: none;
+  box-sizing: border-box;
+  border: 1px dashed var(--accent);
+  border-radius: 4px;
+  background: rgba(120, 140, 255, 0.08);
+}
+.row-drag-ghost-label {
+  position: absolute;
+  left: 4px;
+  top: 2px;
+  padding: 0 4px;
+  border-radius: 3px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 10px;
+  line-height: 14px;
+}
+.row-drag-source {
+  opacity: 0.45;
+}
+
 body.painting-checkboxes {
   user-select: none;
   cursor: default;

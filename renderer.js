@@ -9078,9 +9078,13 @@
       moveUp.type = 'button';
       moveUp.className = 'row-move';
       moveUp.textContent = '↑';
-      moveUp.title = 'Move row ' + (r + 1) + ' up';
-      moveUp.setAttribute('aria-label', moveUp.title);
       moveUp.disabled = r === 0;
+      moveUp.title = 'Move row ' + (r + 1) + ' up · hold + drag to move anywhere';
+      moveUp.setAttribute('aria-label', 'Move row ' + (r + 1) + ' up');
+      moveUp.addEventListener('pointerdown', function (ev) {
+        if (moveUp.disabled) return;
+        beginRowDragFromArrow(ev, r, moveUp);
+      });
       moveUp.addEventListener('click', function () {
         moveRow(r, -1);
       });
@@ -9090,8 +9094,11 @@
       moveDown.type = 'button';
       moveDown.className = 'row-move';
       moveDown.textContent = '↓';
-      moveDown.title = 'Move row ' + (r + 1) + ' down';
-      moveDown.setAttribute('aria-label', moveDown.title);
+      moveDown.title = 'Move row ' + (r + 1) + ' down · hold + drag to move anywhere';
+      moveDown.setAttribute('aria-label', 'Move row ' + (r + 1) + ' down');
+      moveDown.addEventListener('pointerdown', function (ev) {
+        beginRowDragFromArrow(ev, r, moveDown);
+      });
       moveDown.addEventListener('click', function () {
         moveRow(r, 1);
       });
@@ -11815,6 +11822,314 @@
   }
 
   /**
+   * Extract row `from` and insert it at index `to` (0..rows-1); rows between
+   * shift by one. Cells, nests, locks, cell pages, shades, rowHeights,
+   * Combined links and (Master tab) part Master indices all follow the row.
+   * No history push / render — callers do that (one undo step per gesture).
+   */
+  function reorderRowInTab(tab, from, to) {
+    const rows = tab.rows;
+    const cols = tab.cols;
+    if (from === to || from < 0 || to < 0 || from >= rows || to >= rows) return false;
+    const order = [];
+    for (let r = 0; r < rows; r++) order.push(r);
+    order.splice(from, 1);
+    order.splice(to, 0, from);
+
+    ensureNestedCells(tab);
+    ensureCellLocks(tab);
+    ensureCellPages(tab);
+    ensureCellShades(tab);
+    const newCells = [];
+    const newNested = [];
+    const newLocks = [];
+    const newPages = [];
+    const newShades = [];
+    for (let i = 0; i < order.length; i++) {
+      const src = order[i];
+      for (let c = 0; c < cols; c++) {
+        const idx = src * cols + c;
+        newCells.push(tab.cells[idx] || '');
+        newNested.push(normalizeNestList(tab.nestedCells[idx]));
+        newLocks.push(tab.cellLocks[idx] || null);
+        newPages.push(cloneCellPagesEntry(tab.cellPages[idx]));
+        newShades.push(tab.cellShades[idx] || null);
+      }
+    }
+
+    const oldToNew = new Array(rows);
+    for (let newR = 0; newR < order.length; newR++) {
+      oldToNew[order[newR]] = newR;
+    }
+
+    tab.cells = newCells;
+    tab.nestedCells = newNested;
+    tab.cellLocks = newLocks;
+    tab.cellPages = newPages;
+    tab.cellShades = newShades;
+    if (Array.isArray(tab.rowHeights) && tab.rowHeights.length === rows) {
+      tab.rowHeights = order.map(function (src) { return tab.rowHeights[src]; });
+    }
+    remapConfirmedRowsByOrder(tab.id, cols, oldToNew);
+    if (isMasterTab(tab)) remapMasterCellIndices(oldToNew, cols);
+    return true;
+  }
+
+  /** Drag-drop row move (hold ↑/↓ + drag): one undo step, same data path as ↑. */
+  function moveRowTo(from, to) {
+    const tab = activeTab();
+    if (!tab) return false;
+    if (from === to || from < 0 || to < 0 || from >= tab.rows || to >= tab.rows) return false;
+    pushHistory();
+    reorderRowInTab(tab, from, to);
+    renderTabs();
+    renderGrid();
+    renderMasterLibrary();
+    scheduleSave();
+    setStatus('Row ' + (from + 1) + ' moved to row ' + (to + 1), 'ok');
+    return true;
+  }
+
+  /* ── Row drag (press + hold on ↑/↓, then drag vertically) ───────────── */
+  const ROW_DRAG_THRESHOLD_PX = 4;
+  const ROW_DRAG_EDGE_PX = 44;
+  let rowDrag = null;
+
+  function rowDragScroller() {
+    return el.cellGrid ? el.cellGrid.parentElement : null;
+  }
+
+  /** Visible row-control boxes (filtered rows skipped). */
+  function rowDragVisibleRows() {
+    if (!el.cellGrid) return [];
+    const out = [];
+    const list = el.cellGrid.querySelectorAll('.row-controls');
+    for (let i = 0; i < list.length; i++) {
+      const rc = list[i];
+      if (rc.classList.contains('is-row-filtered')) continue;
+      const rect = rc.getBoundingClientRect();
+      if (!rect.height) continue;
+      out.push({ row: parseInt(rc.dataset.row, 10), rect: rect });
+    }
+    return out;
+  }
+
+  /**
+   * Slot under the pointer: insert-before row index (rows = after last).
+   * Returns { slot, y } where y is the viewport y of the indicator line.
+   */
+  function rowDragSlotAt(clientY) {
+    const rows = rowDragVisibleRows();
+    if (!rows.length) return null;
+    for (let i = 0; i < rows.length; i++) {
+      const r = rows[i].rect;
+      if (clientY < r.top + r.height / 2) {
+        return { slot: rows[i].row, y: r.top };
+      }
+    }
+    const last = rows[rows.length - 1];
+    return { slot: last.row + 1, y: last.rect.bottom };
+  }
+
+  function rowDragUpdateIndicator() {
+    if (!rowDrag || !rowDrag.active) return;
+    const hit = rowDragSlotAt(rowDrag.lastY);
+    const ind = rowDrag.indicator;
+    if (!hit) { ind.hidden = true; rowDrag.slot = null; return; }
+    rowDrag.slot = hit.slot;
+    const gridRect = el.cellGrid.getBoundingClientRect();
+    const scroller = rowDragScroller();
+    const sRect = scroller ? scroller.getBoundingClientRect() : gridRect;
+    const left = Math.max(gridRect.left, sRect.left);
+    const right = Math.min(gridRect.right, sRect.right);
+    const y = Math.max(sRect.top, Math.min(sRect.bottom, hit.y));
+    ind.hidden = false;
+    ind.style.left = left + 'px';
+    ind.style.width = Math.max(0, right - left) + 'px';
+    ind.style.top = (y - 1) + 'px';
+    const to = rowDragTargetIndex();
+    ind.classList.toggle('is-noop', to === rowDrag.from);
+    if (rowDrag.ghost) {
+      rowDrag.ghost.style.top = (rowDrag.lastY - rowDrag.ghostOffset) + 'px';
+    }
+  }
+
+  /** Final destination index after removing the source row. */
+  function rowDragTargetIndex() {
+    if (!rowDrag || rowDrag.slot == null) return rowDrag ? rowDrag.from : -1;
+    const tab = activeTab();
+    let to = rowDrag.slot > rowDrag.from ? rowDrag.slot - 1 : rowDrag.slot;
+    if (tab) to = Math.max(0, Math.min(tab.rows - 1, to));
+    return to;
+  }
+
+  function rowDragAutoScrollTick() {
+    if (!rowDrag || !rowDrag.active) return;
+    const scroller = rowDragScroller();
+    if (scroller) {
+      const sRect = scroller.getBoundingClientRect();
+      const header = el.cellGrid.querySelector('.column-header');
+      const topEdge = sRect.top + (header ? header.getBoundingClientRect().height : 0);
+      const y = rowDrag.lastY;
+      let dy = 0;
+      if (y < topEdge + ROW_DRAG_EDGE_PX) {
+        dy = -Math.ceil(((topEdge + ROW_DRAG_EDGE_PX) - y) / 3);
+      } else if (y > sRect.bottom - ROW_DRAG_EDGE_PX) {
+        dy = Math.ceil((y - (sRect.bottom - ROW_DRAG_EDGE_PX)) / 3);
+      }
+      if (dy) {
+        dy = Math.max(-40, Math.min(40, dy));
+        const before = scroller.scrollTop;
+        scroller.scrollTop = before + dy;
+        if (scroller.scrollTop !== before) rowDragUpdateIndicator();
+      }
+    }
+    rowDrag.raf = requestAnimationFrame(rowDragAutoScrollTick);
+  }
+
+  function rowDragActivate() {
+    const d = rowDrag;
+    d.active = true;
+    document.body.classList.add('row-dragging');
+    const ind = document.createElement('div');
+    ind.className = 'row-drag-indicator';
+    ind.hidden = true;
+    document.body.appendChild(ind);
+    d.indicator = ind;
+    // Faint ghost of the source row (row-number area + cells, as one strip).
+    const rc = el.cellGrid.querySelector('.row-controls[data-row="' + d.from + '"]');
+    if (rc) {
+      const rRect = rc.getBoundingClientRect();
+      const gridRect = el.cellGrid.getBoundingClientRect();
+      const ghost = document.createElement('div');
+      ghost.className = 'row-drag-ghost';
+      ghost.style.left = gridRect.left + 'px';
+      ghost.style.width = gridRect.width + 'px';
+      ghost.style.height = rRect.height + 'px';
+      d.ghostOffset = d.startY - rRect.top;
+      ghost.style.top = rRect.top + 'px';
+      const label = document.createElement('span');
+      label.className = 'row-drag-ghost-label';
+      label.textContent = 'Row ' + (d.from + 1);
+      ghost.appendChild(label);
+      document.body.appendChild(ghost);
+      d.ghost = ghost;
+    }
+    el.cellGrid.querySelectorAll('.row-controls[data-row="' + d.from + '"], .cell-wrap[data-row="' + d.from + '"]')
+      .forEach(function (n) { n.classList.add('row-drag-source'); });
+    try { window.getSelection().removeAllRanges(); } catch (err) { /* no-op */ }
+    rowDragUpdateIndicator();
+    d.raf = requestAnimationFrame(rowDragAutoScrollTick);
+  }
+
+  function endRowDrag(commit) {
+    const d = rowDrag;
+    if (!d) return;
+    rowDrag = null;
+    document.removeEventListener('pointermove', onRowDragMove, true);
+    document.removeEventListener('pointerup', onRowDragUp, true);
+    document.removeEventListener('pointercancel', onRowDragCancel, true);
+    document.removeEventListener('keydown', onRowDragKey, true);
+    window.removeEventListener('blur', onRowDragCancel);
+    if (d.btn && d.btn.releasePointerCapture && d.pointerId != null) {
+      try { d.btn.releasePointerCapture(d.pointerId); } catch (err) { /* no-op */ }
+    }
+    if (d.raf) cancelAnimationFrame(d.raf);
+    if (d.indicator) d.indicator.remove();
+    if (d.ghost) d.ghost.remove();
+    document.body.classList.remove('row-dragging');
+    if (el.cellGrid) {
+      el.cellGrid.querySelectorAll('.row-drag-source')
+        .forEach(function (n) { n.classList.remove('row-drag-source'); });
+    }
+    if (!d.active) return; // plain click: let the button's click handler move 1 row
+    // Swallow the synthetic click that follows pointerup on the ↑/↓ button.
+    const swallow = function (ev) {
+      document.removeEventListener('click', swallow, true);
+      if (ev.target && ev.target.closest && ev.target.closest('.row-move')) {
+        ev.preventDefault();
+        ev.stopPropagation();
+      }
+    };
+    document.addEventListener('click', swallow, true);
+    window.setTimeout(function () { document.removeEventListener('click', swallow, true); }, 0);
+    if (!commit) {
+      setStatus('Row move cancelled');
+      return;
+    }
+    const to = (function () {
+      rowDrag = d; // temporarily for helper
+      const v = rowDragTargetIndex();
+      rowDrag = null;
+      return v;
+    })();
+    if (to === d.from || to < 0) {
+      setStatus('Row ' + (d.from + 1) + ' not moved');
+      return;
+    }
+    moveRowTo(d.from, to);
+  }
+
+  function onRowDragMove(e) {
+    const d = rowDrag;
+    if (!d || e.pointerId !== d.pointerId) return;
+    d.lastY = e.clientY;
+    if (!d.active) {
+      if (Math.abs(e.clientY - d.startY) < ROW_DRAG_THRESHOLD_PX) return;
+      rowDragActivate();
+    }
+    e.preventDefault();
+    rowDragUpdateIndicator();
+  }
+
+  function onRowDragUp(e) {
+    if (!rowDrag || e.pointerId !== rowDrag.pointerId) return;
+    if (rowDrag.active) e.preventDefault();
+    endRowDrag(true);
+  }
+
+  function onRowDragCancel() {
+    endRowDrag(false);
+  }
+
+  function onRowDragKey(e) {
+    if (e.key !== 'Escape' || !rowDrag) return;
+    e.preventDefault();
+    e.stopPropagation();
+    endRowDrag(false);
+  }
+
+  function beginRowDragFromArrow(e, row, btn) {
+    if (e.button !== 0 || rowDrag) return;
+    const tab = activeTab();
+    if (!tab || row < 0 || row >= tab.rows) return;
+    // No text selection / cell block / focus jump from this press.
+    e.preventDefault();
+    e.stopPropagation();
+    rowDrag = {
+      from: row,
+      pointerId: e.pointerId,
+      startY: e.clientY,
+      lastY: e.clientY,
+      active: false,
+      btn: btn,
+      slot: null,
+      indicator: null,
+      ghost: null,
+      ghostOffset: 0,
+      raf: 0
+    };
+    if (btn.setPointerCapture) {
+      try { btn.setPointerCapture(e.pointerId); } catch (err) { /* no-op */ }
+    }
+    document.addEventListener('pointermove', onRowDragMove, true);
+    document.addEventListener('pointerup', onRowDragUp, true);
+    document.addEventListener('pointercancel', onRowDragCancel, true);
+    document.addEventListener('keydown', onRowDragKey, true);
+    window.addEventListener('blur', onRowDragCancel);
+  }
+
+  /**
    * Shift/move a cell row with ↑/↓.
    * ↓: move this row down one; push every row below further down (grow grid by 1);
    *    leave an empty row behind — never overwrite.
@@ -11834,47 +12149,7 @@
 
     if (direction < 0) {
       // ↑ Extract this row and insert it one slot higher; in-between rows shift down.
-      const rows = tab.rows;
-      const order = [];
-      for (let r = 0; r < rows; r++) order.push(r);
-      order.splice(rowIndex, 1);
-      order.splice(destination, 0, rowIndex);
-
-      ensureCellLocks(tab);
-      ensureCellPages(tab);
-      ensureCellShades(tab);
-      const newCells = [];
-      const newNested = [];
-      const newLocks = [];
-      const newPages = [];
-      const newShades = [];
-      for (let i = 0; i < order.length; i++) {
-        const src = order[i];
-        for (let c = 0; c < cols; c++) {
-          const idx = src * cols + c;
-          newCells.push(tab.cells[idx] || '');
-          newNested.push(normalizeNestList(tab.nestedCells[idx]));
-          newLocks.push(tab.cellLocks[idx] || null);
-          newPages.push(cloneCellPagesEntry(tab.cellPages[idx]));
-          newShades.push(tab.cellShades[idx] || null);
-        }
-      }
-
-      const oldToNew = new Array(rows);
-      for (let newR = 0; newR < order.length; newR++) {
-        oldToNew[order[newR]] = newR;
-      }
-
-      tab.cells = newCells;
-      tab.nestedCells = newNested;
-      tab.cellLocks = newLocks;
-      tab.cellPages = newPages;
-      tab.cellShades = newShades;
-      if (Array.isArray(tab.rowHeights) && tab.rowHeights.length === rows) {
-        tab.rowHeights = order.map(function (src) { return tab.rowHeights[src]; });
-      }
-      remapConfirmedRowsByOrder(tab.id, cols, oldToNew);
-      if (isMasterTab(tab)) remapMasterCellIndices(oldToNew, cols);
+      reorderRowInTab(tab, rowIndex, destination);
     } else {
       // ↓ Grow by one, push everything below further down, move this row into the gap.
       ensureCellLocks(tab);
