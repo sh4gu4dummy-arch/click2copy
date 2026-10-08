@@ -1085,6 +1085,11 @@
         tab.page = 0;
       }
     });
+    return documentDataFromState();
+  }
+
+  /** Document payload from live state — no page flush (see snapshot / cloneCurrentDocument). */
+  function documentDataFromState() {
     return {
       tabs: state.tabs,
       activeTabId: state.activeTabId,
@@ -1140,8 +1145,28 @@
     }));
   }
 
+  /**
+   * Undo/redo capture — must not touch live state. snapshot() flushes by
+   * rebuilding tab.pages[page] / cellPages / nestedCells, so a caller holding
+   * one of those objects across pushHistory() would then mutate an orphan
+   * (part-page rename snapped back; cell/nest page add/remove no-ops).
+   * Flush into the deep copy instead.
+   */
   function cloneCurrentDocument() {
-    return cloneDocumentData(snapshot());
+    const live = activeTab();
+    const data = cloneDocumentData(documentDataFromState());
+    data.tabs.forEach(function (tab, i) {
+      if (i === 0 || tab.id === 'master') {
+        ensureTabPages(tab);
+        tab.pages = [captureTabPageGridOnly(tab)];
+        tab.page = 0;
+        return;
+      }
+      ensureTabPages(tab);
+      if (live && tab.id === live.id) flushLiveCellInputs(tab);
+      tab.pages[tab.page] = captureTabPage(tab);
+    });
+    return data;
   }
 
   function clearHistory() {

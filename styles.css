@@ -799,13 +799,17 @@ body {
   right: 0;
   height: 2px;
   border-radius: 2px;
-  background: var(--border);
+  /* Brighter than --border so Soft-dark splitter stays visible at rest */
+  background: rgba(198, 208, 222, 0.78);
 }
 
 .section-resizer:hover::after,
 .section-resizer:focus-visible::after,
 body.resizing-sections .section-resizer::after {
   background: var(--accent);
+  height: 3px;
+  top: 2px;
+  box-shadow: 0 0 0 1px rgba(var(--accent-rgb), 0.28);
 }
 
 .section-resizer:focus-visible {
@@ -1145,12 +1149,35 @@ body.resizing-sections * {
   touch-action: none;
 }
 
+/* Soft-dark eye care: idle column grip always faintly visible (not only on hover). */
+.column-resize-handle::after {
+  content: "";
+  position: absolute;
+  top: 6px;
+  bottom: 6px;
+  left: 50%;
+  width: 2px;
+  margin-left: -1px;
+  border-radius: 2px;
+  background: rgba(198, 208, 222, 0.9);
+  box-shadow: 0 0 0 1px rgba(198, 208, 222, 0.18);
+  pointer-events: none;
+}
+
 .column-resize-handle:hover,
 .column-resize-handle:focus-visible,
 .cell-grid.resizing .column-resize-handle {
-  background: var(--accent);
-  opacity: 0.8;
+  background: rgba(var(--accent-rgb), 0.22);
   outline: none;
+}
+
+.column-resize-handle:hover::after,
+.column-resize-handle:focus-visible::after,
+.cell-grid.resizing .column-resize-handle::after {
+  width: 3px;
+  margin-left: -1.5px;
+  background: var(--accent);
+  box-shadow: 0 0 0 1px rgba(var(--accent-rgb), 0.35);
 }
 
 body.resizing-columns,
@@ -1271,6 +1298,40 @@ body.relocating-cell * {
 .cell::placeholder {
   color: var(--muted);
   opacity: 0.55;
+}
+
+/* Soft-dark: native row-resize corner grip was nearly invisible on cell bg */
+.cell::-webkit-resizer,
+.cell-nest-input::-webkit-resizer {
+  /* Solid + grip lines — Chromium paints over translucent gradients otherwise */
+  background-color: #6b7584;
+  background-image: linear-gradient(
+    -45deg,
+    transparent 0 38%,
+    rgba(232, 236, 241, 0.95) 38% 46%,
+    transparent 46% 56%,
+    rgba(232, 236, 241, 0.95) 56% 64%,
+    transparent 64% 100%
+  );
+  border: 1px solid rgba(232, 236, 241, 0.35);
+  border-radius: 0 0 2px 0;
+  box-sizing: border-box;
+}
+
+.cell:hover::-webkit-resizer,
+.cell:focus::-webkit-resizer,
+.cell-nest-input:hover::-webkit-resizer,
+.cell-nest-input:focus::-webkit-resizer {
+  background-color: #0f9e8e;
+  background-image: linear-gradient(
+    -45deg,
+    transparent 0 38%,
+    rgba(232, 236, 241, 0.98) 38% 46%,
+    transparent 46% 56%,
+    rgba(232, 236, 241, 0.98) 56% 64%,
+    transparent 64% 100%
+  );
+  border-color: rgba(20, 184, 166, 0.85);
 }
 
 .cell.cell-confirmed {
@@ -1741,8 +1802,7 @@ body.relocating-cell * {
   flex: 0 1 auto;
   max-height: 30%;
   min-height: 0;
-  /* List scrolls inside .master-library-items so the summary stays put and
-     the Values / A–Z toolbar can stick to the top of that list. */
+  /* Panel is height-capped; nested results pane scrolls (not the whole details). */
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -1751,6 +1811,18 @@ body.relocating-cell * {
   background: var(--panel);
   flex-shrink: 1;
   position: relative;
+}
+
+/* Chromium/Electron: non-summary content is ::details-content, not a direct
+   flex child. Without min-height:0 + overflow hidden here, max-height on
+   <details> only clips — .master-library-results never gets a bounded box.
+   Keep flex-basis auto (not 0) or the open panel collapses to the summary. */
+.master-library::details-content {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
 }
 
 .master-library[hidden] {
@@ -1804,7 +1876,9 @@ body.relocating-cell * {
 .master-library-results {
   flex: 1 1 auto;
   min-height: 0;
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .master-library-grid {
