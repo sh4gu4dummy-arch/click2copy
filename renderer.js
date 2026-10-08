@@ -6958,10 +6958,51 @@
     syncCol1FilterControls();
   }
 
+  // Per tab/part-page grid scroll memory. One .cell-grid-wrap scroller is
+  // shared by every tab, so without this each tab inherited the previous
+  // tab's offset (clamped to its height → usually the top).
+  const gridScrollPos = Object.create(null);
+  let gridScrollKey = null;
+
+  function gridScrollKeyFor(tab) {
+    if (!tab) return null;
+    return tab.id + ':' + (isMasterTab(tab) ? 0 : (tab.page || 0));
+  }
+
+  function restoreGridScroll(tab) {
+    const wrap = el.cellGrid.parentElement;
+    const key = gridScrollKeyFor(tab);
+    gridScrollKey = key;
+    if (!wrap || !key) return;
+    const pos = gridScrollPos[key];
+    const top = pos ? pos.top : 0;
+    const left = pos ? pos.left : 0;
+    wrap.scrollTop = top;
+    wrap.scrollLeft = left;
+    if (wrap.scrollTop === top && wrap.scrollLeft === left) return;
+    // Late row fits can grow content after this frame — retry once.
+    const clampedTop = wrap.scrollTop;
+    const clampedLeft = wrap.scrollLeft;
+    requestAnimationFrame(function () {
+      if (gridScrollKey !== key) return;
+      if (wrap.scrollTop !== clampedTop || wrap.scrollLeft !== clampedLeft) return;
+      wrap.scrollTop = top;
+      wrap.scrollLeft = left;
+    });
+  }
+
   function renderGrid() {
     const tab = activeTab();
+    const scrollWrap = el.cellGrid.parentElement;
+    // Remember the outgoing view (skip while hidden, e.g. Tools view → reads 0).
+    if (scrollWrap && gridScrollKey && scrollWrap.clientHeight > 0) {
+      gridScrollPos[gridScrollKey] = { top: scrollWrap.scrollTop, left: scrollWrap.scrollLeft };
+    }
     el.cellGrid.innerHTML = '';
-    if (!tab) return;
+    if (!tab) {
+      gridScrollKey = null;
+      return;
+    }
 
     // The first grid row is a header row. Its handles resize the matching cell column.
     applyGridColumns(tab);
@@ -7554,6 +7595,7 @@
     applyPersistedRowHeights(tab);
     restoreStickyCellRangeHighlight();
     applyPartSearchHighlights();
+    restoreGridScroll(tab);
   }
 
   function resizeColumnByKeyboard(tab, col, delta) {
