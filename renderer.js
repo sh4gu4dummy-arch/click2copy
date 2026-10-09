@@ -4721,7 +4721,8 @@
         : 'Empty cell and unlink from Master (Master library unchanged)',
       disabled: !anyClearable,
       onClick: function () {
-        clearCellsFromMenu(tab, indices, { confirm: true, anchor: cellWrapAt(cellIndex) || { x: x, y: y } });
+        // v0.163: no confirm for right-click Clear (Ash); Ctrl+Z undoes it.
+        clearCellsFromMenu(tab, indices, {});
       }
     });
     openCtxMenu({ heading: heading, items: items, x: x, y: y, className: 'cell-shade-menu' });
