@@ -902,6 +902,24 @@ body.resizing-sections * {
   display: none;
 }
 
+.part-quick-jumps {
+  /* v0.161: recent Values jumps fill the free space (newest left); extras clip off. */
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+}
+.part-quick-jumps > .btn {
+  flex: 0 0 auto;
+  height: var(--find-bar-ctrl-h);
+  max-width: 14em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .part-actions {
   display: flex;
   gap: 8px;

@@ -8952,7 +8952,57 @@
    * visible in the filter, scroll its first Col A cell near the top of the
    * grid, flash it, close the menu. Checkbox still only toggles the filter.
    */
-  function jumpToCol1ValueInGrid(tab, value) {
+  /* ── Quick jumps (v0.161): Values name-click jumps become buttons on the Find row ── */
+  const QUICK_JUMP_MAX = 8;
+  const QUICK_JUMP_KEY = 'click2copy-quick-jumps';
+  let quickJumpsByTab = (function () {
+    try {
+      const raw = JSON.parse(localStorage.getItem(QUICK_JUMP_KEY) || '{}');
+      return raw && typeof raw === 'object' ? raw : {};
+    } catch (err) { return {}; }
+  })();
+
+  function saveQuickJumps() {
+    const live = Object.create(null);
+    state.tabs.forEach(function (t) { live[t.id] = true; });
+    Object.keys(quickJumpsByTab).forEach(function (k) { if (!live[k]) delete quickJumpsByTab[k]; });
+    try { localStorage.setItem(QUICK_JUMP_KEY, JSON.stringify(quickJumpsByTab)); } catch (err) { /* no-op */ }
+  }
+
+  function recordQuickJump(tabId, value) {
+    if (!tabId) return;
+    const list = (quickJumpsByTab[tabId] || []).filter(function (v) { return v !== value; });
+    list.unshift(value);
+    quickJumpsByTab[tabId] = list.slice(0, QUICK_JUMP_MAX);
+    saveQuickJumps();
+    renderQuickJumps();
+  }
+
+  function renderQuickJumps() {
+    const bar = document.getElementById('part-quick-jumps');
+    if (!bar) return;
+    bar.textContent = '';
+    const tab = activeTab();
+    if (!tab) return;
+    const list = quickJumpsByTab[tab.id] || [];
+    list.forEach(function (value) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'btn btn-secondary quick-jump-btn';
+      b.textContent = value ? value : '(blank)';
+      b.title = 'Jump to Column A “' + (value || '(blank)') + '”';
+      b.addEventListener('click', function (e) {
+        e.preventDefault();
+        const t = activeTab();
+        if (t) jumpToCol1ValueInGrid(t, value, { fromQuick: true });
+      });
+      bar.appendChild(b);
+    });
+    // Bar full → oldest (rightmost) drop off.
+    while (bar.lastChild && bar.scrollWidth > bar.clientWidth + 1) bar.removeChild(bar.lastChild);
+  }
+
+  function jumpToCol1ValueInGrid(tab, value, opts) {
     if (!tab || !el.cellGrid) return;
     const want = value == null ? '' : String(value);
     const prefs = getGridFilterPrefs(tab.id);
@@ -8999,6 +9049,7 @@
     if (ta && typeof ta.focus === 'function') {
       try { ta.focus({ preventScroll: true }); } catch (err) { ta.focus(); }
     }
+    if (!(opts && opts.fromQuick)) recordQuickJump(tab.id, want);
     setStatus('Jumped to Column A “' + (want || '(blank)') + '”', 'ok');
   }
 
@@ -9352,6 +9403,7 @@
   }
 
   function renderGrid() {
+    renderQuickJumps();
     const tab = activeTab();
     const scrollWrap = el.cellGrid.parentElement;
     // Remember the outgoing view (skip while hidden, e.g. Tools view → reads 0).
@@ -13716,6 +13768,7 @@
     }
   });
   window.addEventListener('resize', function () {
+    renderQuickJumps();
     closeTabIconPicker();
     closeCol1FilterMenu();
     closeMasterLibFilterMenu();
