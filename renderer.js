@@ -1169,6 +1169,8 @@
   let historySuspended = false;
   let historyCoalescing = false;
   let historyCoalesceTimer = null;
+  /** What the current coalesced burst is editing (cell / nest / Notes) — a different target starts a new undo step. */
+  let historyCoalesceKey = null;
   let lastClearSnapshot = null;
 
   function cloneDocumentData(data) {
@@ -1194,7 +1196,7 @@
    * (part-page rename snapped back; cell/nest page add/remove no-ops).
    * Flush into the deep copy instead.
    */
-  function cloneCurrentDocument() {
+  function cloneCurrentDocument(noFlush) {
     const live = activeTab();
     const data = cloneDocumentData(documentDataFromState());
     data.tabs.forEach(function (tab, i) {
@@ -1205,7 +1207,9 @@
         return;
       }
       ensureTabPages(tab);
-      if (live && tab.id === live.id) flushLiveCellInputs(tab);
+      // noFlush: called from onCellInput, where the focused textarea already
+      // holds the NEW text — flushing would save the edit as the "before" state.
+      if (!noFlush && live && tab.id === live.id) flushLiveCellInputs(tab);
       tab.pages[tab.page] = captureTabPage(tab);
     });
     return data;
@@ -1224,6 +1228,7 @@
 
   function endHistoryCoalesce() {
     historyCoalescing = false;
+    historyCoalesceKey = null;
     if (historyCoalesceTimer) {
       clearTimeout(historyCoalesceTimer);
       historyCoalesceTimer = null;
@@ -1243,21 +1248,53 @@
   function pushHistory(options) {
     if (historySuspended) return;
     const coalesce = !!(options && options.coalesce);
+    const key = options && options.key != null ? String(options.key) : null;
     if (coalesce) {
-      if (historyCoalescing) {
+      if (historyCoalescing && historyCoalesceKey === key) {
         armHistoryCoalesce();
         return;
       }
       armHistoryCoalesce();
+      historyCoalesceKey = key;
     } else {
       endHistoryCoalesce();
     }
-    undoStack.push(cloneCurrentDocument());
+    undoStack.push(cloneCurrentDocument(!!(options && options.noFlush)));
     if (undoStack.length > UNDO_LIMIT) undoStack.shift();
     redoStack = [];
   }
 
+  /** Focused grid cell / nest before undo/redo (the grid re-renders and drops focus). */
+  function captureHistoryFocus() {
+    const a = document.activeElement;
+    const tab = activeTab();
+    if (!a || !tab || !el.cellGrid || !el.cellGrid.contains(a) || a.tagName !== 'TEXTAREA') return null;
+    const idx = parseInt(a.dataset.idx, 10);
+    if (Number.isNaN(idx)) return null;
+    if (a.classList.contains('cell')) return { tabId: tab.id, idx: idx, nest: null };
+    if (a.classList.contains('cell-nest-input')) {
+      const nest = parseInt(a.dataset.nest, 10);
+      if (!Number.isNaN(nest)) return { tabId: tab.id, idx: idx, nest: nest };
+    }
+    return null;
+  }
+
+  function restoreHistoryFocus(f) {
+    if (!f || !el.cellGrid) return;
+    const tab = activeTab();
+    if (!tab || tab.id !== f.tabId) return;
+    const sel = f.nest == null
+      ? 'textarea.cell[data-idx="' + f.idx + '"]'
+      : 'textarea.cell-nest-input[data-idx="' + f.idx + '"][data-nest="' + f.nest + '"]';
+    const ta = el.cellGrid.querySelector(sel);
+    if (!ta) return;
+    ta.focus();
+    const len = (ta.value || '').length;
+    try { ta.setSelectionRange(len, len); } catch (err) { /* no-op */ }
+  }
+
   function restoreHistoryEntry(entry) {
+    const focusBack = captureHistoryFocus();
     historySuspended = true;
     try {
       applyData(entry);
@@ -1267,6 +1304,7 @@
     } finally {
       historySuspended = false;
     }
+    restoreHistoryFocus(focusBack);
   }
 
   function undo() {
@@ -3170,7 +3208,7 @@
     if (page < 0 || page >= nest.pages.length) return;
     if (stickyCellRange) clearStickyCellRange();
     clearKeyboardCellRange();
-    pushHistory({ coalesce: true });
+    pushHistory({ coalesce: true, key: 'nest:' + tab.id + ':' + idx + ':' + nestIdx });
     nest.pages[page] = e.target.value;
     liveSyncConfirmedLinksForCell(tab.id, idx, nestIdx, { dropEmpty: true });
     refreshNestConfirmedUi(idx, nestIdx, e.target);
@@ -4653,6 +4691,7 @@
         const cols = sticky.cMax - sticky.cMin + 1;
         return { text: tsv, status: 'Copied ' + rows + '\u00d7' + cols + ' cells' };
       }
+      lastBlockCopy = null;
       if (textSel) {
         return {
           text: textSel.value.slice(textSel.start, textSel.end),
@@ -11198,7 +11237,7 @@
     }
     if (stickyCellRange) clearStickyCellRange();
     clearKeyboardCellRange();
-    pushHistory({ coalesce: true });
+    pushHistory({ coalesce: true, noFlush: true, key: 'cell:' + tab.id + ':' + idx });
     writeCellCurrentPage(tab, idx, e.target.value);
     liveSyncConfirmedLinksForCell(tab.id, idx, null, { dropEmpty: true });
     const confirmed = isCellConfirmed(tab.id, idx);
@@ -11942,7 +11981,14 @@
       return;
     }
     if (!matrix || (!isMultiCellMatrix(matrix) && !intoBlock && !startLocked)) {
-      // Single-cell / plain text: let the textarea handle a normal paste.
+      // One spreadsheet cell (Excel) arrives as "text\r\n" + an HTML table:
+      // drop that one trailing line break. Other text keeps the native paste.
+      const cbHtml = e.clipboardData ? e.clipboardData.getData('text/html') : '';
+      const cbPlain = e.clipboardData ? e.clipboardData.getData('text/plain') : '';
+      if (cbHtml && /<table[\s>]/i.test(cbHtml) && /\r?\n$/.test(cbPlain || '')) {
+        e.preventDefault();
+        document.execCommand('insertText', false, cbPlain.replace(/\r?\n$/, ''));
+      }
       return;
     }
 
@@ -12308,6 +12354,8 @@
       setStatus('Copied ' + rows + '×' + cols + ' cells', 'ok');
       return;
     }
+    // Single-cell copy: an older block copy must not reshape this paste.
+    lastBlockCopy = null;
     // If the user highlighted a substring, keep the browser's default copy.
     if (typeof ta.selectionStart === 'number' && typeof ta.selectionEnd === 'number' &&
         ta.selectionStart !== ta.selectionEnd) {
@@ -12324,16 +12372,42 @@
     const tab = activeTab();
     const ta = e.currentTarget;
     if (!tab || !ta || ta.tagName !== 'TEXTAREA') return;
+    const editingThis = function (i) {
+      return isMasterCellEditSession() &&
+        masterSegmentEdit.tabId === tab.id &&
+        masterSegmentEdit.cellIndex === i;
+    };
+    // Lit block: cut the whole block (same as right-click Cut), not just this cell.
+    const sticky = getStickyCellRange();
+    if (sticky && e.clipboardData) {
+      e.preventDefault();
+      const indices = [];
+      for (let r = sticky.rMin; r <= sticky.rMax; r++) {
+        for (let c = sticky.cMin; c <= sticky.cMax; c++) indices.push(r * tab.cols + c);
+      }
+      if (!isMasterTab(tab)) {
+        for (let i = 0; i < indices.length; i++) {
+          if (isCellMasterLocked(tab, indices[i]) && !editingThis(indices[i])) {
+            setStatus('Locked Master cell in selection — double-click to unlock first', 'err');
+            return;
+          }
+        }
+      }
+      const tsv = buildCellRangeTsv(tab, sticky.rMin, sticky.cMin, sticky.rMax, sticky.cMax);
+      e.clipboardData.setData('text/plain', tsv);
+      clearCellsFromMenu(tab, indices, {
+        statusText: indices.length > 1 ? ('Cut ' + indices.length + ' cells') : 'Cut cell'
+      });
+      return;
+    }
+    lastBlockCopy = null;
     if (typeof ta.selectionStart === 'number' && typeof ta.selectionEnd === 'number' &&
         ta.selectionStart !== ta.selectionEnd) {
       return;
     }
     const idx = parseInt(ta.dataset.idx, 10);
     if (!Number.isNaN(idx) && idx >= 0 && idx < tab.cells.length &&
-        !isMasterTab(tab) && isCellMasterLocked(tab, idx) &&
-        !(isMasterCellEditSession() &&
-          masterSegmentEdit.tabId === tab.id &&
-          masterSegmentEdit.cellIndex === idx)) {
+        !isMasterTab(tab) && isCellMasterLocked(tab, idx) && !editingThis(idx)) {
       e.preventDefault();
       setStatus('Locked Master cell — double-click to unlock before editing', 'err');
       return;
@@ -12343,21 +12417,13 @@
     e.preventDefault();
     e.clipboardData.setData('text/plain', value);
     if (!Number.isNaN(idx) && idx >= 0 && idx < tab.cells.length) {
-      pushHistory();
-      writeCellCurrentPage(tab, idx, '');
-      ta.value = '';
-      clearCellMasterLock(tab, idx);
-      revalidateLinksForCell(tab.id, idx);
-      const confirmed = isCellConfirmed(tab.id, idx);
-      ta.classList.toggle('cell-confirmed', confirmed);
-      const wrap = ta.closest ? ta.closest('.cell-wrap') : null;
-      if (wrap) wrap.classList.toggle('cell-confirmed', confirmed);
-      applyAppendCheckedState();
-      if (isMasterTab(tab)) renderMasterLibrary();
-      scheduleSave();
+      // Same path as right-click Cut: Master cuts update linked part cells.
+      clearCellsFromMenu(tab, [idx], { statusText: 'Cut cell' });
+      return;
     }
     setStatus('Cut cell', 'ok');
   }
+
 
   function addRow() {
     const tab = toolsTargetTab();
@@ -13824,7 +13890,7 @@
   if (el.combinedNotes) {
     el.combinedNotes.addEventListener('input', function () {
       dismissUndoClear();
-      pushHistory({ coalesce: true });
+      pushHistory({ coalesce: true, key: 'notes' });
       setNotes(currentPromptScope(), el.combinedNotes.value);
       renderCombinedPrompt();
       scheduleSave();
@@ -14243,6 +14309,13 @@
     const target = event.target;
     if (target && target.classList && (target.classList.contains('tab-rename-input') ||
       target.classList.contains('part-page-rename-input'))) return;
+    // Other text fields (Find, Replace, separators, searches…) keep their own
+    // native undo; app undo is for cells, nests and Notes only.
+    if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' ||
+        target.isContentEditable) &&
+        !(target.classList && (target.classList.contains('cell') ||
+          target.classList.contains('cell-nest-input'))) &&
+        target !== el.combinedNotes) return;
 
     const key = event.key.length === 1 ? event.key.toLowerCase() : event.key;
     if (key === 'z' && !event.shiftKey) {
