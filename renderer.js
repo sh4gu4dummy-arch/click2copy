@@ -8071,9 +8071,24 @@
 
 
   /** Cell 'change' (blur after a typed/pasted edit, incl. Enter/Tab moves). */
+  /**
+   * v0.162: new Master text (typed or pasted) locks part cells that already hold
+   * that exact text — same rule as the load-time repair (Ash).
+   */
+  function relockPartsAfterMasterChange() {
+    const r = repairMissingMasterLocksFromExactMatch();
+    if (r.relocked) scheduleSave();
+    return r.relocked;
+  }
+
   function onCellCommitMasterMatch(e) {
     const tab = activeTab();
     const ta = e.currentTarget;
+    if (tab && ta && isMasterTab(tab)) {
+      const n = relockPartsAfterMasterChange();
+      if (n) setStatus(n + ' part cell' + (n === 1 ? '' : 's') + ' with the same text now locked to Master', 'ok');
+      return;
+    }
     if (!tab || !ta || isMasterTab(tab)) return;
     const idx = parseInt(ta.dataset.idx, 10);
     if (Number.isNaN(idx)) return;
@@ -12005,6 +12020,8 @@
           }
         }
       }
+      // Pasted into Master: part cells already holding that text lock to it.
+      if (isMasterTab(tab)) relockPartsAfterMasterChange();
       // Pasted cells that exactly match Master text become real Master links.
       let pasteLinked = 0;
       let pasteBlocked = 0;
