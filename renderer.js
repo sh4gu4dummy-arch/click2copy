@@ -9892,9 +9892,12 @@
           openAddPageChoiceMenu(addPageBtn, { kind: 'cell', cellIndex: idx });
         });
 
-        pageChrome.appendChild(prevBtn);
-        pageChrome.appendChild(pageLabel);
-        pageChrome.appendChild(nextBtn);
+        // v0.166: ◀ n/m ▶ only when the cell has 2+ pages (Ash); + always shows.
+        if (pageCount > 1) {
+          pageChrome.appendChild(prevBtn);
+          pageChrome.appendChild(pageLabel);
+          pageChrome.appendChild(nextBtn);
+        }
         pageChrome.appendChild(addPageBtn);
 
 
