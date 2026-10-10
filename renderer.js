@@ -9818,6 +9818,19 @@
       ev.preventDefault();
       jumpToNextEmptyRow();
     });
+    // v0.169: ⤒ next to ⤓ — jump to the top of row 1 (Ash).
+    const topBtn = document.createElement('button');
+    topBtn.type = 'button';
+    topBtn.className = 'grid-jump-empty-btn grid-jump-top-btn';
+    topBtn.textContent = '⤒';
+    topBtn.title = 'Jump to the top (row 1)';
+    topBtn.setAttribute('aria-label', 'Jump to the top (row 1)');
+    topBtn.addEventListener('pointerdown', function (ev) { ev.preventDefault(); });
+    topBtn.addEventListener('click', function (ev) {
+      ev.preventDefault();
+      jumpToTopRow();
+    });
+    corner.appendChild(topBtn);
     corner.appendChild(jumpBtn);
     el.cellGrid.appendChild(corner);
 
@@ -12808,6 +12821,26 @@
       }
     }
     return true;
+  }
+
+  /** Corner ⤒: scroll to the very top; caret into the first visible row's first cell. */
+  function jumpToTopRow() {
+    const tab = activeTab();
+    const wrap = el.cellGrid && el.cellGrid.parentElement;
+    if (!tab || !wrap) return;
+    wrap.scrollTop = 0;
+    let row = -1;
+    for (let r = 0; r < tab.rows; r++) {
+      if (rowMatchesFilter(tab, r)) { row = r; break; }
+    }
+    if (row >= 0) {
+      const ta = el.cellGrid.querySelector('textarea.cell[data-idx="' + (row * tab.cols) + '"]');
+      if (ta) {
+        try { ta.focus({ preventScroll: true }); } catch (err) { ta.focus(); }
+      }
+    }
+    wrap.scrollTop = 0;
+    setStatus('Jumped to top', 'ok');
   }
 
   /** Corner ⤓: instant scroll + caret to the next empty row (wraps to top). */

@@ -2858,7 +2858,9 @@ body.resizing-rows * {
   display: flex;
   align-items: center;
   justify-content: center;
+  gap: 2px;
 }
+.grid-corner .grid-jump-empty-btn { width: 17px; }
 .grid-jump-empty-btn {
   appearance: none;
   margin: 0;
