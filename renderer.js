@@ -4839,13 +4839,9 @@
     addChoice('Add blank', 'blank');
     addChoice('Copy current', 'copy');
 
-    if (kind === 'cell') {
-      const host = anchorBtn.closest('.cell-corner-tools') ||
-        anchorBtn.closest('.cell-page-chrome') ||
-        anchorBtn.parentNode;
-      host.appendChild(menu);
-    } else {
-      // Portal + fixed (part page +, nest +): no layout change in the grid.
+    {
+      // Portal + fixed for every kind (v0.165: the cell-page menu used to sit
+      // inside the cell and was covered by neighboring cells — Ash).
       document.body.appendChild(menu);
       const rect = anchorBtn.getBoundingClientRect();
       const pad = 6;
@@ -4854,7 +4850,7 @@
       menu.style.top = '0px';
       menu.style.right = 'auto';
       const size = menu.getBoundingClientRect();
-      let left = rect.left;
+      let left = kind === 'cell' ? rect.right - size.width : rect.left;
       let top = rect.bottom + 4;
       left = Math.max(pad, Math.min(left, window.innerWidth - size.width - pad));
       top = Math.max(pad, Math.min(top, window.innerHeight - size.height - pad));
