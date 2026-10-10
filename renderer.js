@@ -3974,6 +3974,332 @@
     openCtxMenu({ heading: opts.heading, items: items, x: opts.x, y: opts.y });
   }
 
+  /* ── v0.167 Right-click text size: this one only / all of this type ──────
+   * UI pref only (localStorage, outside the document). Element override beats
+   * the type setting. Applied as inline font-size = the element's own base
+   * size × scale, so only that element grows (no layout shift elsewhere). */
+  const TEXT_SIZE_KEY = 'click2copy-text-sizes';
+  const TEXT_SIZE_STEPS = [0.8, 0.9, 1, 1.1, 1.25, 1.4, 1.6];
+  const TEXT_SIZE_TYPE_NAMES = {
+    cell: ['cell', 'cells'], nest: ['nest box', 'nest boxes'], combined: ['Combined', 'Combined'],
+    notes: ['Notes', 'Notes'], masterlib: ['Master part', 'Master parts'],
+    button: ['button', 'buttons'], rownum: ['row number', 'row numbers'],
+    tab: ['tab', 'tabs'], input: ['input', 'inputs']
+  };
+  let textSizes = loadTextSizes();
+  /** Element right-clicked in the contextmenu event being dispatched (menus append size rows). */
+  let ctxTextSizeTarget = null;
+  let ctxMenuOpenedThisEvent = false;
+
+  function loadTextSizes() {
+    const out = { types: {}, items: {} };
+    try {
+      const raw = JSON.parse(window.localStorage.getItem(TEXT_SIZE_KEY) || 'null');
+      if (raw && typeof raw === 'object') {
+        ['types', 'items'].forEach(function (k) {
+          const src = raw[k];
+          if (!src || typeof src !== 'object') return;
+          Object.keys(src).forEach(function (key) {
+            const v = Number(src[key]);
+            if (TEXT_SIZE_STEPS.indexOf(v) >= 0 && v !== 1) out[k][key] = v;
+          });
+        });
+      }
+    } catch (err) { /* bad pref → defaults */ }
+    return out;
+  }
+
+  function saveTextSizes() {
+    try { window.localStorage.setItem(TEXT_SIZE_KEY, JSON.stringify(textSizes)); } catch (err) { /* no-op */ }
+  }
+
+  /** Drop per-element overrides for tabs that no longer exist in any open document. */
+  function pruneTextSizes() {
+    const ids = Object.create(null);
+    (state.tabs || []).forEach(function (t) { ids[t.id] = true; });
+    (state.documents || []).forEach(function (d) {
+      const tabs = d && d.data && Array.isArray(d.data.tabs) ? d.data.tabs : [];
+      tabs.forEach(function (t) { if (t && t.id) ids[t.id] = true; });
+    });
+    if (!Object.keys(ids).length) return;
+    let changed = false;
+    Object.keys(textSizes.items).forEach(function (key) {
+      const m = /^(cell|nest|tab|rownum):([^:]+)/.exec(key);
+      if (m && m[2] !== 'tools' && !ids[m[2]]) {
+        delete textSizes.items[key];
+        changed = true;
+      }
+    });
+    if (changed) saveTextSizes();
+  }
+
+  function siblingKey(node) {
+    const cls = String(node.className || '').split(/\s+/)[0] || node.tagName.toLowerCase();
+    const parent = node.parentElement;
+    let i = 0;
+    if (parent) {
+      const kids = parent.children;
+      for (let k = 0; k < kids.length; k++) {
+        if (kids[k] === node) break;
+        if ((String(kids[k].className || '').split(/\s+/)[0] || kids[k].tagName.toLowerCase()) === cls) i++;
+      }
+    }
+    return cls + ':' + i;
+  }
+
+  /** What text-size target a node belongs to: { type, el, key } or null. */
+  function textSizeTarget(node) {
+    if (node && node.nodeType !== 1) node = node.parentElement;
+    if (!node || typeof node.closest !== 'function') return null;
+    if (node.closest('.part-page-menu, .tab-icon-picker, .paste-confirm')) return null;
+    const live = activeTab();
+    const tabId = live ? live.id : '';
+    const inGrid = !!(el.cellGrid && el.cellGrid.contains(node));
+    if (inGrid) {
+      const nestBox = node.closest('.cell-nest');
+      if (nestBox) {
+        const nta = nestBox.querySelector('textarea.cell-nest-input');
+        if (nta) return { type: 'nest', el: nta, key: 'nest:' + tabId + ':' + nta.dataset.idx + ':' + nta.dataset.nest };
+      }
+      const wrap = node.closest('.cell-wrap');
+      if (wrap) {
+        const ta = wrap.querySelector('textarea.cell');
+        if (ta) return { type: 'cell', el: ta, key: 'cell:' + tabId + ':' + ta.dataset.idx };
+      }
+      const rc = node.closest('.row-controls');
+      if (rc) return { type: 'rownum', el: rc, key: 'rownum:' + tabId + ':' + (rc.dataset.row || '') };
+    }
+    if (el.combinedNotes && (node === el.combinedNotes || node.closest('#combined-notes'))) {
+      return { type: 'notes', el: el.combinedNotes, key: 'notes' };
+    }
+    if (el.combined && el.combined.contains(node)) return { type: 'combined', el: el.combined, key: 'combined' };
+    const ml = node.closest('.master-library-cell');
+    if (ml && !ml.classList.contains('master-library-cell-empty')) {
+      return { type: 'masterlib', el: ml, key: 'ml:' + (ml.dataset.row || '') + ':' + (ml.dataset.col || '') };
+    }
+    const tabBtn = node.closest('.tab');
+    if (tabBtn && el.tabBar && el.tabBar.contains(tabBtn)) {
+      return { type: 'tab', el: tabBtn, key: 'tab:' + (tabBtn.dataset.id || (tabBtn.classList.contains('tools-tab') ? 'tools' : siblingKey(tabBtn))) };
+    }
+    const inp = node.closest('input, textarea');
+    if (inp && !/^(checkbox|radio|range|file|color|hidden)$/i.test(inp.type || '')) {
+      return { type: 'input', el: inp, key: 'input:' + (inp.id || siblingKey(inp)) };
+    }
+    const btn = node.closest('button');
+    if (btn) return { type: 'button', el: btn, key: 'button:' + (btn.id || btn.dataset.key || siblingKey(btn)) };
+    return null;
+  }
+
+  function textSizeTypeScale(type) {
+    const v = textSizes.types[type];
+    return typeof v === 'number' ? v : 1;
+  }
+
+  function textSizeScale(info) {
+    const v = textSizes.items[info.key];
+    return typeof v === 'number' ? v : textSizeTypeScale(info.type);
+  }
+
+  /** Re-apply sizes to every target on screen (read all bases first, then write). */
+  function applyTextSizes() {
+    const anyPref = Object.keys(textSizes.types).length || Object.keys(textSizes.items).length;
+    if (!anyPref && !document.querySelector('[data-ts-scale]')) return;
+    const nodes = document.querySelectorAll(
+      'textarea.cell, textarea.cell-nest-input, .row-controls, #combined-prompt, #combined-notes, ' +
+      '.master-library-cell, .tab, input, button, [data-ts-scale]');
+    const seen = new Set();
+    const work = [];
+    for (let i = 0; i < nodes.length; i++) {
+      const info = textSizeTarget(nodes[i]);
+      if (!info || seen.has(info.el)) {
+        // Stale scale on something that is no longer a target → undo it.
+        if (!info && nodes[i].dataset && nodes[i].dataset.tsScale) work.push({ el: nodes[i], scale: 1 });
+        continue;
+      }
+      seen.add(info.el);
+      const scale = textSizeScale(info);
+      const had = info.el.dataset.tsScale ? Number(info.el.dataset.tsScale) : 1;
+      if (had === scale) continue;
+      work.push({ el: info.el, scale: scale });
+    }
+    // Read phase: base size of elements we have not scaled yet.
+    work.forEach(function (w) {
+      if (w.scale !== 1 && !w.el.dataset.tsScale) {
+        w.base = parseFloat(window.getComputedStyle(w.el).fontSize) || 0;
+      }
+    });
+    // Write phase.
+    work.forEach(function (w) {
+      const e = w.el;
+      if (w.scale === 1) {
+        if (e.dataset.tsScale) {
+          e.style.fontSize = e.dataset.tsPrev || '';
+          delete e.dataset.tsScale;
+          delete e.dataset.tsBase;
+          delete e.dataset.tsPrev;
+        }
+        return;
+      }
+      if (!e.dataset.tsScale) {
+        if (!w.base) return;
+        e.dataset.tsBase = String(w.base);
+        e.dataset.tsPrev = e.style.fontSize || '';
+      }
+      const base = parseFloat(e.dataset.tsBase) || 0;
+      if (!base) return;
+      e.style.fontSize = (Math.round(base * w.scale * 10) / 10) + 'px';
+      e.dataset.tsScale = String(w.scale);
+    });
+  }
+
+  function stepIndex(v) {
+    let best = 2;
+    for (let i = 0; i < TEXT_SIZE_STEPS.length; i++) {
+      if (Math.abs(TEXT_SIZE_STEPS[i] - v) < Math.abs(TEXT_SIZE_STEPS[best] - v)) best = i;
+    }
+    return best;
+  }
+
+  /** scope 'this' | 'all'; dir -1 smaller, +1 bigger, 0 reset. */
+  function changeTextSize(info, scope, dir) {
+    const name = TEXT_SIZE_TYPE_NAMES[info.type] || [info.type, info.type];
+    const cur = scope === 'this' ? textSizeScale(info) : textSizeTypeScale(info.type);
+    let next = 1;
+    if (dir !== 0) {
+      next = TEXT_SIZE_STEPS[Math.max(0, Math.min(TEXT_SIZE_STEPS.length - 1, stepIndex(cur) + dir))];
+    }
+    if (scope === 'this') {
+      if (dir === 0) delete textSizes.items[info.key];
+      else textSizes.items[info.key] = next;
+    } else if (next === 1) {
+      delete textSizes.types[info.type];
+    } else {
+      textSizes.types[info.type] = next;
+    }
+    saveTextSizes();
+    applyTextSizes();
+    const verb = dir < 0 ? 'Text smaller' : (dir > 0 ? 'Text bigger' : 'Text size reset');
+    const single = info.type === 'combined' || info.type === 'notes';
+    const where = single ? name[0] : (scope === 'this' ? ('this ' + name[0]) : ('all ' + name[1]));
+    const shown = scope === 'this' ? textSizeScale(info) : textSizeTypeScale(info.type);
+    setStatus(verb + ' (' + where + ') — ' + Math.round(shown * 100) + '%', 'ok');
+  }
+
+  /** Two compact rows: "This: A− A+ Reset" and "All <type>: A− A+ Reset". */
+  function appendTextSizeRows(pop) {
+    const info = ctxTextSizeTarget ? textSizeTarget(ctxTextSizeTarget) : null;
+    if (!info || !pop) return;
+    const name = TEXT_SIZE_TYPE_NAMES[info.type] || [info.type, info.type];
+    const group = document.createElement('div');
+    group.className = 'ctx-ts-group';
+    const buttons = [];
+    function refresh() {
+      buttons.forEach(function (b) {
+        const cur = b.scope === 'this' ? textSizeScale(info) : textSizeTypeScale(info.type);
+        if (b.dir < 0) b.el.disabled = cur <= TEXT_SIZE_STEPS[0];
+        else if (b.dir > 0) b.el.disabled = cur >= TEXT_SIZE_STEPS[TEXT_SIZE_STEPS.length - 1];
+        else b.el.disabled = b.scope === 'this' ? !(info.key in textSizes.items) : cur === 1;
+      });
+    }
+    // Combined / Notes exist once: a single row (no redundant This/All pair).
+    const single = info.type === 'combined' || info.type === 'notes';
+    const rows = single ? [['all', 'Text size']] : [['this', 'This ' + name[0]], ['all', 'All ' + name[1]]];
+    rows.forEach(function (row) {
+      const line = document.createElement('div');
+      line.className = 'ctx-ts-row';
+      const label = document.createElement('span');
+      label.className = 'ctx-ts-label';
+      label.textContent = row[1];
+      line.appendChild(label);
+      [[-1, 'A−', 'Text smaller'], [1, 'A+', 'Text bigger'], [0, 'Reset', 'Reset text size']].forEach(function (spec) {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'tab-icon-picker-action ctx-ts-btn';
+        b.textContent = spec[1];
+        b.title = spec[2] + (single ? '' : (row[0] === 'this' ? ' (this one only)' : ' (all ' + name[1] + ')'));
+        b.setAttribute('role', 'menuitem');
+        b.addEventListener('click', function (ev) {
+          ev.preventDefault();
+          ev.stopPropagation();
+          if (b.disabled) return;
+          changeTextSize(info, row[0], spec[0]);
+          refresh();
+        });
+        buttons.push({ el: b, scope: row[0], dir: spec[0] });
+        line.appendChild(b);
+      });
+      group.appendChild(line);
+    });
+    refresh();
+    pop.appendChild(group);
+  }
+
+  /** Cut / Copy / Paste / Select all for a text field whose menu we replace. */
+  function nativeEditItems(field) {
+    const sel = { s: field.selectionStart, e: field.selectionEnd };
+    const hasSel = typeof sel.s === 'number' && sel.s !== sel.e;
+    const ro = !!(field.readOnly || field.disabled);
+    function run(cmd) {
+      field.focus();
+      try { if (typeof sel.s === 'number') field.setSelectionRange(sel.s, sel.e); } catch (err) { /* no-op */ }
+      if (cmd === 'selectAll') { field.select(); return; }
+      if (cmd === 'paste') {
+        let ok = false;
+        try { ok = document.execCommand('paste'); } catch (err) { ok = false; }
+        if (!ok && navigator.clipboard && navigator.clipboard.readText) {
+          navigator.clipboard.readText().then(function (t) {
+            field.focus();
+            document.execCommand('insertText', false, t);
+          }).catch(function () { setStatus('Paste failed', 'err'); });
+        }
+        return;
+      }
+      document.execCommand(cmd);
+    }
+    return [
+      { label: 'Cut', disabled: ro || !hasSel, onClick: function () { run('cut'); } },
+      { label: 'Copy', disabled: !hasSel, onClick: function () { run('copy'); } },
+      { label: 'Paste', disabled: ro, onClick: function () { run('paste'); } },
+      { label: 'Select all', onClick: function () { run('selectAll'); } }
+    ];
+  }
+
+  document.addEventListener('contextmenu', function (ev) {
+    ctxTextSizeTarget = ev.target;
+    ctxMenuOpenedThisEvent = false;
+    window.setTimeout(function () { ctxTextSizeTarget = null; }, 0);
+  }, true);
+  // Areas with no app menu: a small menu with just the text-size rows
+  // (+ Cut/Copy/Paste/Select all for text fields).
+  window.addEventListener('contextmenu', function (ev) {
+    if (ctxMenuOpenedThisEvent) return;
+    const info = textSizeTarget(ev.target);
+    if (!info) return;
+    ev.preventDefault();
+    const name = TEXT_SIZE_TYPE_NAMES[info.type] || [info.type];
+    const field = (info.el.tagName === 'TEXTAREA' || info.el.tagName === 'INPUT') ? info.el : null;
+    openCtxMenu({
+      heading: name[0].charAt(0).toUpperCase() + name[0].slice(1),
+      items: field ? nativeEditItems(field) : [],
+      x: ev.clientX,
+      y: ev.clientY
+    });
+  });
+  if (typeof MutationObserver === 'function') {
+    new MutationObserver(function (records) {
+      for (let i = 0; i < records.length; i++) {
+        const added = records[i].addedNodes;
+        for (let k = 0; k < added.length; k++) {
+          const n = added[k];
+          if (n.nodeType === 1 && !(n.closest && n.closest('.part-page-menu, .tab-icon-picker'))) {
+            applyTextSizes();
+            return;
+          }
+        }
+      }
+    }).observe(document.body, { childList: true, subtree: true });
+  }
+
   /**
    * Generic small context menu (tab right-click menu look).
    * items: [{ label, onClick, disabled, danger, current, swatch, title }]
@@ -4023,6 +4349,8 @@
       pop.appendChild(btn);
       if (!firstEnabled && !btn.disabled) firstEnabled = btn;
     });
+    appendTextSizeRows(pop);
+    ctxMenuOpenedThisEvent = true;
     document.body.appendChild(pop);
     partPageMenuEl = pop;
     const pad = 6;
@@ -11664,6 +11992,8 @@
       pop.appendChild(actions);
     }
 
+    appendTextSizeRows(pop);
+    ctxMenuOpenedThisEvent = true;
     document.body.appendChild(pop);
     tabIconPickerEl = pop;
 
@@ -14280,6 +14610,8 @@
     if (current) current.data = snapshot();
     renderDocuments();
     initialized = true;
+    pruneTextSizes();
+    applyTextSizes();
     await persist();
     if (failedFile) setStatus('A prompt file could not be read; restored its last saved session copy', 'err');
     while (pendingDocumentPaths.length > 0) {
