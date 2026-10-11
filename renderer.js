@@ -5129,7 +5129,7 @@
           ? 'Locked Master cell — double-click to unlock before editing'
           : 'Remove any other Master Column B prompt found inside this cell (keeps only the new text; Ctrl+Z to undo)',
         disabled: lockedHere,
-        onClick: function () { extractMasterDupesFromCell(tab, cellIndex); }
+        onClick: function () { previewMasterDupesForCell(tab, cellIndex, x, y); }
       });
     }
     openCtxMenu({ heading: heading, items: items, x: x, y: y, className: 'cell-shade-menu' });
@@ -5181,6 +5181,100 @@
       out.push(l);
     });
     return { text: out.join('\n').trim(), count: count };
+  }
+
+  /**
+   * v0.174 soft run (Ash): show what Extract dupes would delete (struck red)
+   * and what stays; nothing changes until Apply.
+   */
+  function masterDupeSegments(text, tab, cellIndex) {
+    const master = state.tabs.find(isMasterTab);
+    const src = String(text || '');
+    if (!master || (master.cols || 0) < 2) return [{ text: src, cut: false }];
+    const seen = Object.create(null);
+    const values = [];
+    for (let r = 0; r < master.rows; r++) {
+      const mi = r * master.cols + 1;
+      if (isMasterTab(tab) && tab === master && mi === cellIndex) continue;
+      const v = String(master.cells[mi] || '').trim();
+      if (v.length < EXTRACT_DUPES_MIN_LEN || seen[v]) continue;
+      seen[v] = true;
+      values.push(v);
+    }
+    values.sort(function (a, b) { return b.length - a.length; });
+    // Same longest-first order as the real strip; sentinels keep cuts apart.
+    const cuts = [];
+    let work = src;
+    values.forEach(function (v) {
+      const parts = work.split(v);
+      if (parts.length < 2) return;
+      let joined = parts[0];
+      for (let i = 1; i < parts.length; i++) {
+        cuts.push(v);
+        joined += '\u0001' + (cuts.length - 1) + '\u0002' + parts[i];
+      }
+      work = joined;
+    });
+    const segs = [];
+    const re = /\u0001(\d+)\u0002/g;
+    let last = 0;
+    let m;
+    while ((m = re.exec(work))) {
+      if (m.index > last) segs.push({ text: work.slice(last, m.index), cut: false });
+      segs.push({ text: cuts[Number(m[1])], cut: true });
+      last = re.lastIndex;
+    }
+    if (last < work.length) segs.push({ text: work.slice(last), cut: false });
+    return segs;
+  }
+
+  function previewMasterDupesForCell(tab, cellIndex, x, y) {
+    if (!tab || cellIndex < 0 || cellIndex >= tab.cells.length) return;
+    if (!isMasterTab(tab) && isCellMasterEditBlocked(tab, cellIndex)) {
+      setStatus('Locked Master cell — double-click to unlock before editing', 'err');
+      return;
+    }
+    const before = String(tab.cells[cellIndex] || '');
+    const res = stripMasterDupesText(before, tab, cellIndex);
+    if (!res.count) { setStatus('No Master prompts found inside this cell'); return; }
+    if (!res.text.trim()) {
+      setStatus('Cell is only existing Master prompts — nothing new to keep');
+      return;
+    }
+    const body = document.createElement('div');
+    body.className = 'dupe-preview';
+    const l1 = document.createElement('div');
+    l1.className = 'dupe-preview-label';
+    l1.textContent = 'Will delete (red):';
+    const orig = document.createElement('div');
+    orig.className = 'dupe-preview-text';
+    masterDupeSegments(before, tab, cellIndex).forEach(function (sg) {
+      const span = document.createElement(sg.cut ? 'del' : 'span');
+      span.textContent = sg.text;
+      orig.appendChild(span);
+    });
+    const l2 = document.createElement('div');
+    l2.className = 'dupe-preview-label';
+    l2.textContent = 'Keeps:';
+    const kept = document.createElement('div');
+    kept.className = 'dupe-preview-text dupe-preview-kept';
+    kept.textContent = res.text;
+    body.appendChild(l1); body.appendChild(orig); body.appendChild(l2); body.appendChild(kept);
+    openActionConfirm({
+      anchor: cellWrapAt(cellIndex) || { x: x, y: y },
+      message: 'Extract ' + res.count + ' Master prompt' + (res.count === 1 ? '' : 's') + '?',
+      body: body,
+      actionLabel: 'Apply',
+      cancelStatus: 'Extract dupes cancelled — nothing changed',
+      ariaLabel: 'Extract dupes preview',
+      onConfirm: function () {
+        if (activeTab() !== tab || String(tab.cells[cellIndex] || '') !== before) {
+          setStatus('Extract cancelled — cell changed', 'err');
+          return;
+        }
+        extractMasterDupesFromCell(tab, cellIndex);
+      }
+    });
   }
 
   function extractMasterDupesFromCell(tab, cellIndex) {
@@ -12724,6 +12818,10 @@
       cancelActionConfirm(true);
     });
     pop.appendChild(msg);
+    if (opts.body) {
+      pop.classList.add('has-body');
+      pop.appendChild(opts.body);
+    }
     pop.appendChild(ok);
     pop.appendChild(cancel);
     document.body.appendChild(pop);

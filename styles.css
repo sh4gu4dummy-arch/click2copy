@@ -3074,3 +3074,17 @@ textarea.cell.cell-range-selected::selection {
   width: 17px;
   height: 17px;
 }
+
+/* v0.174 Extract dupes preview (inside the shared confirm popover) */
+.paste-confirm.has-body { flex-wrap: wrap; max-width: min(560px, calc(100vw - 24px)); }
+.paste-confirm.has-body .dupe-preview { flex: 1 0 100%; order: 1; display: flex; flex-direction: column; gap: 4px; }
+.paste-confirm.has-body .paste-confirm-ok,
+.paste-confirm.has-body .paste-confirm-cancel { order: 2; }
+.dupe-preview-label { color: var(--muted); font-size: 11px; font-weight: 600; }
+.dupe-preview-text {
+  max-height: 160px; overflow: auto; white-space: pre-wrap; word-break: break-word;
+  padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px;
+  background: var(--surface-2); color: var(--text); font-size: 12.5px; line-height: 1.4;
+}
+.dupe-preview-text del { color: #ff8a8a; background: rgba(255, 90, 90, 0.14); text-decoration: line-through; }
+.dupe-preview-kept { border-color: var(--accent); }
