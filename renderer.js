@@ -14,8 +14,9 @@
   };
 
   /** Pickable tab icons (Master + part tabs). Tools uses fixed wrench only. */
-  const TAB_ICON_IDS = ['text', 'video', 'img', 'sparkle', 'tag', 'folder', 'layers', 'hash'];
+  const TAB_ICON_IDS = ['text', 'video', 'img', 'sparkle', 'tag', 'folder', 'layers', 'hash', 'none'];
   const TAB_ICON_LABELS = {
+    none: 'No icon',
     text: 'Text (Aa)',
     video: 'Video',
     img: 'Image',
@@ -38,6 +39,8 @@
     tag: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.2 8.8 V3.2 H7.8 L13.8 9.2 L9.2 13.8 Z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><circle cx="5.2" cy="5.2" r="1.1" fill="currentColor"/></svg>',
     folder: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M1.5 4.2 H6 L7.4 5.6 H14.5 V12.5 H1.5 Z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>',
     layers: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.2 L14 5.2 L8 8.2 L2 5.2 Z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M2 8 L8 11 L14 8" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M2 10.6 L8 13.6 L14 10.6" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>',
+    // v0.173: 'none' = no icon on the tab (Ash); picker shows a crossed circle.
+    none: '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.6" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M4.1 11.9 L11.9 4.1" stroke="currentColor" stroke-width="1.4"/></svg>',
     hash: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6.2 2.5 L5.2 13.5 M10.8 2.5 L9.8 13.5 M2.5 6.2 H13.5 M2.5 10.2 H13.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>',
     wrench: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M10.8 2.2 a3.2 3.2 0 0 0-4.3 3.7 L2.2 10.2 l1.3 1.3 2.3-2.3 1.3 1.3-2.3 2.3 1.3 1.3 4.3-4.3 a3.2 3.2 0 0 0 3.7-4.3 l-2.2 2.2 -1.4-1.4 2.2-2.2 z" fill="currentColor"/></svg>'
   };
@@ -7281,7 +7284,8 @@
     const title = document.createElement('span');
     title.className = 'tab-title';
     title.textContent = opts.titleText != null ? opts.titleText : (tab ? tab.title : '');
-    btn.appendChild(icon);
+    if (iconId !== 'none') btn.appendChild(icon);
+    else btn.classList.add('tab-no-icon');
     btn.appendChild(title);
     return { icon: icon, title: title };
   }
