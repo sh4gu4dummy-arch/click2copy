@@ -3441,6 +3441,31 @@
     setStatus('Removed cell page (' + entry.pages.length + ' left)');
   }
 
+  /** v0.171: move the current cell page back/forward in the page list (Ash). */
+  function moveCellPage(cellIndex, delta) {
+    const tab = activeTab();
+    if (!tab || cellIndex < 0 || cellIndex >= tab.cells.length) return;
+    if (isCellMasterEditBlocked(tab, cellIndex)) {
+      setStatus('Locked Master cell — double-click to unlock before editing', 'err');
+      return;
+    }
+    ensureCellPages(tab);
+    const entry = tab.cellPages[cellIndex];
+    if (!entry || entry.pages.length <= 1) return;
+    const from = entry.page || 0;
+    const to = from + delta;
+    if (to < 0 || to >= entry.pages.length) return;
+    pushHistory();
+    const moved = entry.pages.splice(from, 1)[0];
+    entry.pages.splice(to, 0, moved);
+    entry.page = to; // stay on the moved page
+    syncCellTextFromPages(tab, cellIndex);
+    if (isMasterTab(tab)) syncLockedPartPagesFromMaster(cellIndex);
+    renderGrid();
+    scheduleSave();
+    setStatus('Moved page to ' + (to + 1) + '/' + entry.pages.length);
+  }
+
   function stepCellPage(cellIndex, delta) {
     const tab = activeTab();
     if (!tab) return;
@@ -10195,6 +10220,12 @@
           const blocked = isCellMasterEditBlocked(tab, idx);
           const onlyOne = pageCount <= 1;
           openPageCtxMenu({
+            leading: [
+              { label: 'Move page back', disabled: blocked || page <= 0,
+                onClick: function () { moveCellPage(idx, -1); } },
+              { label: 'Move page forward', disabled: blocked || page >= pageCount - 1,
+                onClick: function () { moveCellPage(idx, 1); } }
+            ],
             heading: 'Page ' + (page + 1) + ' (' + (page + 1) + '/' + pageCount + ')',
             disabled: onlyOne || blocked,
             disabledTitle: onlyOne
