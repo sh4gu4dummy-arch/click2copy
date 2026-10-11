@@ -4007,7 +4007,8 @@
    * the type setting. Applied as inline font-size = the element's own base
    * size × scale, so only that element grows (no layout shift elsewhere). */
   const TEXT_SIZE_KEY = 'click2copy-text-sizes';
-  const TEXT_SIZE_STEPS = [0.8, 0.9, 1, 1.1, 1.25, 1.4, 1.6];
+  // v0.175: 30% per click (Ash).
+  const TEXT_SIZE_STEPS = [0.7, 1, 1.3, 1.6, 1.9, 2.2];
   const TEXT_SIZE_TYPE_NAMES = {
     cell: ['cell', 'cells'], nest: ['nest box', 'nest boxes'], combined: ['Combined', 'Combined'],
     notes: ['Notes', 'Notes'], masterlib: ['Master part', 'Master parts'],
@@ -4029,7 +4030,10 @@
           if (!src || typeof src !== 'object') return;
           Object.keys(src).forEach(function (key) {
             const v = Number(src[key]);
-            if (TEXT_SIZE_STEPS.indexOf(v) >= 0 && v !== 1) out[k][key] = v;
+            if (!(v > 0)) return;
+            // Older saved steps (e.g. 1.1) snap to the nearest current step.
+            const snapped = TEXT_SIZE_STEPS[stepIndex(v)];
+            if (snapped !== 1) out[k][key] = snapped;
           });
         });
       }
@@ -4181,7 +4185,7 @@
   }
 
   function stepIndex(v) {
-    let best = 2;
+    let best = TEXT_SIZE_STEPS.indexOf(1);
     for (let i = 0; i < TEXT_SIZE_STEPS.length; i++) {
       if (Math.abs(TEXT_SIZE_STEPS[i] - v) < Math.abs(TEXT_SIZE_STEPS[best] - v)) best = i;
     }
