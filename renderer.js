@@ -5117,7 +5117,100 @@
         clearCellsFromMenu(tab, indices, {});
       }
     });
+    // v0.172: Column B only — strip other Master Col B prompts found inside this cell.
+    if (c === 1 && (tab.cols || 0) >= 2) {
+      const lockedHere = !isMasterTab(tab) && isCellMasterEditBlocked(tab, cellIndex);
+      items.push({
+        label: 'Extract dupes',
+        title: lockedHere
+          ? 'Locked Master cell — double-click to unlock before editing'
+          : 'Remove any other Master Column B prompt found inside this cell (keeps only the new text; Ctrl+Z to undo)',
+        disabled: lockedHere,
+        onClick: function () { extractMasterDupesFromCell(tab, cellIndex); }
+      });
+    }
     openCtxMenu({ heading: heading, items: items, x: x, y: y, className: 'cell-shade-menu' });
+  }
+
+  /**
+   * v0.172 Extract dupes: strip every other Master Column B value (whole cell
+   * text, trimmed, >= 8 chars, case-sensitive) found inside this cell's current
+   * page text, longest first, then tidy separators on the lines that were cut.
+   * Returns { text, count } (text unchanged when count is 0).
+   */
+  const EXTRACT_DUPES_MIN_LEN = 8;
+  function stripMasterDupesText(text, tab, cellIndex) {
+    const master = state.tabs.find(isMasterTab);
+    if (!master || (master.cols || 0) < 2) return { text: text, count: 0 };
+    const seen = Object.create(null);
+    const values = [];
+    for (let r = 0; r < master.rows; r++) {
+      const mi = r * master.cols + 1;
+      if (isMasterTab(tab) && tab === master && mi === cellIndex) continue;
+      const v = String(master.cells[mi] || '').trim();
+      if (v.length < EXTRACT_DUPES_MIN_LEN || seen[v]) continue;
+      seen[v] = true;
+      values.push(v);
+    }
+    values.sort(function (a, b) { return b.length - a.length; });
+    const MARK = '\u0000';
+    let work = String(text || '');
+    let count = 0;
+    values.forEach(function (v) {
+      const parts = work.split(v);
+      if (parts.length > 1) {
+        count += parts.length - 1;
+        work = parts.join(MARK);
+      }
+    });
+    if (!count) return { text: text, count: 0 };
+    const out = [];
+    work.split('\n').forEach(function (line) {
+      if (line.indexOf(MARK) < 0) { out.push(line); return; }
+      let l = line.split(MARK).join(' ');
+      // Separators doubled up at the cut (", ," / ". ." / "; ,") → one.
+      l = l.replace(/([,;.])(\s*[,;.])+/g, '$1');
+      l = l.replace(/[ \t]{2,}/g, ' ');
+      l = l.replace(/\s+([,;.])/g, '$1');
+      // Stray separators left at the ends of the cut line.
+      l = l.replace(/^[\s,;.:|\-–—]+/, '').replace(/[\s,;:|\-–—]+$/, '');
+      if (!l.trim()) return; // blank line left behind by the cut
+      out.push(l);
+    });
+    return { text: out.join('\n').trim(), count: count };
+  }
+
+  function extractMasterDupesFromCell(tab, cellIndex) {
+    if (!tab || cellIndex < 0 || cellIndex >= tab.cells.length) return;
+    if (!isMasterTab(tab) && isCellMasterEditBlocked(tab, cellIndex)) {
+      setStatus('Locked Master cell — double-click to unlock before editing', 'err');
+      return;
+    }
+    const before = String(tab.cells[cellIndex] || '');
+    const res = stripMasterDupesText(before, tab, cellIndex);
+    if (!res.count) {
+      setStatus('No Master prompts found inside this cell');
+      return;
+    }
+    if (!res.text.trim()) {
+      setStatus('Cell is only existing Master prompts — nothing new to keep');
+      return;
+    }
+    pushHistory();
+    writeCellCurrentPage(tab, cellIndex, res.text);
+    liveSyncConfirmedLinksForCell(tab.id, cellIndex, null, { dropEmpty: true });
+    if (isMasterTab(tab)) {
+      syncLockedPartPagesFromMaster(cellIndex);
+      relockPartsAfterMasterChange();
+    }
+    renderGrid();
+    renderCombinedPrompt();
+    applyConfirmedCellHighlights();
+    applyAppendCheckedState();
+    renderMasterLibrary();
+    scheduleSave();
+    setStatus('Extracted ' + res.count + ' Master prompt' + (res.count === 1 ? '' : 's') +
+      ' — kept only new text', 'ok');
   }
 
   function closeAddPageChoiceMenu() {
