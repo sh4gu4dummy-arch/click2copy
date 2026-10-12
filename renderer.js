@@ -5124,6 +5124,18 @@
         clearCellsFromMenu(tab, indices, {});
       }
     });
+    // v0.177: lit block → Extract dupes runs on every Column B cell in it.
+    const blockDupeCells = indices.length > 1
+      ? indices.filter(function (i) { return i % tab.cols === 1; }) : [];
+    if (blockDupeCells.length && (tab.cols || 0) >= 2) {
+      items.push({
+        label: 'Extract dupes',
+        title: 'Remove other Master Column B prompts from the ' + blockDupeCells.length +
+          ' selected Column B cell' + (blockDupeCells.length === 1 ? '' : 's') +
+          ' (preview first; locked cells skipped; Ctrl+Z to undo)',
+        onClick: function () { previewMasterDupesForCells(tab, blockDupeCells, x, y); }
+      });
+    } else
     // v0.172: Column B only — strip other Master Col B prompts found inside this cell.
     if (c === 1 && (tab.cols || 0) >= 2) {
       const lockedHere = !isMasterTab(tab) && isCellMasterEditBlocked(tab, cellIndex);
@@ -5277,6 +5289,90 @@
           return;
         }
         extractMasterDupesFromCell(tab, cellIndex);
+      }
+    });
+  }
+
+  /** v0.177: Extract dupes over many cells — one preview, one Apply, one undo step. */
+  function collectMasterDupeChanges(tab, cellIndices) {
+    const out = { changes: [], locked: 0, onlyDupes: 0, total: 0 };
+    cellIndices.forEach(function (idx) {
+      if (idx < 0 || idx >= tab.cells.length) return;
+      if (!isMasterTab(tab) && isCellMasterEditBlocked(tab, idx)) { out.locked++; return; }
+      const before = String(tab.cells[idx] || '');
+      const res = stripMasterDupesText(before, tab, idx);
+      if (!res.count) return;
+      if (!res.text.trim()) { out.onlyDupes++; return; }
+      out.changes.push({ idx: idx, before: before, text: res.text, count: res.count });
+      out.total += res.count;
+    });
+    return out;
+  }
+
+  function masterDupeSkipNote(r) {
+    const notes = [];
+    if (r.locked) notes.push(r.locked + ' locked skipped');
+    if (r.onlyDupes) notes.push(r.onlyDupes + ' only Master prompts kept as is');
+    return notes.length ? ' (' + notes.join(', ') + ')' : '';
+  }
+
+  function previewMasterDupesForCells(tab, cellIndices, x, y) {
+    if (!tab || !cellIndices || !cellIndices.length) return;
+    const r = collectMasterDupeChanges(tab, cellIndices);
+    if (!r.changes.length) {
+      setStatus('No Master prompts found inside the selected cells' + masterDupeSkipNote(r));
+      return;
+    }
+    const body = document.createElement('div');
+    body.className = 'dupe-preview dupe-preview-multi';
+    r.changes.forEach(function (ch) {
+      const name = document.createElement('div');
+      name.className = 'dupe-preview-label';
+      name.textContent = cellAddress(Math.floor(ch.idx / tab.cols), ch.idx % tab.cols) + ' — will delete (red):';
+      const orig = document.createElement('div');
+      orig.className = 'dupe-preview-text';
+      masterDupeSegments(ch.before, tab, ch.idx).forEach(function (sg) {
+        const span = document.createElement(sg.cut ? 'del' : 'span');
+        span.textContent = sg.text;
+        orig.appendChild(span);
+      });
+      const kl = document.createElement('div');
+      kl.className = 'dupe-preview-label';
+      kl.textContent = 'Keeps:';
+      const kept = document.createElement('div');
+      kept.className = 'dupe-preview-text dupe-preview-kept';
+      kept.textContent = ch.text;
+      body.appendChild(name); body.appendChild(orig); body.appendChild(kl); body.appendChild(kept);
+    });
+    const n = r.changes.length;
+    openActionConfirm({
+      anchor: { x: x, y: y },
+      message: 'Extract ' + r.total + ' Master prompt' + (r.total === 1 ? '' : 's') + ' from ' +
+        n + ' cell' + (n === 1 ? '' : 's') + '?' + masterDupeSkipNote(r),
+      body: body,
+      actionLabel: 'Apply',
+      cancelStatus: 'Extract dupes cancelled — nothing changed',
+      ariaLabel: 'Extract dupes preview',
+      onConfirm: function () {
+        const stale = activeTab() !== tab || r.changes.some(function (ch) {
+          return String(tab.cells[ch.idx] || '') !== ch.before;
+        });
+        if (stale) { setStatus('Extract cancelled — cells changed', 'err'); return; }
+        pushHistory();
+        r.changes.forEach(function (ch) {
+          writeCellCurrentPage(tab, ch.idx, ch.text);
+          liveSyncConfirmedLinksForCell(tab.id, ch.idx, null, { dropEmpty: true });
+          if (isMasterTab(tab)) syncLockedPartPagesFromMaster(ch.idx);
+        });
+        if (isMasterTab(tab)) relockPartsAfterMasterChange();
+        renderGrid();
+        renderCombinedPrompt();
+        applyConfirmedCellHighlights();
+        applyAppendCheckedState();
+        renderMasterLibrary();
+        scheduleSave();
+        setStatus('Extracted ' + r.total + ' Master prompt' + (r.total === 1 ? '' : 's') + ' from ' +
+          n + ' cell' + (n === 1 ? '' : 's') + ' — kept only new text' + masterDupeSkipNote(r), 'ok');
       }
     });
   }
@@ -10063,7 +10159,7 @@
       const label = document.createElement('span');
       label.className = 'column-header-label';
       label.textContent = columnLetter(c);
-      label.title = 'Column ' + columnLetter(c);
+      label.title = 'Column ' + columnLetter(c) + ' — click to select the whole column';
       header.appendChild(label);
 
       if (c === 1 && isMasterTab(tab)) {
@@ -10175,6 +10271,9 @@
         resizeColumnByKeyboard(tab, c, e.key === 'ArrowRight' ? 16 : -16);
       });
       header.appendChild(handle);
+      wireHeaderSelect(header,
+        'button, .column-resize-handle, .column-col1-filter, .column-col1-filter-menu, .column-sort-controls',
+        function (extend) { selectWholeGridLine('col', c, extend); });
       el.cellGrid.appendChild(header);
     }
 
@@ -10186,7 +10285,7 @@
       const rowNum = document.createElement('span');
       rowNum.className = 'row-header-label';
       rowNum.textContent = String(r + 1);
-      rowNum.title = 'Row ' + (r + 1) + ' — right-click to clear';
+      rowNum.title = 'Row ' + (r + 1) + ' — click to select the row · right-click to clear';
       rowNum.setAttribute('aria-hidden', 'true');
       rowControls.appendChild(rowNum);
 
@@ -10244,6 +10343,8 @@
         beginRowResize(e, r, rowResize);
       });
       rowControls.appendChild(rowResize);
+      wireHeaderSelect(rowControls, 'button, .row-resize-handle, .row-move-controls',
+        function (extend) { selectWholeGridLine('row', r, extend); });
       el.cellGrid.appendChild(rowControls);
 
       for (let c = 0; c < tab.cols; c++) {
@@ -11145,6 +11246,68 @@
     const b = getStickyCellRange();
     if (!b) return false;
     return row >= b.rMin && row <= b.rMax && col >= b.cMin && col <= b.cMax;
+  }
+
+  /**
+   * v0.177: click a column letter / row number → that whole column / row as the
+   * lit block (same as a drag block: Ctrl+C TSV, Delete, right-click). Shift+click
+   * another header extends a whole-column / whole-row block.
+   */
+  function selectWholeGridLine(kind, index, extend) {
+    const tab = activeTab();
+    if (!tab || !tab.rows || !tab.cols || !el.cellGrid) return;
+    const cur = extend ? getStickyCellRange() : null;
+    let b;
+    if (kind === 'col') {
+      let c0 = index;
+      let c1 = index;
+      if (cur && cur.rMin === 0 && cur.rMax === tab.rows - 1) {
+        c0 = Math.min(cur.cMin, index); c1 = Math.max(cur.cMax, index);
+      }
+      b = { rMin: 0, rMax: tab.rows - 1, cMin: c0, cMax: c1 };
+    } else {
+      let r0 = index;
+      let r1 = index;
+      if (cur && cur.cMin === 0 && cur.cMax === tab.cols - 1) {
+        r0 = Math.min(cur.rMin, index); r1 = Math.max(cur.rMax, index);
+      }
+      b = { rMin: r0, rMax: r1, cMin: 0, cMax: tab.cols - 1 };
+    }
+    clearKeyboardCellRange();
+    const focusIdx = b.rMin * tab.cols + b.cMin;
+    const ta = el.cellGrid.querySelector('textarea.cell[data-idx="' + focusIdx + '"]');
+    if (ta) {
+      try { ta.setSelectionRange(0, 0); } catch (err) { /* no-op */ }
+      try { ta.focus({ preventScroll: true }); } catch (err) { ta.focus(); }
+      try { ta.setSelectionRange(0, 0); } catch (err) { /* no-op */ }
+    }
+    if (isMultiCellBounds(b)) setStickyCellRange(b, tab.id);
+    else clearStickyCellRange();
+    const what = kind === 'col'
+      ? ('Column' + (b.cMin === b.cMax ? ' ' + columnLetter(b.cMin) : 's ' + columnLetter(b.cMin) + '–' + columnLetter(b.cMax)))
+      : ('Row' + (b.rMin === b.rMax ? ' ' + (b.rMin + 1) : 's ' + (b.rMin + 1) + '–' + (b.rMax + 1)));
+    const count = (b.rMax - b.rMin + 1) * (b.cMax - b.cMin + 1);
+    setStatus(what + ' selected (' + count + ' cell' + (count === 1 ? '' : 's') + ')', 'ok');
+  }
+
+  /** Wire a header so only a press+release on its plain area (not buttons/handles) selects. */
+  function wireHeaderSelect(node, skipSelector, onSelect) {
+    let armed = false;
+    node.addEventListener('mousedown', function (e) {
+      armed = false;
+      if (e.button !== 0) return;
+      const t = e.target;
+      if (t && t.closest && t.closest(skipSelector)) return;
+      armed = true;
+      e.preventDefault(); // no header text selection / no cell blur flash
+    });
+    node.addEventListener('click', function (e) {
+      if (!armed) return;
+      armed = false;
+      const t = e.target;
+      if (t && t.closest && t.closest(skipSelector)) return;
+      onSelect(e.shiftKey);
+    });
   }
 
   function setStickyCellRange(bounds, tabId) {

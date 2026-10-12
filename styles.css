@@ -3088,3 +3088,7 @@ textarea.cell.cell-range-selected::selection {
 }
 .dupe-preview-text del { color: #ff8a8a; background: rgba(255, 90, 90, 0.14); text-decoration: line-through; }
 .dupe-preview-kept { border-color: var(--accent); }
+/* v0.177 multi-cell Extract dupes preview scrolls as one list */
+.paste-confirm.has-body .dupe-preview-multi { max-height: min(60vh, 520px); overflow: auto; }
+/* v0.177 column letters / row numbers select the whole column / row */
+.column-header, .row-controls { cursor: pointer; }
