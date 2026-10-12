@@ -11622,6 +11622,13 @@
     }
 
     clearKeyboardCellRange();
+    // v0.176: a press inside an existing text highlight would start a native
+    // text drag (blocked in cells), so the new drag selected nothing. Collapse
+    // first so every plain press-drag starts a fresh selection (Ash).
+    if (document.activeElement === ta && typeof ta.selectionStart === 'number' &&
+        ta.selectionStart !== ta.selectionEnd) {
+      try { ta.setSelectionRange(ta.selectionEnd, ta.selectionEnd); } catch (err) { /* no-op */ }
+    }
     // A plain press always starts fresh: drop any lit block right away so a block
     // and a text selection never show together. Drag never moves/swaps cells (Ash).
     if (stickyCellRange) clearStickyCellRange();
@@ -13138,7 +13145,22 @@
     const header = el.cellGrid.querySelector('.grid-corner');
     if (rowEl) {
       const headerH = header ? header.getBoundingClientRect().height : 0;
-      const delta = rowEl.getBoundingClientRect().top - wrap.getBoundingClientRect().top - headerH - 4;
+      // v0.176: target near the TOP with ~1-2 visible rows above it for context
+      // (Ash). Tall rows above → fewer (keep them under ~1/3 of the view).
+      const viewH = Math.max(0, wrap.clientHeight - headerH);
+      let anchorEl = rowEl;
+      let above = 0;
+      for (let r = target - 1; r >= 0 && above < 2; r--) {
+        if (!rowMatchesFilter(tab, r)) continue;
+        const prev = el.cellGrid.querySelector('.row-controls[data-row="' + r + '"]');
+        if (!prev) continue;
+        const span = rowEl.getBoundingClientRect().top - prev.getBoundingClientRect().top;
+        if (span > viewH / 3) break;
+        anchorEl = prev;
+        above++;
+      }
+      const delta = anchorEl.getBoundingClientRect().top - wrap.getBoundingClientRect().top - headerH - 4;
+      // Browser clamps at max scroll near the end.
       wrap.scrollTop = Math.max(0, wrap.scrollTop + delta);
       wrap.scrollLeft = 0;
     }
