@@ -5148,6 +5148,15 @@
         onClick: function () { previewMasterDupesForCell(tab, cellIndex, x, y); }
       });
     }
+    // v0.178: Find similar Master Column B prompts (word-based, 75%+).
+    items.push({
+      label: 'Find similar',
+      title: String(tab.cells[cellIndex] || '').trim()
+        ? 'List Master Column B prompts that are 75%+ similar to this cell (word order ignored)'
+        : 'Empty cell — nothing to compare',
+      disabled: !String(tab.cells[cellIndex] || '').trim(),
+      onClick: function () { openFindSimilar(tab, cellIndex, x, y); }
+    });
     openCtxMenu({ heading: heading, items: items, x: x, y: y, className: 'cell-shade-menu' });
   }
 
@@ -5408,6 +5417,253 @@
     scheduleSave();
     setStatus('Extracted ' + res.count + ' Master prompt' + (res.count === 1 ? '' : 's') +
       ' — kept only new text', 'ok');
+  }
+
+  /* ── v0.178 Find similar: word-based match against Master Column B ───────
+   * Score tolerates reordering and small typos: words pair up exactly first,
+   * then leftovers (4+ letters) pair by typo similarity (edit distance, >= 0.75). Score =
+   * 2 × matched / (words A + words B). Dismissed pairs ("Keep both") live in
+   * localStorage as hashes only (no prompt text). */
+  const SIMILAR_THRESHOLD = 0.75;
+  const SIMILAR_DISMISSED_KEY = 'click2copy-similar-dismissed';
+  const SIM_WORD_RE = /[\p{L}\p{N}]+/gu;
+
+  function simWords(text) {
+    return (String(text || '').toLowerCase().match(SIM_WORD_RE) || []);
+  }
+
+  /** Word similarity for typos: 1 − optimal-string-alignment distance / longer length. */
+  function simWordSim(a, b) {
+    if (a === b) return 1;
+    const n = a.length;
+    const m = b.length;
+    if (!n || !m) return 0;
+    const d = [];
+    for (let i = 0; i <= n; i++) { d.push(new Array(m + 1).fill(0)); d[i][0] = i; }
+    for (let j = 0; j <= m; j++) d[0][j] = j;
+    for (let i = 1; i <= n; i++) {
+      for (let j = 1; j <= m; j++) {
+        const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+        let v = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + cost);
+        if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) v = Math.min(v, d[i - 2][j - 2] + 1);
+        d[i][j] = v;
+      }
+    }
+    return 1 - d[n][m] / Math.max(n, m);
+  }
+
+  /** { score, usedA[], usedB[] } for word lists a / b. */
+  function simScore(a, b) {
+    const usedA = a.map(function () { return false; });
+    const usedB = b.map(function () { return false; });
+    if (!a.length || !b.length) return { score: 0, usedA: usedA, usedB: usedB };
+    let sum = 0;
+    for (let i = 0; i < a.length; i++) {
+      for (let j = 0; j < b.length; j++) {
+        if (!usedB[j] && a[i] === b[j]) { usedA[i] = true; usedB[j] = true; sum += 1; break; }
+      }
+    }
+    for (let i = 0; i < a.length; i++) {
+      if (usedA[i] || a[i].length < 4) continue;
+      let best = -1;
+      let bestSim = 0.75;
+      for (let j = 0; j < b.length; j++) {
+        if (usedB[j] || b[j].length < 4) continue;
+        const d = simWordSim(a[i], b[j]);
+        if (d >= bestSim) { bestSim = d; best = j; }
+      }
+      if (best >= 0) { usedA[i] = true; usedB[best] = true; sum += bestSim; }
+    }
+    return { score: (2 * sum) / (a.length + b.length), usedA: usedA, usedB: usedB };
+  }
+
+  function simHash(str) {
+    let h = 0x811c9dc5;
+    for (let i = 0; i < str.length; i++) {
+      h ^= str.charCodeAt(i);
+      h = Math.imul(h, 0x01000193) >>> 0;
+    }
+    return h.toString(36);
+  }
+
+  function simPairKey(tab, idx, mIdx, text, mText) {
+    return simHash(tab.id + ':' + idx + '>' + mIdx + '|' + text + '|' + mText);
+  }
+
+  function loadSimilarDismissed() {
+    try {
+      const raw = JSON.parse(window.localStorage.getItem(SIMILAR_DISMISSED_KEY) || '[]');
+      return Array.isArray(raw) ? raw.filter(function (k) { return typeof k === 'string'; }) : [];
+    } catch (err) { return []; }
+  }
+
+  function dismissSimilarPair(key) {
+    const list = loadSimilarDismissed().filter(function (k) { return k !== key; });
+    list.push(key);
+    while (list.length > 2000) list.shift();
+    try { window.localStorage.setItem(SIMILAR_DISMISSED_KEY, JSON.stringify(list)); } catch (err) { /* no-op */ }
+  }
+
+  /** Master Col B cells 75%+ similar to this cell, best first (dismissed pairs hidden). */
+  function findSimilarMasterCells(tab, idx) {
+    const master = state.tabs.find(isMasterTab);
+    const text = String(tab.cells[idx] || '');
+    const words = simWords(text);
+    if (!master || (master.cols || 0) < 2 || !words.length) return [];
+    const dismissed = Object.create(null);
+    loadSimilarDismissed().forEach(function (k) { dismissed[k] = true; });
+    const out = [];
+    for (let r = 0; r < master.rows; r++) {
+      const mi = r * master.cols + 1;
+      if (tab === master && mi === idx) continue;
+      const mText = String(master.cells[mi] || '');
+      if (!mText.trim()) continue;
+      const res = simScore(words, simWords(mText));
+      if (res.score < SIMILAR_THRESHOLD) continue;
+      const key = simPairKey(tab, idx, mi, text, mText);
+      if (dismissed[key]) continue;
+      out.push({ mIdx: mi, mText: mText, score: res.score, usedA: res.usedA, usedB: res.usedB, key: key });
+    }
+    out.sort(function (a, b) { return b.score - a.score || a.mIdx - b.mIdx; });
+    return out;
+  }
+
+  /** Original text with words unique to this side highlighted (shared words plain). */
+  function simDiffNode(text, used) {
+    const box = document.createElement('div');
+    box.className = 'dupe-preview-text sim-side';
+    const src = String(text || '');
+    let last = 0;
+    let k = 0;
+    let m;
+    SIM_WORD_RE.lastIndex = 0;
+    while ((m = SIM_WORD_RE.exec(src))) {
+      if (m.index > last) box.appendChild(document.createTextNode(src.slice(last, m.index)));
+      if (used[k]) {
+        box.appendChild(document.createTextNode(m[0]));
+      } else {
+        const mark = document.createElement('mark');
+        mark.className = 'sim-uniq';
+        mark.textContent = m[0];
+        box.appendChild(mark);
+      }
+      k++;
+      last = SIM_WORD_RE.lastIndex;
+    }
+    if (last < src.length) box.appendChild(document.createTextNode(src.slice(last)));
+    return box;
+  }
+
+  function jumpToMasterCell(mIdx) {
+    const master = state.tabs.find(isMasterTab);
+    if (!master) return;
+    closePasteOverwriteConfirm();
+    selectTab(master.id);
+    const ta = el.cellGrid && el.cellGrid.querySelector('textarea.cell[data-idx="' + mIdx + '"]');
+    if (ta) {
+      try { ta.scrollIntoView({ block: 'center', inline: 'nearest' }); } catch (err) { /* no-op */ }
+      try { ta.focus({ preventScroll: true }); } catch (err) { ta.focus(); }
+      focusedCell = { tabId: master.id, index: mIdx };
+    }
+    setStatus('Jumped to Master ' + cellAddress(Math.floor(mIdx / master.cols), mIdx % master.cols), 'ok');
+  }
+
+  function openFindSimilar(tab, idx, x, y) {
+    if (!tab || idx < 0 || idx >= tab.cells.length) return;
+    const text = String(tab.cells[idx] || '');
+    if (!text.trim()) { setStatus('Empty cell — nothing to compare'); return; }
+    const master = state.tabs.find(isMasterTab);
+    const matches = findSimilarMasterCells(tab, idx);
+    if (!matches.length || !master) { setStatus('No similar Master prompts (75%+)'); return; }
+    const addr = cellAddress(Math.floor(idx / tab.cols), idx % tab.cols);
+    const canLock = !isMasterTab(tab) && (idx % tab.cols) !== 0;
+    const lock = getCellLock(tab, idx);
+    const body = document.createElement('div');
+    body.className = 'dupe-preview sim-list';
+    matches.forEach(function (mt) {
+      const mAddr = cellAddress(Math.floor(mt.mIdx / master.cols), mt.mIdx % master.cols);
+      const item = document.createElement('div');
+      item.className = 'sim-item';
+      const head = document.createElement('div');
+      head.className = 'sim-head';
+      const label = document.createElement('span');
+      label.className = 'dupe-preview-label';
+      label.textContent = 'Master ' + mAddr + ' — ' + Math.round(mt.score * 100) + '%';
+      head.appendChild(label);
+      function act(name, title, fn, disabled) {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'btn btn-secondary sim-act';
+        b.textContent = name;
+        b.title = title;
+        b.disabled = !!disabled;
+        b.addEventListener('click', function (ev) {
+          ev.preventDefault();
+          ev.stopPropagation();
+          fn(item);
+        });
+        head.appendChild(b);
+      }
+      act('Jump', 'Go to Master ' + mAddr, function () { jumpToMasterCell(mt.mIdx); });
+      if (canLock) {
+        const already = !!(lock && lock.masterOrigin === true && lock.masterCellIndex === mt.mIdx);
+        act('Lock to this', already ? 'Already locked to Master ' + mAddr
+          : 'Replace this cell with Master ' + mAddr + ' and lock it (asks first if your own text would be replaced)',
+        function () {
+          if (activeTab() !== tab || String(tab.cells[idx] || '') !== text) {
+            closePasteOverwriteConfirm();
+            setStatus('Find similar closed — cell changed', 'err');
+            return;
+          }
+          closePasteOverwriteConfirm();
+          focusedCell = { tabId: tab.id, index: idx };
+          insertMasterText(master.cells[mt.mIdx] || '', mt.mIdx, { index: idx, anchor: { x: x, y: y } });
+        }, already);
+      }
+      act('Keep both', 'Hide this pair from Find similar next time', function (node) {
+        dismissSimilarPair(mt.key);
+        node.remove();
+        const left = body.querySelectorAll('.sim-item').length;
+        const msgEl = pasteConfirmEl && pasteConfirmEl.querySelector('.paste-confirm-text');
+        if (msgEl && left) msgEl.textContent = left + ' similar Master prompt' + (left === 1 ? '' : 's') + ' (75%+)';
+        if (!left) {
+          closePasteOverwriteConfirm();
+          setStatus('Kept both — no more similar Master prompts listed', 'ok');
+        } else {
+          setStatus('Kept both (' + addr + ' and Master ' + mAddr + ')', 'ok');
+        }
+      });
+      item.appendChild(head);
+      const sides = document.createElement('div');
+      sides.className = 'sim-sides';
+      const left = document.createElement('div');
+      const lt = document.createElement('div');
+      lt.className = 'dupe-preview-label';
+      lt.textContent = 'This cell ' + addr;
+      left.appendChild(lt);
+      left.appendChild(simDiffNode(text, mt.usedA));
+      const right = document.createElement('div');
+      const rt = document.createElement('div');
+      rt.className = 'dupe-preview-label';
+      rt.textContent = 'Master ' + mAddr;
+      right.appendChild(rt);
+      right.appendChild(simDiffNode(mt.mText, mt.usedB));
+      sides.appendChild(left);
+      sides.appendChild(right);
+      item.appendChild(sides);
+      body.appendChild(item);
+    });
+    openActionConfirm({
+      anchor: cellWrapAt(idx) || { x: x, y: y },
+      message: matches.length + ' similar Master prompt' + (matches.length === 1 ? '' : 's') + ' (75%+)',
+      body: body,
+      noAction: true,
+      cancelLabel: 'Close',
+      cancelStatus: 'Find similar closed',
+      ariaLabel: 'Find similar results',
+      onConfirm: function () {}
+    });
+    setStatus('Found ' + matches.length + ' similar Master prompt' + (matches.length === 1 ? '' : 's'), 'ok');
   }
 
   function closeAddPageChoiceMenu() {
@@ -12976,7 +13232,7 @@
     const cancel = document.createElement('button');
     cancel.type = 'button';
     cancel.className = 'btn btn-secondary paste-confirm-cancel';
-    cancel.textContent = 'Cancel';
+    cancel.textContent = opts.cancelLabel || 'Cancel';
     ok.addEventListener('click', function (ev) {
       ev.preventDefault();
       const back = pasteConfirmFocusBack;
@@ -12996,7 +13252,7 @@
       pop.classList.add('has-body');
       pop.appendChild(opts.body);
     }
-    pop.appendChild(ok);
+    if (!opts.noAction) pop.appendChild(ok);
     pop.appendChild(cancel);
     document.body.appendChild(pop);
     pasteConfirmEl = pop;

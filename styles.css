@@ -3092,3 +3092,13 @@ textarea.cell.cell-range-selected::selection {
 .paste-confirm.has-body .dupe-preview-multi { max-height: min(60vh, 520px); overflow: auto; }
 /* v0.177 column letters / row numbers select the whole column / row */
 .column-header, .row-controls { cursor: pointer; }
+/* v0.178 Find similar results */
+.paste-confirm.has-body .sim-list { max-height: min(60vh, 520px); overflow: auto; gap: 8px; }
+.sim-item { display: flex; flex-direction: column; gap: 4px; padding-bottom: 6px; border-bottom: 1px solid var(--border); }
+.sim-item:last-child { border-bottom: 0; }
+.sim-head { display: flex; align-items: center; gap: 4px; }
+.sim-head .dupe-preview-label { flex: 1; }
+.sim-head .sim-act { padding: 2px 8px; font-size: 11px; font-weight: 500; }
+.sim-sides { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.sim-side { max-height: 120px; }
+.sim-side mark.sim-uniq { color: inherit; background: rgba(250, 204, 21, 0.28); border-radius: 3px; }
