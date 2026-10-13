@@ -3102,3 +3102,19 @@ textarea.cell.cell-range-selected::selection {
 .sim-sides { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
 .sim-side { max-height: 120px; }
 .sim-side mark.sim-uniq { color: inherit; background: rgba(250, 204, 21, 0.28); border-radius: 3px; }
+
+/* v0.179: Col A type-ahead suggestions (portaled under the cell) */
+.col1-suggest {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px;
+  max-width: 360px;
+}
+.col1-suggest .tab-icon-picker-action {
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.col1-suggest .tab-icon-picker-action.is-hi { border-color: var(--accent); background: var(--surface); }

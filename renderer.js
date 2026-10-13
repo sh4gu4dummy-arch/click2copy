@@ -9776,6 +9776,138 @@
     if (printable) beginCol1TypeEdit(ta, true);
   }
 
+  /* ── v0.179: Col A type-ahead suggestions (existing Col A values) ── */
+  const COL1_SUGGEST_MAX = 8;
+  let col1SuggestEl = null;
+  let col1SuggestTa = null;
+  let col1SuggestHi = -1;
+
+  /** Part tabs: Master Column A list (what Col A is validated against); Master / no list: this tab's own values. */
+  function col1SuggestSource(tab) {
+    if (!isMasterTab(tab)) {
+      const m = masterCol1Values();
+      if (m.length) return m;
+    }
+    return uniqueCol1Values(tab).filter(function (v) { return !!v; });
+  }
+
+  function closeCol1Suggest() {
+    if (col1SuggestEl && col1SuggestEl.parentNode) col1SuggestEl.parentNode.removeChild(col1SuggestEl);
+    col1SuggestEl = null;
+    col1SuggestTa = null;
+    col1SuggestHi = -1;
+    document.removeEventListener('scroll', closeCol1Suggest, true);
+    window.removeEventListener('resize', closeCol1Suggest);
+  }
+
+  function setCol1SuggestHi(i) {
+    if (!col1SuggestEl) return;
+    const items = col1SuggestEl.querySelectorAll('.tab-icon-picker-action');
+    col1SuggestHi = i;
+    for (let k = 0; k < items.length; k++) {
+      const on = k === i;
+      items[k].classList.toggle('is-hi', on);
+      items[k].setAttribute('aria-selected', on ? 'true' : 'false');
+    }
+  }
+
+  function updateCol1Suggest(ta) {
+    const tab = activeTab();
+    const idx = parseInt(ta.dataset.idx, 10);
+    if (!tab || !tab.cols || Number.isNaN(idx) || idx % tab.cols !== 0 || ta.readOnly) { closeCol1Suggest(); return; }
+    const q = ta.value.trim().toLowerCase();
+    if (!q) { closeCol1Suggest(); return; }
+    const pre = [];
+    const mid = [];
+    col1SuggestSource(tab).forEach(function (v) {
+      const lv = v.toLowerCase();
+      if (v === ta.value.trim()) return;
+      const at = lv.indexOf(q);
+      if (at === 0) pre.push(v);
+      else if (at > 0) mid.push(v);
+    });
+    const list = pre.concat(mid).slice(0, COL1_SUGGEST_MAX);
+    if (!list.length) { closeCol1Suggest(); return; }
+    closeCol1Suggest();
+    const pop = document.createElement('div');
+    pop.className = 'tab-icon-picker col1-suggest';
+    pop.setAttribute('role', 'listbox');
+    list.forEach(function (v, i) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'tab-icon-picker-action';
+      btn.setAttribute('role', 'option');
+      btn.tabIndex = -1;
+      btn.textContent = v;
+      // Keep focus in the cell (no blur before the pick).
+      btn.addEventListener('pointerdown', function (ev) { ev.preventDefault(); });
+      btn.addEventListener('mousedown', function (ev) { ev.preventDefault(); });
+      btn.addEventListener('click', function (ev) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        pickCol1Suggest(ta, v);
+      });
+      btn.addEventListener('mouseenter', function () { setCol1SuggestHi(i); });
+      pop.appendChild(btn);
+    });
+    document.body.appendChild(pop);
+    col1SuggestEl = pop;
+    col1SuggestTa = ta;
+    col1SuggestHi = -1;
+    const r = ta.getBoundingClientRect();
+    pop.style.minWidth = Math.max(120, Math.round(r.width)) + 'px';
+    const pr = pop.getBoundingClientRect();
+    let top = r.bottom + 2;
+    if (top + pr.height > window.innerHeight - 6) top = Math.max(6, r.top - pr.height - 2);
+    pop.style.left = Math.max(6, Math.min(r.left, window.innerWidth - pr.width - 6)) + 'px';
+    pop.style.top = top + 'px';
+    document.addEventListener('scroll', closeCol1Suggest, true);
+    window.addEventListener('resize', closeCol1Suggest);
+  }
+
+  /** Fill as if typed, then commit (same 'change' path as blur/Enter). */
+  function pickCol1Suggest(ta, value) {
+    closeCol1Suggest();
+    if (!ta || !ta.isConnected) return;
+    ta.focus();
+    ta.select();
+    document.execCommand('insertText', false, value);
+    ta.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+
+  function onCol1SuggestKey(e) {
+    if (!col1SuggestEl || col1SuggestTa !== e.currentTarget || e.isComposing) return;
+    const n = col1SuggestEl.querySelectorAll('.tab-icon-picker-action').length;
+    const plain = !e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey;
+    if (plain && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      const d = e.key === 'ArrowDown' ? 1 : -1;
+      setCol1SuggestHi(col1SuggestHi < 0 ? (d > 0 ? 0 : n - 1) : (col1SuggestHi + d + n) % n);
+      return;
+    }
+    if (plain && e.key === 'Enter' && col1SuggestHi >= 0) {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      const btn = col1SuggestEl.querySelectorAll('.tab-icon-picker-action')[col1SuggestHi];
+      pickCol1Suggest(e.currentTarget, btn.textContent);
+      return;
+    }
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      closeCol1Suggest();
+      return;
+    }
+    if (e.key === 'Enter' || e.key === 'Tab') closeCol1Suggest();
+  }
+
+  function wireCol1Suggest(ta) {
+    ta.addEventListener('keydown', onCol1SuggestKey, true);
+    ta.addEventListener('input', function () { updateCol1Suggest(ta); });
+    ta.addEventListener('blur', function () { if (col1SuggestTa === ta) closeCol1Suggest(); });
+  }
+
   function onCol1CellBlurEdit(e) {
     const ta = e.currentTarget;
     if (!ta.classList.contains('col1-editing')) return;
@@ -10882,6 +11014,7 @@
         ta.addEventListener('blur', onCellBlurMasterFinish);
         ta.addEventListener('paste', onCellPaste);
         ta.addEventListener('change', onCellCommitMasterMatch);
+        if (tab.cols && idx % tab.cols === 0) wireCol1Suggest(ta);
         if (isPartTabCol1Cell(tab, idx)) {
           ta.addEventListener('focus', onCol1CellFocusRemember);
           ta.addEventListener('click', onCol1CellClickFilter);
