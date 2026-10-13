@@ -4681,6 +4681,8 @@
     if (b && r >= b.rMin && r <= b.rMax && c >= b.cMin && c <= b.cMax) {
       const out = [];
       for (let rr = b.rMin; rr <= b.rMax; rr++) {
+        // v0.181: a block spanning filtered-out rows acts on visible rows only (Excel).
+        if (!rowShownInGrid(tab, rr)) continue;
         for (let cc = b.cMin; cc <= b.cMax; cc++) {
           const i = rr * tab.cols + cc;
           if (i >= 0 && i < tab.cells.length) out.push(i);
@@ -5047,7 +5049,7 @@
       // selected substring; else whole cell.
       if (inStickyBlock) {
         const tsv = buildCellRangeTsv(tab, sticky.rMin, sticky.cMin, sticky.rMax, sticky.cMax);
-        const rows = sticky.rMax - sticky.rMin + 1;
+        const rows = lastBlockCopy ? lastBlockCopy.matrix.length : (sticky.rMax - sticky.rMin + 1);
         const cols = sticky.cMax - sticky.cMin + 1;
         return { text: tsv, status: 'Copied ' + rows + '\u00d7' + cols + ' cells' };
       }
@@ -5704,7 +5706,7 @@
     selectTab(master.id);
     const ta = el.cellGrid && el.cellGrid.querySelector('textarea.cell[data-idx="' + mIdx + '"]');
     if (ta) {
-      try { ta.scrollIntoView({ block: 'center', inline: 'nearest' }); } catch (err) { /* no-op */ }
+      scrollGridRowNearTop(master, Math.floor(mIdx / master.cols)); // v0.181: same as ⤓
       try { ta.focus({ preventScroll: true }); } catch (err) { ta.focus(); }
       focusedCell = { tabId: master.id, index: mIdx };
     }
@@ -9750,6 +9752,33 @@
     return filter.has(v);
   }
 
+  /**
+   * v0.181: row shown in the active grid (filters + the pinned Col A edit row).
+   * Other tabs → always true (no grid filter applies there).
+   */
+  function rowShownInGrid(tab, rowIndex) {
+    if (!tab || tab !== activeTab()) return true;
+    if (col1EditCell && col1EditCell.tabId === tab.id &&
+        Math.floor(col1EditCell.index / tab.cols) === rowIndex) return true;
+    return rowMatchesFilter(tab, rowIndex);
+  }
+
+  /**
+   * v0.181: target rows for a block paste starting at startRow — consecutive
+   * VISIBLE rows (filtered-out rows skipped, Excel-style). Past the last row:
+   * new rows as before.
+   */
+  function pasteTargetRows(tab, startRow, count) {
+    const out = [];
+    let r = startRow;
+    for (; r < tab.rows && out.length < count; r++) {
+      if (r === startRow || rowShownInGrid(tab, r)) out.push(r);
+    }
+    let extra = Math.max(r, tab.rows);
+    while (out.length < count) out.push(extra++);
+    return out;
+  }
+
   function rowMatchesFilter(tab, rowIndex) {
     let base = true;
     const rowFilter = getGridFilterPrefs(tab && tab.id).rowFilter;
@@ -10263,14 +10292,7 @@
     const ta = el.cellGrid.querySelector('textarea.cell[data-idx="' + idx + '"]');
     const wrap = ta && ta.closest ? ta.closest('.cell-wrap') : null;
     const scroller = el.cellGrid.parentElement;
-    if (wrap && scroller) {
-      // Sticky header row sits above cells — leave a little room under it.
-      const header = el.cellGrid.querySelector('.column-header');
-      const headerH = header ? header.getBoundingClientRect().height : 28;
-      const sRect = scroller.getBoundingClientRect();
-      const wRect = wrap.getBoundingClientRect();
-      scroller.scrollTop += (wRect.top - sRect.top) - headerH - 4;
-    }
+    if (wrap && scroller) scrollGridRowNearTop(tab, row); // v0.181: same as ⤓
     flashCol1Jump(wrap);
     if (ta && typeof ta.focus === 'function') {
       try { ta.focus({ preventScroll: true }); } catch (err) { ta.focus(); }
@@ -11884,6 +11906,7 @@
 
     const indices = [];
     for (let r = b.rMin; r <= b.rMax; r++) {
+      if (!rowShownInGrid(tab, r)) continue; // v0.181: visible rows only
       for (let c = b.cMin; c <= b.cMax; c++) {
         indices.push(r * tab.cols + c);
       }
@@ -12041,6 +12064,7 @@
     const lines = [];
     const matrix = [];
     for (let r = b.rMin; r <= b.rMax; r++) {
+      if (!rowShownInGrid(tab, r)) continue; // v0.181: visible rows only (Excel)
       const cells = [];
       for (let c = b.cMin; c <= b.cMax; c++) {
         cells.push(tab.cells[r * tab.cols + c] || '');
@@ -13187,14 +13211,15 @@
     }
   }
 
-  function pasteMatrixAt(tab, startRow, startCol, matrix) {
+  function pasteMatrixAt(tab, startRow, startCol, matrix, rowMap) {
     if (!tab || !matrix || !matrix.length) return null;
     const pasteRows = matrix.length;
     const pasteCols = matrix[0].length;
-    ensureTabSize(tab, startRow + pasteRows, startCol + pasteCols);
+    const rows = rowMap || matrix.map(function (_, r) { return startRow + r; });
+    ensureTabSize(tab, rows[rows.length - 1] + 1, startCol + pasteCols);
     for (let r = 0; r < pasteRows; r++) {
       for (let c = 0; c < pasteCols; c++) {
-        const idx = (startRow + r) * tab.cols + (startCol + c);
+        const idx = rows[r] * tab.cols + (startCol + c);
         writeCellCurrentPage(tab, idx, matrix[r][c] == null ? '' : String(matrix[r][c]));
         // Sheet paste replaces cell text — drop Master lock on overwritten cells.
         if (!isMasterTab(tab)) clearCellMasterLock(tab, idx);
@@ -13208,7 +13233,8 @@
     return {
       rows: pasteRows,
       cols: pasteCols,
-      endRow: startRow + pasteRows - 1,
+      endRow: rows[rows.length - 1],
+      rowMap: rows,
       endCol: startCol + pasteCols - 1
     };
   }
@@ -13265,6 +13291,7 @@
     e.preventDefault();
     const startRow = Math.floor(startIdx / tab.cols);
     const startCol = startIdx % tab.cols;
+    const rowMap = pasteTargetRows(tab, startRow, matrix.length);
     // Col A / Col B data validation: values not allowed keep the cell's
     // previous value (never silently stored).
     let col1Rejected = 0;
@@ -13274,7 +13301,7 @@
       const allowedA = masterCol1Values();
       for (let r = 0; r < matrix.length; r++) {
         for (let c = 0; c < matrix[r].length; c++) {
-          const rr = startRow + r;
+          const rr = rowMap[r];
           const cc = startCol + c;
           const v = matrix[r][c];
           if (cc === 0) {
@@ -13302,7 +13329,7 @@
       const pc = matrix[0].length;
       for (let r = 0; r < pr; r++) {
         for (let c = 0; c < pc; c++) {
-          const rr = startRow + r;
+          const rr = rowMap[r];
           const cc = startCol + c;
           if (rr < tab.rows && cc < tab.cols) {
             const i = rr * tab.cols + cc;
@@ -13323,7 +13350,7 @@
     const pasteAnchor = e.currentTarget;
     function doPaste() {
       pushHistory();
-      const result = pasteMatrixAt(tab, startRow, startCol, matrix);
+      const result = pasteMatrixAt(tab, startRow, startCol, matrix, rowMap);
       if (!result) return;
       // Push pasted text into the visible textareas now: the focused one would
       // otherwise "win" over the model in flushLiveCellInputs (run while Master
@@ -13331,7 +13358,7 @@
       if (el.cellGrid) {
         for (let r = 0; r < result.rows; r++) {
           for (let c = 0; c < result.cols; c++) {
-            const pi = (startRow + r) * tab.cols + (startCol + c);
+            const pi = rowMap[r] * tab.cols + (startCol + c);
             const pta = el.cellGrid.querySelector('textarea.cell[data-idx="' + pi + '"]');
             if (pta && pi < tab.cells.length) pta.value = tab.cells[pi] || '';
           }
@@ -13362,7 +13389,7 @@
       if (!isMasterTab(tab)) {
         for (let r = 0; r < result.rows; r++) {
           for (let c = 0; c < result.cols; c++) {
-            const outcome = linkCellIfMasterMatch(tab, (startRow + r) * tab.cols + (startCol + c));
+            const outcome = linkCellIfMasterMatch(tab, rowMap[r] * tab.cols + (startCol + c));
             if (outcome === 'linked') pasteLinked++;
             else if (outcome === 'blocked') pasteBlocked++;
           }
@@ -13393,7 +13420,7 @@
 
     // Ash: confirm before a multi-cell paste overwrites filled cells (own text
     // only — Master value → Master value swaps and identical text don't ask).
-    const filled = countFilledCellsInPasteRange(tab, startRow, startCol, matrix);
+    const filled = countFilledCellsInPasteRange(tab, startRow, startCol, matrix, rowMap);
     if (filled > 0) {
       const dims = tab.cols + 'x' + tab.rows;
       openPasteOverwriteConfirm(pasteAnchor, filled, function () {
@@ -13408,11 +13435,11 @@
     doPaste();
   }
 
-  function countFilledCellsInPasteRange(tab, startRow, startCol, matrix) {
+  function countFilledCellsInPasteRange(tab, startRow, startCol, matrix, rowMap) {
     let filled = 0;
     for (let r = 0; r < matrix.length; r++) {
       for (let c = 0; c < matrix[r].length; c++) {
-        const rr = startRow + r;
+        const rr = rowMap ? rowMap[r] : startRow + r;
         const cc = startCol + c;
         if (rr >= tab.rows || cc >= tab.cols) continue;
         const idx = rr * tab.cols + cc;
@@ -13623,7 +13650,7 @@
       );
       e.preventDefault();
       e.clipboardData.setData('text/plain', value);
-      const rows = sticky.rMax - sticky.rMin + 1;
+      const rows = lastBlockCopy ? lastBlockCopy.matrix.length : (sticky.rMax - sticky.rMin + 1);
       const cols = sticky.cMax - sticky.cMin + 1;
       setStatus('Copied ' + rows + '×' + cols + ' cells', 'ok');
       return;
@@ -13657,6 +13684,7 @@
       e.preventDefault();
       const indices = [];
       for (let r = sticky.rMin; r <= sticky.rMax; r++) {
+        if (!rowShownInGrid(tab, r)) continue; // v0.181: visible rows only
         for (let c = sticky.cMin; c <= sticky.cMax; c++) indices.push(r * tab.cols + c);
       }
       if (!isMasterTab(tab)) {
@@ -13775,6 +13803,36 @@
     setStatus('Jumped to top', 'ok');
   }
 
+  /**
+   * v0.176 / v0.181: scroll grid row `target` near the TOP with ~1-2 visible
+   * rows above it for context (Ash). Tall rows above → fewer (keep them under
+   * ~1/3 of the view). Browser clamps at max scroll near the end.
+   * Shared by ⤓, Find / Find All, Values quick-jumps, Find similar Jump.
+   */
+  function scrollGridRowNearTop(tab, target) {
+    const wrap = el.cellGrid && el.cellGrid.parentElement;
+    if (!tab || !wrap) return false;
+    const rowEl = el.cellGrid.querySelector('.row-controls[data-row="' + target + '"]');
+    if (!rowEl) return false;
+    const header = el.cellGrid.querySelector('.grid-corner');
+    const headerH = header ? header.getBoundingClientRect().height : 0;
+    const viewH = Math.max(0, wrap.clientHeight - headerH);
+    let anchorEl = rowEl;
+    let above = 0;
+    for (let r = target - 1; r >= 0 && above < 2; r--) {
+      if (!rowMatchesFilter(tab, r)) continue;
+      const prev = el.cellGrid.querySelector('.row-controls[data-row="' + r + '"]');
+      if (!prev) continue;
+      const span = rowEl.getBoundingClientRect().top - prev.getBoundingClientRect().top;
+      if (span > viewH / 3) break;
+      anchorEl = prev;
+      above++;
+    }
+    const delta = anchorEl.getBoundingClientRect().top - wrap.getBoundingClientRect().top - headerH - 4;
+    wrap.scrollTop = Math.max(0, wrap.scrollTop + delta);
+    return true;
+  }
+
   /** Corner ⤓: instant scroll + caret to the next empty row (wraps to top). */
   function jumpToNextEmptyRow() {
     const tab = activeTab();
@@ -13836,29 +13894,7 @@
         renderGrid();
       }
     }
-    const rowEl = el.cellGrid.querySelector('.row-controls[data-row="' + target + '"]');
-    const header = el.cellGrid.querySelector('.grid-corner');
-    if (rowEl) {
-      const headerH = header ? header.getBoundingClientRect().height : 0;
-      // v0.176: target near the TOP with ~1-2 visible rows above it for context
-      // (Ash). Tall rows above → fewer (keep them under ~1/3 of the view).
-      const viewH = Math.max(0, wrap.clientHeight - headerH);
-      let anchorEl = rowEl;
-      let above = 0;
-      for (let r = target - 1; r >= 0 && above < 2; r--) {
-        if (!rowMatchesFilter(tab, r)) continue;
-        const prev = el.cellGrid.querySelector('.row-controls[data-row="' + r + '"]');
-        if (!prev) continue;
-        const span = rowEl.getBoundingClientRect().top - prev.getBoundingClientRect().top;
-        if (span > viewH / 3) break;
-        anchorEl = prev;
-        above++;
-      }
-      const delta = anchorEl.getBoundingClientRect().top - wrap.getBoundingClientRect().top - headerH - 4;
-      // Browser clamps at max scroll near the end.
-      wrap.scrollTop = Math.max(0, wrap.scrollTop + delta);
-      wrap.scrollLeft = 0;
-    }
+    if (scrollGridRowNearTop(tab, target)) wrap.scrollLeft = 0;
     // First editable cell; on part tabs skip the validated Col1 (dropdown-only)
     // when another editable column exists, so typing isn't reverted.
     let focusIdx = -1;
@@ -14788,8 +14824,15 @@
         const end = Math.max(start, Math.min(hit.end, (ta.value || '').length));
         ta.setSelectionRange(start, end);
       } catch (err) { /* ignore */ }
-      if (typeof ta.scrollIntoView === 'function') {
+      // v0.181: hit row near the top (same as ⤓); keep it horizontally in view.
+      if (!scrollGridRowNearTop(tab, Math.floor(hit.cellIndex / tab.cols)) &&
+          typeof ta.scrollIntoView === 'function') {
         ta.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+      } else if (typeof ta.scrollIntoView === 'function') {
+        const sc = el.cellGrid.parentElement;
+        const keepTop = sc ? sc.scrollTop : 0;
+        ta.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+        if (sc) sc.scrollTop = keepTop;
       }
     }
     if (!(opts && opts.silent)) {
