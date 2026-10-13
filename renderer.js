@@ -5157,7 +5157,150 @@
       disabled: !String(tab.cells[cellIndex] || '').trim(),
       onClick: function () { openFindSimilar(tab, cellIndex, x, y); }
     });
+    // v0.180: Add to Master (part-tab Column B only).
+    if (!isMasterTab(tab)) {
+      const why = addToMasterBlockReason(tab, cellIndex);
+      items.push({
+        label: 'Add to Master',
+        title: why || 'Copy this cell (all pages + nests, and this row\'s Column A) into the first fully empty Master row, then lock to it',
+        disabled: !!why,
+        onClick: function () { addCellToMaster(tab, cellIndex); }
+      });
+    }
     openCtxMenu({ heading: heading, items: items, x: x, y: y, className: 'cell-shade-menu' });
+  }
+
+  /* ── v0.180 Add to Master ──────────────────────────────────────────────
+   * Never overwrites: the target Master row must be empty in the DATA MODEL
+   * (every column: text === '' exactly, every cell page '', no nests at all,
+   * no shade, no Master lock entry, no Combined link and no part lock pointing
+   * at it). Hidden/filtered/sorted rows are judged the same way. Whitespace
+   * counts as content. No such row → append a new one.
+   */
+  function addToMasterBlockReason(tab, idx) {
+    if (!tab || isMasterTab(tab) || !tab.cols) return 'Master tab';
+    if (idx % tab.cols !== 1) return 'Add to Master works on Column B cells';
+    if (!String(tab.cells[idx] || '').trim()) return 'Empty cell — nothing to add';
+    if (isCellMasterLocked(tab, idx)) return 'Already locked to a Master cell';
+    if (!state.tabs.find(isMasterTab)) return 'No Master tab';
+    return '';
+  }
+
+  function masterCellStrictEmpty(master, i, referenced) {
+    if ((master.cells[i] == null ? '' : String(master.cells[i])) !== '') return false;
+    const entry = Array.isArray(master.cellPages) ? master.cellPages[i] : null;
+    if (entry && Array.isArray(entry.pages)) {
+      for (let p = 0; p < entry.pages.length; p++) {
+        if ((entry.pages[p] == null ? '' : String(entry.pages[p])) !== '') return false;
+      }
+    }
+    const nests = Array.isArray(master.nestedCells) ? master.nestedCells[i] : null;
+    if (Array.isArray(nests) && nests.length) return false;
+    if (Array.isArray(master.cellShades) && master.cellShades[i]) return false;
+    if (Array.isArray(master.cellLocks) && master.cellLocks[i]) return false;
+    if (referenced[i]) return false;
+    return true;
+  }
+
+  /** Master cell indexes something else still points at (Combined links, part locks). */
+  function masterReferencedIndexes(master) {
+    const ref = Object.create(null);
+    (state.confirmedLinks || []).forEach(function (l) {
+      if (l && l.tabId === master.id && Number.isInteger(l.cellIndex)) ref[l.cellIndex] = true;
+      if (l && Number.isInteger(l.masterCellIndex)) ref[l.masterCellIndex] = true;
+    });
+    forEachPartLockSite(function (site, i, lock) {
+      if (Number.isInteger(lock.masterCellIndex)) ref[lock.masterCellIndex] = true;
+    });
+    return ref;
+  }
+
+  function masterRowStrictEmpty(master, row, referenced) {
+    for (let c = 0; c < master.cols; c++) {
+      if (!masterCellStrictEmpty(master, row * master.cols + c, referenced)) return false;
+    }
+    return true;
+  }
+
+  function addCellToMaster(tab, idx) {
+    if (activeTab() !== tab) return;
+    const why = addToMasterBlockReason(tab, idx);
+    if (why) { setStatus(why, 'err'); return; }
+    const master = state.tabs.find(isMasterTab);
+    if (!master.cols || master.cols < 2) { setStatus('Master needs a Column B', 'err'); return; }
+    const text = String(tab.cells[idx] || '');
+    // Already there (Column B, trailing whitespace ignored) → link only, no Master change.
+    const want = trimEndText(text);
+    for (let r = 0; r < master.rows; r++) {
+      const mi = r * master.cols + 1;
+      if (trimEndText(master.cells[mi]) !== want) continue;
+      const addr = cellAddressFromIndex(master, mi);
+      if (cellHasOwnExtraContent(tab, idx)) {
+        setStatus('Already in Master (' + addr + ') — not linked (this cell has its own nests/pages)', 'err');
+        return;
+      }
+      pushHistory();
+      applyMasterLinkToCell(tab, idx, mi, master.cells[mi] || '');
+      afterAddToMasterRender(tab);
+      setStatus('Already in Master (' + addr + ') — linked (Combined checked; locked until double-click unlock)', 'ok');
+      return;
+    }
+    ensureCellPagesArray(master);
+    ensureNestedCells(master);
+    ensureCellLocks(master);
+    ensureCellShades(master);
+    ensureCellPagesArray(tab);
+    ensureNestedCells(tab);
+    const referenced = masterReferencedIndexes(master);
+    let row = -1;
+    for (let r = 0; r < master.rows; r++) {
+      if (masterRowStrictEmpty(master, r, referenced)) { row = r; break; }
+    }
+    pushHistory();
+    if (row < 0) {
+      for (let c = 0; c < master.cols; c++) {
+        master.cells.push('');
+        master.nestedCells.push([]);
+        master.cellLocks.push(null);
+        master.cellPages.push(makeEmptyCellPages(''));
+        master.cellShades.push(null);
+      }
+      master.rows += 1;
+      ensureRowHeightsLength(master);
+      row = master.rows - 1;
+    }
+    // Re-verify against the model right before writing (belt and braces).
+    if (!masterRowStrictEmpty(master, row, masterReferencedIndexes(master))) {
+      undoStack.pop();
+      setStatus('Add to Master stopped — target row is not empty (nothing changed)', 'err');
+      return;
+    }
+    const mi = row * master.cols + 1;
+    const src = tab.cellPages[idx] || makeEmptyCellPages(text);
+    const entry = cloneCellPagesEntry(src);
+    entry.pages[entry.page] = text;
+    master.cellPages[mi] = entry;
+    master.cells[mi] = text;
+    master.nestedCells[mi] = cloneNestList(tab.nestedCells[idx] || []);
+    const colA = String(tab.cells[Math.floor(idx / tab.cols) * tab.cols] || '');
+    if (colA.trim()) {
+      master.cells[row * master.cols] = colA;
+      master.cellPages[row * master.cols] = makeEmptyCellPages(colA);
+    }
+    applyMasterLinkToCell(tab, idx, mi, text);
+    // Same rule as typing into Master: other part cells with this exact text lock (lock only).
+    relockPartsAfterMasterChange();
+    afterAddToMasterRender(tab);
+    setStatus('Added to Master ' + cellAddressFromIndex(master, mi), 'ok');
+  }
+
+  function afterAddToMasterRender(tab) {
+    renderTabs();
+    if (activeTab() === tab) { renderGrid(); flushTabPage(tab); }
+    renderCombinedPrompt();
+    applyConfirmedCellHighlights();
+    renderMasterLibrary();
+    scheduleSave();
   }
 
   /**
