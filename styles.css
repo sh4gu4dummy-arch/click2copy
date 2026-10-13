@@ -2524,6 +2524,8 @@ body.painting-checkboxes .cell-append {
   /* short messages stay on one line; longer ones (linked-cell counts) wrap */
   white-space: normal;
   max-width: 360px;
+  max-height: 268px;
+  overflow-y: auto;
   padding-right: 2px;
 }
 .paste-confirm .btn {
@@ -3110,6 +3112,8 @@ textarea.cell.cell-range-selected::selection {
   gap: 2px;
   padding: 4px;
   max-width: 360px;
+  max-height: 268px;
+  overflow-y: auto;
 }
 .col1-suggest .tab-icon-picker-action {
   text-align: left;
@@ -3130,3 +3134,7 @@ textarea.cell.cell-range-selected::selection {
 .gs-list .gs-addr { flex: 0 0 auto; min-width: 34px; color: var(--muted); }
 .gs-list .gs-txt { flex: 1 1 auto; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .gs-list mark { background: rgba(255, 210, 0, 0.35); color: inherit; }
+
+/* v0.185: blank tail so the last rows can scroll near the top (⤓ / Find jumps) */
+.cell-grid-wrap { padding-bottom: calc(8px + var(--grid-tail, 0px)); }
+.col1-suggest .tab-icon-picker-action { flex: none; }

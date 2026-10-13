@@ -10141,18 +10141,34 @@
   }
 
   /* ── v0.179: Col A type-ahead suggestions (existing Col A values) ── */
-  const COL1_SUGGEST_MAX = 8;
+  /** Case-, accent- and spacing-insensitive form for Col A matching. */
+  function col1SuggestNorm(v) {
+    return String(v == null ? '' : v).normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase().replace(/\s+/g, ' ').trim();
+  }
   let col1SuggestEl = null;
   let col1SuggestTa = null;
   let col1SuggestHi = -1;
 
   /** Part tabs: Master Column A list (what Col A is validated against); Master / no list: this tab's own values. */
-  function col1SuggestSource(tab) {
+  function col1SuggestSource(tab, idx) {
     if (!isMasterTab(tab)) {
       const m = masterCol1Values();
       if (m.length) return m;
     }
-    return uniqueCol1Values(tab).filter(function (v) { return !!v; });
+    // This tab's own values — minus the cell being typed in (its half-typed text
+    // is already in the model and would suggest itself).
+    const seen = Object.create(null);
+    const out = [];
+    for (let r = 0; r < tab.rows; r++) {
+      const i = r * tab.cols;
+      if (i === idx) continue;
+      const v = (tab.cells[i] || '').trim();
+      if (!v || seen[v]) continue;
+      seen[v] = true;
+      out.push(v);
+    }
+    return out;
   }
 
   function closeCol1Suggest() {
@@ -10160,8 +10176,14 @@
     col1SuggestEl = null;
     col1SuggestTa = null;
     col1SuggestHi = -1;
-    document.removeEventListener('scroll', closeCol1Suggest, true);
+    document.removeEventListener('scroll', onCol1SuggestScroll, true);
     window.removeEventListener('resize', closeCol1Suggest);
+  }
+
+  /** Grid/page scroll closes the list; scrolling the list itself does not. */
+  function onCol1SuggestScroll(e) {
+    if (col1SuggestEl && e && e.target && (e.target === col1SuggestEl || col1SuggestEl.contains(e.target))) return;
+    closeCol1Suggest();
   }
 
   function setCol1SuggestHi(i) {
@@ -10172,6 +10194,7 @@
       const on = k === i;
       items[k].classList.toggle('is-hi', on);
       items[k].setAttribute('aria-selected', on ? 'true' : 'false');
+      if (on) items[k].scrollIntoView({ block: 'nearest' });
     }
   }
 
@@ -10179,18 +10202,22 @@
     const tab = activeTab();
     const idx = parseInt(ta.dataset.idx, 10);
     if (!tab || !tab.cols || Number.isNaN(idx) || idx % tab.cols !== 0 || ta.readOnly) { closeCol1Suggest(); return; }
-    const q = ta.value.trim().toLowerCase();
+    const q = col1SuggestNorm(ta.value);
     if (!q) { closeCol1Suggest(); return; }
+    // v0.185: ALL matches (scrollable list) — the old 8-cap silently dropped
+    // valid values. Exact match first (still a valid pick), then prefix, then contains.
+    const exact = [];
     const pre = [];
     const mid = [];
-    col1SuggestSource(tab).forEach(function (v) {
-      const lv = v.toLowerCase();
-      if (v === ta.value.trim()) return;
+    col1SuggestSource(tab, idx).forEach(function (v) {
+      const lv = col1SuggestNorm(v);
       const at = lv.indexOf(q);
-      if (at === 0) pre.push(v);
+      if (lv === q) exact.push(v);
+      else if (at === 0) pre.push(v);
       else if (at > 0) mid.push(v);
     });
-    const list = pre.concat(mid).slice(0, COL1_SUGGEST_MAX);
+    const list = exact.concat(pre, mid);
+    if (list.length === 1 && exact.length === 1 && list[0] === ta.value.trim()) { closeCol1Suggest(); return; }
     if (!list.length) { closeCol1Suggest(); return; }
     closeCol1Suggest();
     const pop = document.createElement('div');
@@ -10225,7 +10252,7 @@
     if (top + pr.height > window.innerHeight - 6) top = Math.max(6, r.top - pr.height - 2);
     pop.style.left = Math.max(6, Math.min(r.left, window.innerWidth - pr.width - 6)) + 'px';
     pop.style.top = top + 'px';
-    document.addEventListener('scroll', closeCol1Suggest, true);
+    document.addEventListener('scroll', onCol1SuggestScroll, true);
     window.addEventListener('resize', closeCol1Suggest);
   }
 
@@ -14019,6 +14046,22 @@
     return true;
   }
 
+  /**
+   * v0.185: blank tail under the grid (view height minus ~3 rows) so ANY row —
+   * including the last / a just-added bottom row — can scroll near the top.
+   * Before, max scroll left the last rows stuck at the bottom of the view.
+   * Only changes when the view itself resizes (padding never changes clientHeight).
+   */
+  function updateGridScrollTail() {
+    const wrap = el.cellGrid && el.cellGrid.parentElement;
+    if (!wrap) return;
+    const header = el.cellGrid.querySelector('.grid-corner');
+    const headerH = header ? header.getBoundingClientRect().height : 0;
+    const tail = Math.max(0, Math.round(wrap.clientHeight - headerH - 3 * MIN_ROW_HEIGHT - 16));
+    const want = tail + 'px';
+    if (wrap.style.getPropertyValue('--grid-tail') !== want) wrap.style.setProperty('--grid-tail', want);
+  }
+
   /** Corner ⤓: instant scroll + caret to the next empty row (wraps to top). */
   function jumpToNextEmptyRow() {
     const tab = activeTab();
@@ -15671,6 +15714,9 @@
     closeCol1FilterMenu();
     closeMasterLibFilterMenu();
   });
+  if (el.cellGrid && el.cellGrid.parentElement && typeof ResizeObserver === 'function') {
+    new ResizeObserver(updateGridScrollTail).observe(el.cellGrid.parentElement);
+  }
   if (el.cellGrid && el.cellGrid.parentElement) {
     el.cellGrid.parentElement.addEventListener('scroll', closeCol1FilterMenu, { passive: true });
   }
