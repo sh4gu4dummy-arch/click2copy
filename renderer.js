@@ -14695,6 +14695,8 @@
   }
 
   function clearPartSearch(opts) {
+    if (keepSearchOnTabSwitch) return;
+    closeGlobalSearchList();
     partSearchHits = [];
     partSearchHitIndex = -1;
     partSearchFindAll = false;
@@ -14708,6 +14710,129 @@
 
   function currentPartSearchTab() {
     return activeTab();
+  }
+
+  /* ── v0.183 global search: 'All tabs' scope for Find / Replace ── */
+  const SEARCH_ALL_TABS_KEY = 'click2copy-search-all-tabs';
+  let partSearchAllTabs = false;
+  try { partSearchAllTabs = localStorage.getItem(SEARCH_ALL_TABS_KEY) === '1'; } catch (err) { /* no-op */ }
+  let globalSearchListEl = null;
+  let keepSearchOnTabSwitch = false;
+
+  function hitTab(hit) {
+    if (hit && hit.tabId) return state.tabs.find(function (t) { return t.id === hit.tabId; }) || null;
+    return currentPartSearchTab();
+  }
+
+  function hitWhere(tab, hit) {
+    const addr = cellAddressFromIndex(tab, hit.cellIndex);
+    return hit.nestIndex == null
+      ? (addr + (Number.isInteger(hit.pageIndex) && hit.pageIndex > 0 ? (' p' + (hit.pageIndex + 1)) : ''))
+      : (addr + ' nest ' + (hit.nestIndex + 1) + (hit.pageIndex > 0 ? ' p' + (hit.pageIndex + 1) : ''));
+  }
+
+  function syncSearchAllTabsBtn() {
+    const btn = document.getElementById('btn-search-all-tabs');
+    if (!btn) return;
+    btn.classList.toggle('is-active', partSearchAllTabs);
+    btn.setAttribute('aria-pressed', partSearchAllTabs ? 'true' : 'false');
+    if (el.partFindInput) {
+      el.partFindInput.placeholder = partSearchAllTabs ? 'Find in all tabs…' : 'Find…';
+    }
+  }
+
+  function setSearchAllTabs(on) {
+    partSearchAllTabs = !!on;
+    try { localStorage.setItem(SEARCH_ALL_TABS_KEY, partSearchAllTabs ? '1' : '0'); } catch (err) { /* no-op */ }
+    syncSearchAllTabsBtn();
+    clearPartSearch({ keepInputs: true });
+    setStatus(partSearchAllTabs ? 'Find / Replace: all tabs' : 'Find / Replace: this tab only', 'ok');
+  }
+
+  function closeGlobalSearchList() {
+    if (globalSearchListEl && globalSearchListEl.parentNode) globalSearchListEl.parentNode.removeChild(globalSearchListEl);
+    globalSearchListEl = null;
+    document.removeEventListener('pointerdown', onGlobalSearchListOutside, true);
+  }
+
+  function onGlobalSearchListOutside(e) {
+    const t = e.target;
+    if (globalSearchListEl && globalSearchListEl.contains(t)) return;
+    if (t && t.closest && t.closest('.part-search-bar')) return;
+    closeGlobalSearchList();
+  }
+
+  function snippetNode(text, start, end) {
+    const span = document.createElement('span');
+    span.className = 'gs-txt';
+    const from = Math.max(0, start - 24);
+    const to = Math.min(text.length, end + 40);
+    const pre = (from > 0 ? '…' : '') + text.slice(from, start).replace(/\s+/g, ' ');
+    const mark = document.createElement('mark');
+    mark.textContent = text.slice(start, end);
+    span.appendChild(document.createTextNode(pre));
+    span.appendChild(mark);
+    span.appendChild(document.createTextNode(text.slice(end, to).replace(/\s+/g, ' ') + (to < text.length ? '…' : '')));
+    return span;
+  }
+
+  /** Floating results list under the Find box (all-tabs mode), grouped by tab. */
+  function renderGlobalSearchList() {
+    closeGlobalSearchList();
+    if (!partSearchAllTabs || !partSearchHits.length || !el.partFindInput) return;
+    const pop = document.createElement('div');
+    pop.className = 'tab-icon-picker gs-list';
+    pop.setAttribute('role', 'listbox');
+    pop.setAttribute('aria-label', 'Matches in all tabs');
+    let lastTab = null;
+    const counts = Object.create(null);
+    partSearchHits.forEach(function (h) { counts[h.tabId] = (counts[h.tabId] || 0) + 1; });
+    partSearchHits.forEach(function (h, i) {
+      const tab = hitTab(h);
+      if (!tab) return;
+      if (h.tabId !== lastTab) {
+        lastTab = h.tabId;
+        const head = document.createElement('div');
+        head.className = 'gs-tab';
+        head.textContent = tab.title + ' (' + counts[h.tabId] + ')';
+        pop.appendChild(head);
+      }
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'tab-icon-picker-action gs-hit' + (i === partSearchHitIndex ? ' is-hi' : '');
+      btn.setAttribute('role', 'option');
+      const addr = document.createElement('span');
+      addr.className = 'gs-addr';
+      addr.textContent = hitWhere(tab, h);
+      btn.appendChild(addr);
+      btn.appendChild(snippetNode(getHitText(tab, h), h.start, h.end));
+      btn.addEventListener('pointerdown', function (ev) { ev.preventDefault(); });
+      btn.addEventListener('click', function (ev) {
+        ev.preventDefault();
+        partSearchHitIndex = i;
+        revealPartSearchHit(h);
+        markGlobalSearchListCurrent();
+      });
+      pop.appendChild(btn);
+    });
+    document.body.appendChild(pop);
+    globalSearchListEl = pop;
+    const r = el.partFindInput.getBoundingClientRect();
+    pop.style.left = Math.max(6, Math.min(r.left, window.innerWidth - pop.getBoundingClientRect().width - 6)) + 'px';
+    pop.style.top = (r.bottom + 3) + 'px';
+    pop.style.maxHeight = Math.max(120, window.innerHeight - r.bottom - 16) + 'px';
+    document.addEventListener('pointerdown', onGlobalSearchListOutside, true);
+    markGlobalSearchListCurrent();
+  }
+
+  function markGlobalSearchListCurrent() {
+    if (!globalSearchListEl) return;
+    const items = globalSearchListEl.querySelectorAll('.gs-hit');
+    for (let k = 0; k < items.length; k++) {
+      const on = k === partSearchHitIndex;
+      items[k].classList.toggle('is-hi', on);
+      if (on) items[k].scrollIntoView({ block: 'nearest' });
+    }
   }
 
   function collectPartSearchHits(tab, query) {
@@ -14769,7 +14894,18 @@
     const tab = currentPartSearchTab();
     const query = el.partFindInput ? el.partFindInput.value : '';
     partSearchQuery = query;
-    partSearchHits = collectPartSearchHits(tab, query);
+    if (partSearchAllTabs) {
+      partSearchHits = [];
+      state.tabs.forEach(function (t, pos) {
+        collectPartSearchHits(t, query).forEach(function (h) {
+          h.tabId = t.id;
+          h.tabPos = pos;
+          partSearchHits.push(h);
+        });
+      });
+    } else {
+      partSearchHits = collectPartSearchHits(tab, query);
+    }
     if (partSearchHitIndex >= partSearchHits.length) partSearchHitIndex = partSearchHits.length - 1;
     return partSearchHits;
   }
@@ -14837,8 +14973,10 @@
     const markAll = partSearchFindAll;
     const current = partSearchHitIndex >= 0 ? partSearchHits[partSearchHitIndex] : null;
     const seen = Object.create(null);
+    const liveTabId = currentPartSearchTab() && currentPartSearchTab().id;
     function markHit(hit, isCurrent) {
       if (!hit) return;
+      if (hit.tabId && hit.tabId !== liveTabId) return;
       const key = hit.cellIndex + ':' + (hit.nestIndex == null
         ? ('c:' + (hit.pageIndex == null ? 'x' : hit.pageIndex))
         : (hit.nestIndex + ':' + hit.pageIndex));
@@ -14875,6 +15013,10 @@
   }
 
   function revealPartSearchHit(hit, opts) {
+    if (hit && hit.tabId && activeTab() && hit.tabId !== activeTab().id) {
+      keepSearchOnTabSwitch = true;
+      try { selectTab(hit.tabId); } finally { keepSearchOnTabSwitch = false; }
+    }
     const tab = currentPartSearchTab();
     if (!tab || !hit) return;
     focusedCell = { tabId: tab.id, index: hit.cellIndex };
@@ -14919,7 +15061,8 @@
         ? (addr + (Number.isInteger(hit.pageIndex) ? (' p' + (hit.pageIndex + 1)) : ''))
         : (addr + ' nest ' + (hit.nestIndex + 1) + ' p' + (hit.pageIndex + 1));
       setPartSearchStatus(n ? (i + ' / ' + n) : '0');
-      setStatus('Find: ' + where + (n ? (' (' + i + '/' + n + ')') : ''));
+      setStatus('Find: ' + (hit.tabId ? tab.title + ' ' : '') + where + (n ? (' (' + i + '/' + n + ')') : ''));
+      markGlobalSearchListCurrent();
     }
   }
 
@@ -14952,19 +15095,31 @@
       partSearchHitIndex = -1;
       applyPartSearchHighlights();
       setPartSearchStatus('0');
-      setStatus('No matches in ' + tab.title, 'err');
+      setStatus('No matches in ' + (partSearchAllTabs ? 'any tab' : tab.title), 'err');
+      closeGlobalSearchList();
       return;
     }
+    // All tabs: start at the first match in the tab you are on (then cycle across tabs).
+    let firstHere = 0;
+    if (partSearchAllTabs) {
+      for (let i = 0; i < partSearchHits.length; i++) {
+        if (partSearchHits[i].tabId === tab.id) { firstHere = i; break; }
+      }
+      if (rebuilt) partSearchHitIndex = firstHere - 1;
+    }
     if (opts && opts.findAll && rebuilt) {
-      partSearchHitIndex = 0;
-      revealPartSearchHit(partSearchHits[0]);
-      setPartSearchStatus(partSearchHits.length + ' matches');
-      setStatus('Find All: ' + partSearchHits.length + ' in ' + tab.title, 'ok');
+      partSearchHitIndex = firstHere;
+      revealPartSearchHit(partSearchHits[firstHere]);
+      const nTabs = partSearchAllTabs ? Object.keys(partSearchHits.reduce(function (o, h) { o[h.tabId] = 1; return o; }, {})).length : 1;
+      setPartSearchStatus(partSearchHits.length + ' matches' + (partSearchAllTabs ? ' · ' + nTabs + ' tab' + (nTabs === 1 ? '' : 's') : ''));
+      setStatus('Find All: ' + partSearchHits.length + ' in ' + (partSearchAllTabs ? nTabs + ' tab' + (nTabs === 1 ? '' : 's') : tab.title), 'ok');
       applyPartSearchHighlights();
+      if (partSearchAllTabs) renderGlobalSearchList();
       return;
     }
     partSearchHitIndex = (partSearchHitIndex + 1) % partSearchHits.length;
     revealPartSearchHit(partSearchHits[partSearchHitIndex]);
+    if (partSearchAllTabs && (rebuilt || !globalSearchListEl)) renderGlobalSearchList();
   }
 
   function partFindAll() {
@@ -15018,6 +15173,10 @@
     }
     const replaceAll = !!(opts && opts.replaceAll);
 
+    if (replaceAll && partSearchAllTabs) {
+      replaceAllAcrossTabs(query, replacement);
+      return;
+    }
     if (replaceAll) {
       rebuildPartSearchHits();
       if (!partSearchHits.length) {
@@ -15077,6 +15236,88 @@
     partReplaceSingle(tab, replacement);
   }
 
+  /** v0.183: Replace all across every tab — confirm with per-tab counts, one undo step. */
+  function replaceAllAcrossTabs(query, replacement) {
+    rebuildPartSearchHits();
+    const keysDone = Object.create(null);
+    const plan = [];
+    const perTab = [];
+    const byTab = Object.create(null);
+    let nLocked = 0;
+    const lockedSeen = Object.create(null);
+    for (let h = 0; h < partSearchHits.length; h++) {
+      const hit = partSearchHits[h];
+      const tab = hitTab(hit);
+      if (!tab) continue;
+      if (isCellMasterEditBlocked(tab, hit.cellIndex)) {
+        const lk = tab.id + ':' + hit.cellIndex;
+        if (!lockedSeen[lk]) { lockedSeen[lk] = true; nLocked++; }
+        continue;
+      }
+      const key = tab.id + ':' + hit.cellIndex + ':' + (hit.nestIndex == null
+        ? ('c:' + (hit.pageIndex == null ? 'x' : hit.pageIndex))
+        : (hit.nestIndex + ':' + hit.pageIndex));
+      if (keysDone[key]) continue;
+      keysDone[key] = true;
+      const before = getHitText(tab, hit);
+      const result = replaceAllInText(before, query, replacement);
+      if (!result.count || result.text === before) continue;
+      plan.push({ tab: tab, hit: hit, text: result.text, count: result.count });
+      if (!byTab[tab.id]) { byTab[tab.id] = { tab: tab, cells: Object.create(null), n: 0 }; perTab.push(byTab[tab.id]); }
+      byTab[tab.id].cells[hit.cellIndex] = true;
+    }
+    const lockedNote = nLocked ? (' — ' + pluralCells(nLocked, 'locked cell') + ' skipped') : '';
+    if (!plan.length) {
+      setPartSearchStatus('0');
+      setStatus('Nothing replaced in any tab' + lockedNote, 'err');
+      return;
+    }
+    let cellTotal = 0;
+    const parts = perTab.map(function (g) {
+      g.n = Object.keys(g.cells).length;
+      cellTotal += g.n;
+      return g.tab.title + ' ' + g.n;
+    });
+    closeGlobalSearchList();
+    openActionConfirm({
+      anchor: el.partReplaceInput,
+      focusBack: el.partReplaceInput,
+      message: 'Replace in ' + pluralCells(cellTotal, 'cell') + ' across ' + perTab.length + ' tab' +
+        (perTab.length === 1 ? '' : 's') + '? ' + parts.join(' · ') +
+        (nLocked ? (' (' + pluralCells(nLocked, 'locked cell') + ' skipped)') : ''),
+      actionLabel: 'Replace all',
+      cancelStatus: 'Replace all cancelled',
+      ariaLabel: 'Confirm replace all in all tabs',
+      onConfirm: function () {
+        pushHistory();
+        let total = 0;
+        const touched = Object.create(null);
+        plan.forEach(function (it) {
+          if (isCellMasterEditBlocked(it.tab, it.hit.cellIndex)) return;
+          setHitText(it.tab, it.hit, it.text);
+          total += it.count;
+          touched[it.tab.id + ':' + it.hit.cellIndex] = it;
+          liveSyncConfirmedLinksForCell(it.tab.id, it.hit.cellIndex, it.hit.nestIndex, { silent: true });
+        });
+        Object.keys(touched).forEach(function (k) {
+          const it = touched[k];
+          revalidateLinksForCell(it.tab.id, it.hit.cellIndex, { silent: true });
+        });
+        partSearchFindAll = false;
+        rebuildPartSearchHits();
+        partSearchHitIndex = -1;
+        renderTabs();
+        renderGrid();
+        renderMasterLibrary();
+        renderCombinedPrompt();
+        applyConfirmedCellHighlights();
+        scheduleSave();
+        setPartSearchStatus(total ? ('replaced ' + total) : '0');
+        setStatus('Replaced ' + total + ' in ' + perTab.length + ' tab' + (perTab.length === 1 ? '' : 's') + lockedNote, 'ok');
+      }
+    });
+  }
+
   function applyReplaceAllPlan(tab, plan, lockedNote) {
     pushHistory();
     let total = 0;
@@ -15120,6 +15361,12 @@
     }
     const hit = partSearchHits[partSearchHitIndex];
     if (!hit) return;
+    // v0.183 all tabs: the current hit may live in another tab — reveal it there first.
+    if (hit.tabId && hit.tabId !== tab.id) {
+      revealPartSearchHit(hit, { silent: true });
+      tab = activeTab();
+      if (!tab || tab.id !== hit.tabId) return;
+    }
     if (isCellMasterEditBlocked(tab, hit.cellIndex)) {
       // Locked Master cell: never replace (it used to change the textarea but not
       // the saved cell). Move on to the next match instead.
@@ -15169,6 +15416,10 @@
     let nextIdx = -1;
     for (let i = 0; i < partSearchHits.length; i++) {
       const h = partSearchHits[i];
+      if (hit.tabId) {
+        if (h.tabPos < hit.tabPos) continue;
+        if (h.tabPos > hit.tabPos) { nextIdx = i; break; }
+      }
       if (h.cellIndex < resumeCell) continue;
       if (h.cellIndex > resumeCell) { nextIdx = i; break; }
       if (resumeNest == null) {
@@ -15376,8 +15627,14 @@
       partSearchHitIndex = -1;
       partSearchFindAll = false;
       clearPartSearchDomHighlights();
+      closeGlobalSearchList();
       setPartSearchStatus('');
     });
+  }
+  {
+    const allBtn = document.getElementById('btn-search-all-tabs');
+    if (allBtn) allBtn.addEventListener('click', function () { setSearchAllTabs(!partSearchAllTabs); });
+    syncSearchAllTabsBtn();
   }
   if (el.partReplaceInput) {
     el.partReplaceInput.addEventListener('keydown', function (e) {

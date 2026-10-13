@@ -3118,3 +3118,15 @@ textarea.cell.cell-range-selected::selection {
   text-overflow: ellipsis;
 }
 .col1-suggest .tab-icon-picker-action.is-hi { border-color: var(--accent); background: var(--surface); }
+
+/* v0.183: global search (All tabs toggle + floating results) */
+.part-search-bar .gs-toggle { flex: none; }
+.part-search-bar .gs-toggle.is-active { background: var(--accent); border-color: var(--accent); color: #fff; }
+.gs-list { display: flex; flex-direction: column; gap: 2px; padding: 6px; width: 360px; overflow-y: auto; }
+.gs-list .gs-tab { font-size: 11px; color: var(--muted); margin: 6px 2px 2px; }
+.gs-list .gs-tab:first-child { margin-top: 0; }
+.gs-list .gs-hit { display: flex; gap: 8px; text-align: left; padding: 3px 6px; font-size: 12px; }
+.gs-list .gs-hit.is-hi { border-color: var(--accent); }
+.gs-list .gs-addr { flex: 0 0 auto; min-width: 34px; color: var(--muted); }
+.gs-list .gs-txt { flex: 1 1 auto; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.gs-list mark { background: rgba(255, 210, 0, 0.35); color: inherit; }
