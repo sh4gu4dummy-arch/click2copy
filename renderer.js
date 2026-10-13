@@ -1372,6 +1372,7 @@
     // Master Column B duplicate marks follow every edit (debounced, no re-render).
     const liveTab = activeTab();
     if (liveTab && isMasterTab(liveTab)) scheduleMasterDupeMarks();
+    else if (liveTab) scheduleValidationMarks();
     const document = activeDocument();
     if (document) document.data = snapshot();
     clearTimeout(state.saveTimer);
@@ -9111,6 +9112,88 @@
     col2FocusValues[tab.id + ':' + idx] = tab.cells[idx] || '';
   }
 
+  /** v0.182: Col B ▾ on/off for this row's Col A (render + live refresh). */
+  function setCol2DropdownState(dd2, tab, r) {
+    const on = isCol2ValidatedForRow(tab, r);
+    dd2.classList.toggle('is-off', !on);
+    dd2.disabled = !on;
+    dd2.tabIndex = on ? 0 : -1;
+    if (on) {
+      dd2.removeAttribute('aria-hidden');
+      dd2.title = 'Pick a Master Column B for “' + (tab.cells[r * tab.cols] || '').trim() + '” (Alt+↓)';
+      dd2.setAttribute('aria-label', 'Pick Column B value for ' + cellAddress(r, 1));
+    } else {
+      dd2.setAttribute('aria-hidden', 'true');
+      dd2.title = '';
+    }
+  }
+
+  /**
+   * v0.182: Col A / Col B "not allowed" marks (amber edge, cell title, ▾, header ⚠ N)
+   * used to be painted only by renderGrid, so clearing/changing Col A (or undo,
+   * Master edits) left stale marks and a stuck ⚠. Refresh them in place from the
+   * model after every edit (debounced from scheduleSave; no re-render).
+   */
+  let validationMarksTimer = null;
+  function scheduleValidationMarks() {
+    if (validationMarksTimer) return;
+    validationMarksTimer = window.setTimeout(function () {
+      validationMarksTimer = null;
+      refreshValidationMarks();
+    }, 0);
+  }
+
+  function refreshValidationMarks() {
+    const tab = activeTab();
+    if (!tab || isMasterTab(tab) || !el.cellGrid || !tab.cols) return;
+    const allowedA = masterCol1Values();
+    const wraps = el.cellGrid.querySelectorAll('.cell-wrap');
+    for (let i = 0; i < wraps.length; i++) {
+      const wrap = wraps[i];
+      const ta = wrap.querySelector('textarea.cell');
+      if (!ta) continue;
+      const idx = parseInt(ta.dataset.idx, 10);
+      if (Number.isNaN(idx) || idx >= tab.cells.length) continue;
+      const r = Math.floor(idx / tab.cols);
+      let bad = false;
+      let title = null;
+      if (isPartTabCol1Cell(tab, idx)) {
+        bad = !isCol1ValueAllowed(tab.cells[idx], allowedA);
+        if (bad) title = 'Not in Master Column A — keep or pick a value from ▾';
+      } else if (isPartTabCol2Cell(tab, idx)) {
+        const dd2 = wrap.querySelector('.col2-dropdown-btn');
+        if (dd2) setCol2DropdownState(dd2, tab, r);
+        bad = isCol2ValidatedForRow(tab, r) && !isCol2ValueAllowed(tab, idx, tab.cells[idx]);
+        if (bad) title = 'Not a Master Column B for “' + (tab.cells[r * tab.cols] || '').trim() + '” — keep or pick a value from ▾';
+      } else continue;
+      // The cell being typed in keeps its look until commit (no flicker while typing).
+      if (ta === document.activeElement && !ta.readOnly && isPartTabCol2Cell(tab, idx)) continue;
+      const was = wrap.classList.contains('col1-invalid');
+      wrap.classList.toggle('col1-invalid', bad);
+      if (bad) ta.title = title;
+      else if (was && /^Not (in|a) Master Column/.test(ta.title || '')) {
+        ta.title = isPartTabCol1Cell(tab, idx) && !ta.classList.contains('master-cell-locked')
+          ? 'Click: filter rows to this value (again = clear) · type or F2 to edit · ▾ / Alt+↓ to pick' : '';
+      }
+    }
+    [[0, countInvalidCol1Cells(tab), ' Column A value', ' not in Master Column A (kept; marked). Pick from ▾ to fix.'],
+     [1, countInvalidCol2Cells(tab), ' Column B value', ' not allowed for that row\'s Column A (kept; marked). Pick from ▾ to fix.']
+    ].forEach(function (d) {
+      const header = el.cellGrid.querySelector('.column-header[data-col="' + d[0] + '"]');
+      if (!header) return;
+      let badge = header.querySelector('.col1-invalid-count');
+      if (!d[1]) { if (badge) badge.remove(); return; }
+      if (!badge) {
+        badge = document.createElement('span');
+        badge.className = 'col1-invalid-count';
+        const sort = header.querySelector('.column-sort-controls');
+        if (d[0] === 0 && sort) header.insertBefore(badge, sort); else header.appendChild(badge);
+      }
+      badge.textContent = '⚠ ' + d[1];
+      badge.title = d[1] + d[2] + (d[1] === 1 ? '' : 's') + d[3];
+    });
+  }
+
   function flashCol2Invalid(idx) {
     flashCol1Invalid(idx); // same amber flash look
   }
@@ -11019,17 +11102,10 @@
           dd2.className = 'col1-dropdown-btn col2-dropdown-btn';
           dd2.innerHTML = '<svg viewBox="0 0 12 12" width="12" height="12" aria-hidden="true" focusable="false">' +
             '<path d="M2.5 4.5 L6 8 L9.5 4.5" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>';
-          const col2On = isCol2ValidatedForRow(tab, r);
-          if (!col2On) {
-            dd2.classList.add('is-off');
-            dd2.disabled = true;
-            dd2.tabIndex = -1;
-            dd2.setAttribute('aria-hidden', 'true');
-            dd2.title = '';
-          } else {
-            const colA = (tab.cells[r * tab.cols] || '').trim();
-            dd2.title = 'Pick a Master Column B for “' + colA + '” (Alt+↓)';
-            dd2.setAttribute('aria-label', 'Pick Column B value for ' + cellAddress(r, c));
+          setCol2DropdownState(dd2, tab, r);
+          {
+            // v0.182: listeners always attached; state follows Col A live
+            // (openCol2ValueMenu itself refuses when the row is not validated).
             dd2.addEventListener('pointerdown', function (ev) {
               ev.preventDefault();
               ev.stopPropagation();
