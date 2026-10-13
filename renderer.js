@@ -9764,6 +9764,115 @@
     }
   }
 
+  /* ── v0.184 Auto adjust (right-click Fit): committed cells snap their row to fit ──
+   * Rows are compared with the content they had at the last check; only rows
+   * whose content changed are fitted (row only, like Fit). Runs on commit
+   * (change / after a re-render), never per keystroke; the row being typed in
+   * waits for its commit. Scroll stays put (rows above the view compensate).
+   */
+  const AUTO_ADJUST_KEY = 'click2copy-auto-adjust';
+  let autoAdjustOn = false;
+  try { autoAdjustOn = localStorage.getItem(AUTO_ADJUST_KEY) === '1'; } catch (err) { /* no-op */ }
+  const autoAdjustSigs = Object.create(null);
+  let autoAdjustTimer = null;
+
+  function rowContentSig(tab, r) {
+    let out = '';
+    for (let c = 0; c < tab.cols; c++) {
+      const i = r * tab.cols + c;
+      const pages = tab.cellPages && tab.cellPages[i];
+      const nests = tab.nestedCells && tab.nestedCells[i];
+      out += '\u0001' + (tab.cells[i] || '') + '\u0002' +
+        (pages && pages.pages ? pages.pages.length + ':' + (pages.page || 0) : '') + '\u0002' +
+        (nests && nests.length ? JSON.stringify(nests) : '');
+    }
+    return out;
+  }
+
+  function snapshotAutoAdjustSigs(tab) {
+    const sigs = [];
+    for (let r = 0; r < tab.rows; r++) sigs.push(rowContentSig(tab, r));
+    autoAdjustSigs[tab.id] = sigs;
+  }
+
+  function setAutoAdjust(on) {
+    autoAdjustOn = !!on;
+    try { localStorage.setItem(AUTO_ADJUST_KEY, autoAdjustOn ? '1' : '0'); } catch (err) { /* no-op */ }
+    const tab = activeTab();
+    if (tab) snapshotAutoAdjustSigs(tab);
+    setStatus(autoAdjustOn ? 'Auto adjust on — edited rows fit when you commit' : 'Auto adjust off', 'ok');
+  }
+
+  function scheduleAutoAdjust() {
+    if (!autoAdjustOn || autoAdjustTimer) return;
+    autoAdjustTimer = window.setTimeout(function () {
+      autoAdjustTimer = null;
+      runAutoAdjust();
+    }, 0);
+  }
+
+  function runAutoAdjust() {
+    const tab = activeTab();
+    if (!autoAdjustOn || !tab || !el.cellGrid || toolsTabActive) return;
+    const prev = autoAdjustSigs[tab.id];
+    if (!prev) { snapshotAutoAdjustSigs(tab); return; }
+    const a = document.activeElement;
+    const typingRow = a && a.tagName === 'TEXTAREA' && el.cellGrid.contains(a) && !a.readOnly
+      ? parseInt(a.closest('.cell-wrap') ? a.closest('.cell-wrap').dataset.row : '', 10) : NaN;
+    const next = prev.slice(0, tab.rows);
+    const rows = [];
+    for (let r = 0; r < tab.rows; r++) {
+      const sig = rowContentSig(tab, r);
+      if (sig === prev[r]) continue;
+      if (r === typingRow) continue; // wait for this cell's commit
+      next[r] = sig;
+      rows.push(r);
+    }
+    autoAdjustSigs[tab.id] = next;
+    if (rows.length) fitGridRows(tab, rows);
+  }
+
+  /** Fit only these rows (same measuring as Fit), keeping the view still. */
+  function fitGridRows(tab, rows) {
+    const scroller = el.cellGrid.parentElement;
+    if (!Array.isArray(tab.rowHeights)) {
+      // No saved heights yet: keep every other row exactly as it shows now.
+      tab.rowHeights = [];
+      for (let r = 0; r < tab.rows; r++) {
+        const rc = el.cellGrid.querySelector('.row-controls[data-row="' + r + '"]');
+        tab.rowHeights.push(rc && rc.offsetHeight ? rc.offsetHeight : MIN_ROW_HEIGHT);
+      }
+    }
+    ensureRowHeightsLength(tab);
+    const viewTop = scroller ? scroller.getBoundingClientRect().top : 0;
+    let shift = 0;
+    let changed = false;
+    rows.forEach(function (r) {
+      const wraps = el.cellGrid.querySelectorAll('.cell-wrap[data-row="' + r + '"]');
+      if (!wraps.length) return;
+      const rc = el.cellGrid.querySelector('.row-controls[data-row="' + r + '"]');
+      const before = rc ? rc.getBoundingClientRect() : null;
+      const oldH = before ? before.height : 0;
+      for (let i = 0; i < wraps.length; i++) {
+        clearPinnedHeightsForFitMeasure(wraps[i]);
+        prepareWrapWidthsForFitMeasure(wraps[i]);
+      }
+      if (rc) clearPinnedHeightsForFitMeasure(rc);
+      let maxH = MIN_ROW_HEIGHT;
+      for (let i = 0; i < wraps.length; i++) {
+        const h = measureCellStackHeight(wraps[i], tab);
+        if (h > maxH) maxH = h;
+      }
+      applyHeightToGridRow(r, maxH);
+      if (tab.rowHeights[r] !== maxH) changed = true;
+      tab.rowHeights[r] = maxH;
+      // Rows fully above the view would push content: compensate scroll.
+      if (before && before.bottom <= viewTop + 1 && before.height) shift += maxH - oldH;
+    });
+    if (scroller && shift) scroller.scrollTop += shift;
+    if (changed) scheduleSave();
+  }
+
   /**
    * One-click: size every row to its tallest cell content on the active tab grid.
    * Shrinks tall empty/short rows as well as growing clipped ones — replaces any
@@ -11542,6 +11651,7 @@
     restoreStickyCellRangeHighlight();
     applyPartSearchHighlights();
     restoreGridScroll(tab);
+    if (autoAdjustOn) scheduleAutoAdjust();
   }
 
   function resizeColumnByKeyboard(tab, col, delta) {
@@ -15466,6 +15576,31 @@
   if (el.btnFilterNonempty) el.btnFilterNonempty.addEventListener('click', function () { setGridRowFilter('nonempty'); });
   if (el.btnFilterIncluded) el.btnFilterIncluded.addEventListener('click', function () { setGridRowFilter('included'); });
   if (el.btnFitRows) el.btnFitRows.addEventListener('click', autoFitAllRowHeights);
+  if (el.btnFitRows) {
+    // v0.184: right-click Fit → Auto adjust toggle.
+    el.btnFitRows.addEventListener('contextmenu', function (ev) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      openCtxMenu({
+        heading: 'Fit',
+        items: [{
+          label: 'Auto adjust',
+          current: autoAdjustOn,
+          title: autoAdjustOn
+            ? 'On: each committed cell snaps its row to fit — click to turn off'
+            : 'Off — click to make each committed cell snap its row to fit',
+          onClick: function () { setAutoAdjust(!autoAdjustOn); }
+        }],
+        x: ev.clientX,
+        y: ev.clientY
+      });
+    });
+  }
+  // v0.184: commits (blur after an edit) on grid cells / nests → Auto adjust.
+  if (el.cellGrid) {
+    el.cellGrid.addEventListener('change', function () { if (autoAdjustOn) scheduleAutoAdjust(); });
+    el.cellGrid.addEventListener('focusout', function () { if (autoAdjustOn) scheduleAutoAdjust(); });
+  }
   document.addEventListener('pointerdown', function (e) {
     if (col1FilterMenuOpen) {
       const wrap = el.cellGrid && el.cellGrid.querySelector('.column-col1-filter');
