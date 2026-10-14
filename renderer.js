@@ -11174,7 +11174,7 @@
       header.appendChild(handle);
       wireHeaderSelect(header,
         'button, .column-resize-handle, .column-col1-filter, .column-col1-filter-menu, .column-sort-controls',
-        function (extend) { selectWholeGridLine('col', c, extend); });
+        function (extend) { selectWholeGridLine('col', c, extend); }, 'col', c);
       el.cellGrid.appendChild(header);
     }
 
@@ -11245,7 +11245,7 @@
       });
       rowControls.appendChild(rowResize);
       wireHeaderSelect(rowControls, 'button, .row-resize-handle, .row-move-controls',
-        function (extend) { selectWholeGridLine('row', r, extend); });
+        function (extend) { selectWholeGridLine('row', r, extend); }, 'row', r);
       el.cellGrid.appendChild(rowControls);
 
       for (let c = 0; c < tab.cols; c++) {
@@ -12153,12 +12153,18 @@
    * lit block (same as a drag block: Ctrl+C TSV, Delete, right-click). Shift+click
    * another header extends a whole-column / whole-row block.
    */
-  function selectWholeGridLine(kind, index, extend) {
+  function selectWholeGridLine(kind, index, extend, anchor) {
     const tab = activeTab();
     if (!tab || !tab.rows || !tab.cols || !el.cellGrid) return;
     const cur = extend ? getStickyCellRange() : null;
     let b;
-    if (kind === 'col') {
+    if (Number.isInteger(anchor)) {
+      // v0.189: header drag — anchor..index whole columns / rows.
+      const lo = Math.min(anchor, index), hi = Math.max(anchor, index);
+      b = kind === 'col'
+        ? { rMin: 0, rMax: tab.rows - 1, cMin: lo, cMax: hi }
+        : { rMin: lo, rMax: hi, cMin: 0, cMax: tab.cols - 1 };
+    } else if (kind === 'col') {
       let c0 = index;
       let c1 = index;
       if (cur && cur.rMin === 0 && cur.rMax === tab.rows - 1) {
@@ -12186,12 +12192,87 @@
     const what = kind === 'col'
       ? ('Column' + (b.cMin === b.cMax ? ' ' + columnLetter(b.cMin) : 's ' + columnLetter(b.cMin) + '–' + columnLetter(b.cMax)))
       : ('Row' + (b.rMin === b.rMax ? ' ' + (b.rMin + 1) : 's ' + (b.rMin + 1) + '–' + (b.rMax + 1)));
-    const count = (b.rMax - b.rMin + 1) * (b.cMax - b.cMin + 1);
+    let shownRows = 0; // v0.181 rule: hidden (filtered) rows aren't acted on
+    for (let r = b.rMin; r <= b.rMax; r++) if (rowShownInGrid(tab, r)) shownRows++;
+    const count = shownRows * (b.cMax - b.cMin + 1);
     setStatus(what + ' selected (' + count + ' cell' + (count === 1 ? '' : 's') + ')', 'ok');
   }
 
   /** Wire a header so only a press+release on its plain area (not buttons/handles) selects. */
-  function wireHeaderSelect(node, skipSelector, onSelect) {
+  /* v0.189: press on a column letter / row number and drag across other
+   * headers → that range of whole columns / rows (auto-scrolls near edges). */
+  let headerDrag = null;
+  let lastHeaderDrag = null;
+  function headerIndexAt(kind, x, y) {
+    const hit = document.elementFromPoint(x, y);
+    if (!hit || !hit.closest || !el.cellGrid || !el.cellGrid.contains(hit)) return null;
+    const tab = activeTab();
+    if (kind === 'col') {
+      const h = hit.closest('.column-header');
+      if (h) { const v = parseInt(h.dataset.col, 10); return Number.isNaN(v) ? null : v; }
+      const cw = hit.closest('.cell-wrap');
+      const ta = cw && cw.querySelector('textarea.cell');
+      return ta && tab ? parseInt(ta.dataset.idx, 10) % tab.cols : null;
+    }
+    const rc = hit.closest('.row-controls');
+    if (rc) { const v = parseInt(rc.dataset.row, 10); return Number.isNaN(v) ? null : v; }
+    const cw = hit.closest('.cell-wrap');
+    const ta = cw && cw.querySelector('textarea.cell');
+    return ta && tab ? Math.floor(parseInt(ta.dataset.idx, 10) / tab.cols) : null;
+  }
+  function headerDragApply() {
+    const d = headerDrag;
+    if (!d) return;
+    const i = headerIndexAt(d.kind, d.x, d.y);
+    if (i == null || i === d.cur) return;
+    d.cur = i;
+    d.moved = true;
+    selectWholeGridLine(d.kind, i, false, d.anchor);
+  }
+  function headerDragTick() {
+    const d = headerDrag;
+    if (!d) return;
+    const sc = el.cellGrid && el.cellGrid.closest('.cell-grid-wrap');
+    if (sc) {
+      const r = sc.getBoundingClientRect();
+      const E = 36;
+      let dx = 0, dy = 0;
+      if (d.kind === 'row') {
+        const hdr = el.cellGrid.querySelector('.column-header');
+        const top = r.top + (hdr ? hdr.getBoundingClientRect().height : 0);
+        if (d.y < top + E) dy = -Math.ceil((top + E - d.y) / 3);
+        else if (d.y > r.bottom - E) dy = Math.ceil((d.y - (r.bottom - E)) / 3);
+      } else {
+        if (d.x < r.left + E) dx = -Math.ceil((r.left + E - d.x) / 3);
+        else if (d.x > r.right - E) dx = Math.ceil((d.x - (r.right - E)) / 3);
+      }
+      if (dx || dy) {
+        sc.scrollTop += Math.max(-40, Math.min(40, dy));
+        sc.scrollLeft += Math.max(-40, Math.min(40, dx));
+        headerDragApply();
+      }
+    }
+    d.raf = requestAnimationFrame(headerDragTick);
+  }
+  function onHeaderDragMove(e) {
+    if (!headerDrag) return;
+    headerDrag.x = e.clientX;
+    headerDrag.y = e.clientY;
+    headerDragApply();
+  }
+  function onHeaderDragUp() {
+    const d = headerDrag;
+    headerDrag = null;
+    document.removeEventListener('mousemove', onHeaderDragMove, true);
+    document.removeEventListener('mouseup', onHeaderDragUp, true);
+    if (d && d.raf) cancelAnimationFrame(d.raf);
+    if (d && d.moved) {
+      lastHeaderDrag = d;
+      window.setTimeout(function () { if (lastHeaderDrag === d) lastHeaderDrag = null; }, 0);
+    }
+  }
+
+  function wireHeaderSelect(node, skipSelector, onSelect, kind, index) {
     let armed = false;
     node.addEventListener('mousedown', function (e) {
       armed = false;
@@ -12200,8 +12281,15 @@
       if (t && t.closest && t.closest(skipSelector)) return;
       armed = true;
       e.preventDefault(); // no header text selection / no cell blur flash
+      if (kind && !e.shiftKey) {
+        headerDrag = { kind: kind, anchor: index, cur: index, x: e.clientX, y: e.clientY, moved: false, raf: 0 };
+        document.addEventListener('mousemove', onHeaderDragMove, true);
+        document.addEventListener('mouseup', onHeaderDragUp, true);
+        headerDrag.raf = requestAnimationFrame(headerDragTick);
+      }
     });
     node.addEventListener('click', function (e) {
+      if (lastHeaderDrag) { armed = false; lastHeaderDrag = null; return; } // drag already selected
       if (!armed) return;
       armed = false;
       const t = e.target;
