@@ -6902,6 +6902,10 @@
     if (wrapNode) {
       wrapNode.classList.remove('master-cell-locked');
       wrapNode.classList.add('master-cell-editing');
+      // v0.187: unlocked = cell pages can be added/flipped too (render disables
+      // them while locked; this in-place unlock never re-enabled them).
+      const pageBtns = wrapNode.querySelectorAll('.cell-page-btn');
+      for (let i = 0; i < pageBtns.length; i++) pageBtns[i].disabled = false;
       const nestTas = wrapNode.querySelectorAll('textarea.cell-nest-input');
       for (let i = 0; i < nestTas.length; i++) {
         nestTas[i].readOnly = false;
@@ -8731,6 +8735,7 @@
 
   /** Typed/pasted Col1 value not in the Master list → revert (returns true). */
   function revertInvalidCol1Commit(tab, idx, ta) {
+    if (isMasterCellEditFor(tab, idx)) return false; // v0.187: see Col B
     if (!isPartTabCol1Cell(tab, idx)) return false;
     const value = tab.cells[idx] || '';
     if (isCol1ValueAllowed(value)) return false;
@@ -9202,6 +9207,9 @@
   /** Typed/pasted Col B value not allowed for this row's Col A → revert. */
   function revertInvalidCol2Commit(tab, idx, ta) {
     if (!isPartTabCol2Cell(tab, idx)) return false;
+    // v0.187: an unlocked Master-linked cell is resolved by Overwrite / Keep local /
+    // Cancel — don't revert its edit underneath that dialog.
+    if (isMasterCellEditFor(tab, idx)) return false;
     const value = tab.cells[idx] || '';
     if (isCol2ValueAllowed(tab, idx, value)) return false;
     const key = tab.id + ':' + idx;
