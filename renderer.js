@@ -9698,6 +9698,18 @@
       const ow = ta.offsetWidth || (ta.getBoundingClientRect && ta.getBoundingClientRect().width) || 0;
       if (ow > 0) return Math.floor(ow);
     }
+    // v0.191: hidden (filtered-out) row → borrow the live width of a shown cell in
+    // the same column (same classes), instead of a column-width guess that can be
+    // far off (Col A/B reserve 100px for the ▾) and mis-size the row once shown.
+    if (ta && el.cellGrid && ta.dataset && ta.dataset.col != null) {
+      const sel = (ta.classList.contains('cell-nest-input') ? 'textarea.cell-nest-input' : 'textarea.cell') +
+        '[data-col="' + ta.dataset.col + '"]';
+      const peers = el.cellGrid.querySelectorAll(sel);
+      for (let i = 0; i < peers.length; i++) {
+        const w = peers[i].offsetWidth;
+        if (w > 0) return Math.floor(w);
+      }
+    }
     return Math.max(40, Math.floor(fallbackWidth || DEFAULT_COLUMN_WIDTH));
   }
 
@@ -12242,6 +12254,25 @@
     lastAutoCopyKey = key;
     lastAutoCopyAt = now;
     copyTextWithStatus(value, 'Copied cell');
+    flashCopiedCell(ta);
+  }
+
+  /** v0.191: one soft accent-tint pulse over the copied cell (layered over any
+   * shading; re-triggers on repeat; no layout change). Triple-click copy only. */
+  function flashCopiedCell(ta) {
+    const host = ta && ta.closest ? (ta.closest('.cell-nest') || ta.closest('.cell-wrap')) : null;
+    if (!host) return;
+    const old = host.querySelector(':scope > .copy-flash');
+    if (old) old.remove();
+    const fx = document.createElement('span');
+    fx.className = 'copy-flash';
+    fx.setAttribute('aria-hidden', 'true');
+    host.classList.add('copy-flash-host');
+    fx.addEventListener('animationend', function () {
+      fx.remove();
+      if (!host.querySelector(':scope > .copy-flash')) host.classList.remove('copy-flash-host');
+    });
+    host.appendChild(fx);
   }
 
   /** Snap selection to the whole cell (used after relocate; clicks leave the caret). */
@@ -14277,6 +14308,14 @@
       const rows = lastBlockCopy ? lastBlockCopy.matrix.length : (sticky.rMax - sticky.rMin + 1);
       const cols = sticky.cMax - sticky.cMin + 1;
       setStatus('Copied ' + rows + '×' + cols + ' cells', 'ok');
+      // v0.191: flash every copied (visible) cell once.
+      for (let r = sticky.rMin; r <= sticky.rMax; r++) {
+        if (!rowShownInGrid(tab, r)) continue;
+        for (let c = sticky.cMin; c <= sticky.cMax; c++) {
+          const bt = el.cellGrid && el.cellGrid.querySelector('textarea.cell[data-idx="' + (r * tab.cols + c) + '"]');
+          if (bt) flashCopiedCell(bt);
+        }
+      }
       return;
     }
     // Single-cell copy: an older block copy must not reshape this paste.
@@ -14291,6 +14330,7 @@
     e.preventDefault();
     e.clipboardData.setData('text/plain', value);
     setStatus('Copied cell', 'ok');
+    flashCopiedCell(ta);
   }
 
   function onCellCut(e) {
