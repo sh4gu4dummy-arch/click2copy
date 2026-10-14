@@ -1373,6 +1373,7 @@
     const liveTab = activeTab();
     if (liveTab && isMasterTab(liveTab)) scheduleMasterDupeMarks();
     else if (liveTab) scheduleValidationMarks();
+    scheduleQuickJumpPrune(); // v0.186: Col A changes drop stale quick-jump buttons
     const document = activeDocument();
     if (document) document.data = snapshot();
     clearTimeout(state.saveTimer);
@@ -10452,9 +10453,54 @@
     renderQuickJumps();
   }
 
+  /**
+   * v0.186: drop quick-jump buttons whose value no longer exists in that tab's
+   * Column A (any of its part pages). Buttons were only ever added, so a value
+   * renamed by Replace / Replace all / paste / delete kept a dead button.
+   * Returns true when something was removed.
+   */
+  function pruneQuickJumps() {
+    let changed = false;
+    Object.keys(quickJumpsByTab).forEach(function (tabId) {
+      const tab = state.tabs.find(function (t) { return t.id === tabId; });
+      const list = quickJumpsByTab[tabId];
+      if (!tab || !Array.isArray(list) || !list.length) return;
+      const have = Object.create(null);
+      const addCells = function (cells, cols, rows) {
+        if (!Array.isArray(cells) || !cols) return;
+        for (let r = 0; r < rows; r++) have[String(cells[r * cols] || '').trim()] = true;
+      };
+      addCells(tab.cells, tab.cols, tab.rows);
+      if (Array.isArray(tab.pages)) {
+        tab.pages.forEach(function (snap, k) {
+          if (k === (tab.page || 0) || !snap || !Array.isArray(snap.cells)) return;
+          const cols = snap.cols || tab.cols;
+          addCells(snap.cells, cols, Math.floor(snap.cells.length / (cols || 1)));
+        });
+      }
+      const kept = list.filter(function (v) { return have[String(v == null ? '' : v).trim()]; });
+      if (kept.length !== list.length) {
+        quickJumpsByTab[tabId] = kept;
+        changed = true;
+      }
+    });
+    if (changed) saveQuickJumps();
+    return changed;
+  }
+
+  let quickJumpPruneTimer = null;
+  function scheduleQuickJumpPrune() {
+    if (quickJumpPruneTimer) return;
+    quickJumpPruneTimer = window.setTimeout(function () {
+      quickJumpPruneTimer = null;
+      if (pruneQuickJumps()) renderQuickJumps();
+    }, 0);
+  }
+
   function renderQuickJumps() {
     const bar = document.getElementById('part-quick-jumps');
     if (!bar) return;
+    pruneQuickJumps();
     bar.textContent = '';
     const tab = activeTab();
     if (!tab) return;
@@ -10469,6 +10515,26 @@
         e.preventDefault();
         const t = activeTab();
         if (t) jumpToCol1ValueInGrid(t, value, { fromQuick: true });
+      });
+      // v0.186: right-click → Remove just this button (persisted).
+      b.addEventListener('contextmenu', function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        openCtxMenu({
+          heading: 'Quick jump “' + (value || '(blank)') + '”',
+          items: [{
+            label: 'Remove',
+            title: 'Remove this quick-jump button (the Column A value itself is not touched)',
+            onClick: function () {
+              quickJumpsByTab[tab.id] = (quickJumpsByTab[tab.id] || []).filter(function (v) { return v !== value; });
+              saveQuickJumps();
+              renderQuickJumps();
+              setStatus('Removed quick jump “' + (value || '(blank)') + '”', 'ok');
+            }
+          }],
+          x: e.clientX,
+          y: e.clientY
+        });
       });
       bar.appendChild(b);
     });
