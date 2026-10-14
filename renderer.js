@@ -6943,10 +6943,27 @@
     return span ? (span.textContent || '') : (link.text || '');
   }
 
+  function masterEditWholeCellEmpty() {
+    if (!masterSegmentEdit || masterSegmentEdit.kind !== 'cell') return true;
+    const tab = state.tabs.find(function (t) { return t.id === masterSegmentEdit.tabId; });
+    if (!tab) return true;
+    const idx = masterSegmentEdit.cellIndex;
+    const entry = getCellPages(tab, idx);
+    for (let p = 0; p < entry.pages.length; p++) if (String(entry.pages[p] || '').trim()) return false;
+    const nests = getCellNests(tab, idx);
+    for (let n = 0; n < nests.length; n++) {
+      const np = (nests[n] && nests[n].pages) || [];
+      for (let p = 0; p < np.length; p++) if (String(np[p] || '').trim()) return false;
+    }
+    return true;
+  }
+
   function showMasterSegmentDialog() {
     if (!el.masterSegmentDialog) return;
     updateMasterEditDialogCopy();
-    const emptyEdit = !String(getMasterEditLiveNewText() || '').trim();
+    // v0.188: "cleared" only when the WHOLE cell is empty (every page + nest) —
+    // a blank page added next to text pages is a page add, not a clear.
+    const emptyEdit = !String(getMasterEditLiveNewText() || '').trim() && masterEditWholeCellEmpty();
     if (el.btnMasterOverwrite) {
       el.btnMasterOverwrite.hidden = emptyEdit;
     }
@@ -6991,6 +7008,23 @@
     }
   }
 
+  // v0.188: a confirm (e.g. Delete page) took focus mid-session — once it closes,
+  // finish the session unless focus went back into the edited cell.
+  function watchConfirmThenFinish() {
+    window.setTimeout(function () {
+      if (!isMasterCellEditSession() || masterSegmentDialogOpen) return;
+      if (document.querySelector('.paste-confirm')) { watchConfirmThenFinish(); return; }
+      const a = document.activeElement;
+      const e = masterSegmentEdit;
+      if (a && a.closest && e && e.kind === 'cell') {
+        const w = a.closest('.cell-wrap');
+        const ta = w && w.querySelector('textarea.cell');
+        if (ta && String(ta.dataset.idx) === String(e.cellIndex)) return;
+      }
+      requestMasterSegmentFinish();
+    }, 150);
+  }
+
   function requestMasterSegmentFinish(opts) {
     opts = opts || {};
     if (!masterSegmentEdit || masterSegmentDialogOpen) return;
@@ -7015,7 +7049,9 @@
         livePages,
         masterSegmentEdit.originalPages || makeEmptyCellPages('')
       );
-      if (!opts.forceDialog && liveText === masterSegmentEdit.originalText &&
+      // v0.188: only flipping the viewed page isn't a change.
+      const viewOnly = livePages.pages.length > 1 && liveText === String(livePages.pages[livePages.page || 0] || '');
+      if (!opts.forceDialog && (liveText === masterSegmentEdit.originalText || viewOnly) &&
           nestsUnchanged && pagesUnchanged) {
         ensureCellLocks(tab);
         if (tab.cellLocks[idx]) tab.cellLocks[idx].locked = true;
@@ -7249,12 +7285,25 @@
         refreshAfterMasterSegmentChange();
         return;
       }
-      const newText = tab.cells[edit.cellIndex] == null ? '' : String(tab.cells[edit.cellIndex]);
+      let newText = tab.cells[edit.cellIndex] == null ? '' : String(tab.cells[edit.cellIndex]);
       const oldText = edit.originalText;
       const lock = getCellLock(tab, edit.cellIndex);
       const preferred = lock && Number.isInteger(lock.masterCellIndex) ? lock.masterCellIndex : -1;
       const nestsFromEdit = cloneNestList(getCellNests(tab, edit.cellIndex));
       const pagesFromEdit = cloneCellPagesEntry(getCellPages(tab, edit.cellIndex));
+      const liveCellPage = pagesFromEdit.page || 0;
+      // v0.188: visible page is blank (a page was just added) → that is a page add,
+      // not "change the text to ''". Keep the cell's text = the original page's text
+      // (or the first page with text) so other same-text cells / Combined segments
+      // are never blanked; Master shows that page and gets ALL pages.
+      if (!newText.trim()) {
+        let keep = pagesFromEdit.pages.indexOf(oldText);
+        if (keep < 0) keep = pagesFromEdit.pages.findIndex(function (t) { return String(t || '').trim(); });
+        if (keep >= 0) {
+          pagesFromEdit.page = keep;
+          newText = String(pagesFromEdit.pages[keep]);
+        }
+      }
       const master = state.tabs.find(isMasterTab);
       if (!master || !masterSourceHasContent(master, preferred) ||
           trimEndText(master.cells[preferred] || '') !== trimEndText(oldText)) {
@@ -7268,6 +7317,12 @@
       pushHistory();
       const masterIdx = applyMasterOverwriteText(oldText, newText, preferred, nestsFromEdit, pagesFromEdit);
       setCellMasterLock(tab, edit.cellIndex, masterIdx >= 0 ? masterIdx : null);
+      // Stay on the page you were on (view only).
+      const ownEntry = tab.cellPages && tab.cellPages[edit.cellIndex];
+      if (ownEntry && liveCellPage < ownEntry.pages.length && ownEntry.page !== liveCellPage) {
+        ownEntry.page = liveCellPage;
+        syncCellTextFromPages(tab, edit.cellIndex);
+      }
       masterSegmentEdit = null;
       refreshAfterMasterSegmentChange();
       setStatus('Overwrote Master (text + nests + pages) and synced matching cells/segments', 'ok');
@@ -11349,6 +11404,10 @@
         pageLabel.className = 'cell-page-label';
         pageLabel.textContent = (page + 1) + '/' + pageCount;
         pageLabel.title = 'Cell page ' + (page + 1) + ' of ' + pageCount + ' — right-click to delete';
+        // v0.188: keep the unlocked edit session focused while using the page menu.
+        pageLabel.addEventListener('mousedown', function (ev) {
+          if (isMasterCellEditFor(tab, idx)) ev.preventDefault();
+        });
         pageLabel.addEventListener('contextmenu', function (ev) {
           ev.preventDefault();
           ev.stopPropagation();
@@ -12199,16 +12258,41 @@
       }
     }
 
+    // v0.188: locked Master-linked cells in the block are removed like right-click
+    // Clear (unlink + empty, no confirm for them, Master untouched, Ctrl+Z restores).
     if (!isMasterTab(tab)) {
+      const lockedSet = {};
+      let anyLocked = false;
       for (let i = 0; i < indices.length; i++) {
         const idx = indices[i];
         if (isCellMasterLocked(tab, idx) &&
             !(isMasterCellEditSession() &&
               masterSegmentEdit.tabId === tab.id &&
-              masterSegmentEdit.cellIndex === idx)) {
-          setStatus('Locked Master cell in selection — double-click to unlock first', 'err');
-          return false;
+              masterSegmentEdit.cellIndex === idx)) { lockedSet[idx] = true; anyLocked = true; }
+      }
+      if (anyLocked) {
+        let own = 0;
+        for (let i = 0; i < indices.length; i++) {
+          if (!lockedSet[indices[i]] && String(tab.cells[indices[i]] || '').trim()) own++;
         }
+        const go = function () { clearCellsFromMenu(tab, indices, {}); };
+        if (!own) { go(); return true; }
+        const dims0 = tab.cols + 'x' + tab.rows;
+        openActionConfirm({
+          anchor: cellWrapAt(b.rMin * tab.cols + b.cMin),
+          message: 'Clear ' + pluralCells(own) + '? (linked cells just unlink)',
+          actionLabel: 'Clear',
+          cancelStatus: 'Clear cancelled',
+          ariaLabel: 'Confirm clear',
+          onConfirm: function () {
+            if (activeTab() !== tab || (tab.cols + 'x' + tab.rows) !== dims0) {
+              setStatus('Clear cancelled — grid changed', 'err');
+              return;
+            }
+            go();
+          }
+        });
+        return true;
       }
     }
 
@@ -12729,6 +12813,7 @@
       if (!isMasterCellEditSession() || masterSegmentDialogOpen) return;
       const active = document.activeElement;
       if (el.masterSegmentDialog && el.masterSegmentDialog.contains(active)) return;
+      if (active && active.closest && active.closest('.paste-confirm')) { watchConfirmThenFinish(); return; } // v0.188
       if (active === nestTa) return;
       const wrap = nestTa.closest ? nestTa.closest('.cell-wrap') : null;
       if (wrap && wrap.contains(active)) return;
@@ -12770,6 +12855,7 @@
       if (!isMasterCellEditSession() || masterSegmentDialogOpen) return;
       const active = document.activeElement;
       if (el.masterSegmentDialog && el.masterSegmentDialog.contains(active)) return;
+      if (active && active.closest && active.closest('.paste-confirm')) { watchConfirmThenFinish(); return; } // v0.188
       if (active === ta) return;
       const wrap = ta.closest ? ta.closest('.cell-wrap') : null;
       if (wrap && wrap.contains(active)) return;
@@ -12989,10 +13075,17 @@
         e.key === 'ArrowLeft' || e.key === 'ArrowRight' ||
         e.key === 'Home' || e.key === 'End' || e.key === 'PageUp' || e.key === 'PageDown';
       // Ctrl/Cmd+V reaches onCellPaste, which allows Master-value pastes only (v0.157).
+      // v0.188: Ctrl/Cmd+X reaches onCellCut (whole-cell cut = Clear on linked cells).
       const modNav = (e.ctrlKey || e.metaKey) && (e.key === 'c' || e.key === 'C' ||
-        e.key === 'a' || e.key === 'A' || e.key === 'v' || e.key === 'V');
+        e.key === 'a' || e.key === 'A' || e.key === 'v' || e.key === 'V' ||
+        e.key === 'x' || e.key === 'X');
       if (!nav && !modNav) {
         e.preventDefault();
+        if ((e.key === 'Delete' || e.key === 'Backspace') && !e.ctrlKey && !e.metaKey && !e.altKey) {
+          // v0.188: removal isn't editing — same as right-click Clear.
+          clearCellsFromMenu(tab, [idx], {});
+          return;
+        }
         if (e.key === 'Enter' && !e.shiftKey) {
           // Still allow Enter navigation on locked cells (no edit / no auto-copy).
         } else {
@@ -13974,14 +14067,8 @@
         if (!rowShownInGrid(tab, r)) continue; // v0.181: visible rows only
         for (let c = sticky.cMin; c <= sticky.cMax; c++) indices.push(r * tab.cols + c);
       }
-      if (!isMasterTab(tab)) {
-        for (let i = 0; i < indices.length; i++) {
-          if (isCellMasterLocked(tab, indices[i]) && !editingThis(indices[i])) {
-            setStatus('Locked Master cell in selection — double-click to unlock first', 'err');
-            return;
-          }
-        }
-      }
+      // v0.188: Master-linked cells in the block are cut like right-click Clear
+      // (unlink + empty, Master untouched; Ctrl+Z restores incl. the lock).
       const tsv = buildCellRangeTsv(tab, sticky.rMin, sticky.cMin, sticky.rMax, sticky.cMax);
       e.clipboardData.setData('text/plain', tsv);
       clearCellsFromMenu(tab, indices, {
@@ -13990,15 +14077,13 @@
       return;
     }
     lastBlockCopy = null;
-    if (typeof ta.selectionStart === 'number' && typeof ta.selectionEnd === 'number' &&
-        ta.selectionStart !== ta.selectionEnd) {
-      return;
-    }
     const idx = parseInt(ta.dataset.idx, 10);
-    if (!Number.isNaN(idx) && idx >= 0 && idx < tab.cells.length &&
-        !isMasterTab(tab) && isCellMasterLocked(tab, idx) && !editingThis(idx)) {
-      e.preventDefault();
-      setStatus('Locked Master cell — double-click to unlock before editing', 'err');
+    // v0.188: a locked Master-linked cell is cut WHOLE, same as right-click Clear
+    // (not an edit of Master). Text selection inside it doesn't matter.
+    const lockedWhole = !Number.isNaN(idx) && idx >= 0 && idx < tab.cells.length &&
+      !isMasterTab(tab) && isCellMasterLocked(tab, idx) && !editingThis(idx);
+    if (!lockedWhole && typeof ta.selectionStart === 'number' && typeof ta.selectionEnd === 'number' &&
+        ta.selectionStart !== ta.selectionEnd) {
       return;
     }
     const value = ta.value == null ? '' : String(ta.value);
@@ -15930,6 +16015,7 @@
       if (!masterSegmentEdit || masterSegmentDialogOpen) return;
       const active = document.activeElement;
       if (el.masterSegmentDialog && el.masterSegmentDialog.contains(active)) return;
+      if (active && active.closest && active.closest('.paste-confirm')) { watchConfirmThenFinish(); return; } // v0.188
       const live = findCombinedSegmentSpan(masterSegmentEdit.linkId);
       if (live && (active === live || live.contains(active))) return;
       requestMasterSegmentFinish();
