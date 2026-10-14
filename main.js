@@ -298,6 +298,22 @@ function normalizeCellShades(shades, length) {
   return out;
 }
 
+function emptyCellNotes(length) {
+  return Array(Math.max(0, length)).fill(null);
+}
+function normalizeCellNote(value) {
+  return typeof value === 'string' && value.trim() ? value : null;
+}
+// v0.190: per-cell notes — keep through load/save/import (cf. icon-persist bug).
+function normalizeCellNotes(notes, length) {
+  const needed = Math.max(0, length);
+  let out = Array.isArray(notes) ? notes.map(normalizeCellNote) : emptyCellNotes(needed);
+  while (out.length < needed) out.push(null);
+  if (out.length > needed) out = out.slice(0, needed);
+  return out;
+}
+
+
 function makeEmptyCellPages(text) {
   return { pages: [typeof text === 'string' ? text : ''], page: 0 };
 }
@@ -378,6 +394,7 @@ function normalizeTabPage(raw) {
   const cellLocks = normalizeCellLocks(raw.cellLocks, needed);
   const cellPages = normalizeCellPages(raw.cellPages, cells, needed);
   const cellShades = normalizeCellShades(raw.cellShades, needed);
+  const cellNotes = normalizeCellNotes(raw.cellNotes, needed);
   for (let i = 0; i < needed; i++) {
     const entry = cellPages[i];
     if (entry && Array.isArray(entry.pages)) {
@@ -392,6 +409,7 @@ function normalizeTabPage(raw) {
     cellLocks,
     cellPages,
     cellShades,
+    cellNotes,
     partPrompt: typeof raw.partPrompt === 'string' ? raw.partPrompt : '',
     confirmed: normalizeTabConfirmedKeys(raw.confirmed),
     name: typeof raw.name === 'string' ? raw.name : ''
@@ -413,6 +431,7 @@ function wrapRootAsTabPage(tab) {
     cellLocks: normalizeCellLocks(tab.cellLocks, needed),
     cellPages: normalizeCellPages(tab.cellPages, tab.cells, needed),
     cellShades: normalizeCellShades(tab.cellShades, needed),
+    cellNotes: normalizeCellNotes(tab.cellNotes, needed),
     partPrompt: '',
     confirmed: [],
     name: ''
@@ -449,6 +468,7 @@ function attachTabPages(normalized, raw) {
   normalized.cellLocks = active.cellLocks;
   normalized.cellPages = active.cellPages;
   normalized.cellShades = active.cellShades;
+  normalized.cellNotes = active.cellNotes;
   if (active.columnWidths) normalized.columnWidths = active.columnWidths;
   else delete normalized.columnWidths;
   if (active.rowHeights) normalized.rowHeights = active.rowHeights;
@@ -483,7 +503,8 @@ function normalizeTab(t) {
       nestedCells: emptyNestedCells(cols * rows),
       cellLocks: emptyNestedCells(cols * rows).map(() => null),
       cellPages: normalizeCellPages(null, cells, cols * rows),
-      cellShades: emptyCellShades(cols * rows)
+      cellShades: emptyCellShades(cols * rows),
+      cellNotes: emptyCellNotes(cols * rows)
     };
     normalized.icon = isTabIconId(t.icon) ? t.icon : defaultIconForTab(normalized);
     if (columnWidths) normalized.columnWidths = columnWidths;
@@ -531,7 +552,8 @@ function normalizeTab(t) {
     nestedCells: normalizeNestedCells(t.nestedCells, needed),
     cellLocks: normalizeCellLocks(t.cellLocks, needed),
     cellPages: normalizeCellPages(t.cellPages, cells, needed),
-    cellShades: normalizeCellShades(t.cellShades, needed)
+    cellShades: normalizeCellShades(t.cellShades, needed),
+    cellNotes: normalizeCellNotes(t.cellNotes, needed)
   };
   // Mirror current page text into cells so Combined / library stay consistent.
   for (let i = 0; i < needed; i++) {
