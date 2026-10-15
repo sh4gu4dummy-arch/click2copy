@@ -543,17 +543,15 @@
         if (!lock || lock.masterOrigin !== true) continue;
         if (!Number.isInteger(lock.masterCellIndex) || lock.masterCellIndex !== masterIdx) continue;
         if (isMasterCellEditFor(tab, i)) continue;
-        if (cellPagesContentEqual(tab.cellPages[i], source) &&
-            (tab.cells[i] || '') === (source.pages[source.page] || '')) {
-          // Still sync page index (view state) if contents match.
-          if (tab.cellPages[i].page !== source.page) {
-            tab.cellPages[i].page = source.page;
-            syncCellTextFromPages(tab, i);
-            liveSyncConfirmedLinksForCell(tab.id, i, null, { silent: true });
-          }
+        // v0.195: page index is this cell's own view — never follow Master's page.
+        const mine = cloneCellPagesEntry(source);
+        keepLocalPageIndex(mine, tab.cellPages[i]);
+        if (cellPagesContentEqual(tab.cellPages[i], mine) &&
+            tab.cellPages[i].page === mine.page &&
+            (tab.cells[i] || '') === (mine.pages[mine.page] || '')) {
           continue;
         }
-        tab.cellPages[i] = cloneCellPagesEntry(source);
+        tab.cellPages[i] = mine;
         syncCellTextFromPages(tab, i);
         liveSyncConfirmedLinksForCell(tab.id, i, null, { silent: true });
       }
@@ -732,7 +730,9 @@
         if (!Number.isInteger(lock.masterCellIndex) || lock.masterCellIndex !== masterIdx) continue;
         if (isMasterCellEditFor(tab, i)) continue;
         if (nestsContentEqual(tab.nestedCells[i], source)) continue;
-        tab.nestedCells[i] = cloneNestList(source);
+        const mineN = cloneNestList(source);
+        keepLocalNestPages(mineN, tab.nestedCells[i]);
+        tab.nestedCells[i] = mineN;
         syncNestLinksAfterNestReplace(tab.id, i);
       }
     });
@@ -2624,7 +2624,10 @@
     const source = cloneCellPagesEntry(getCellPages(master, masterIdx));
     const live = master.cells[masterIdx] == null ? '' : String(master.cells[masterIdx]);
     if ((source.pages[source.page] || '') !== live) source.pages[source.page] = live;
+    // v0.195: the page a linked cell shows is its own view state — keep it.
+    keepLocalPageIndex(source, site.cellPages[i]);
     const nests = cloneNestList(getCellNests(master, masterIdx));
+    keepLocalNestPages(nests, site.nestedCells[i]);
     const pagesSame = cellPagesContentEqual(site.cellPages[i], source) &&
       site.cellPages[i] && site.cellPages[i].page === source.page &&
       siteCellText(site, i) === (source.pages[source.page] || '');
@@ -2638,6 +2641,26 @@
       liveSyncConfirmedLinksForCell(site.tab.id, i, null, { silent: true });
     }
     return true;
+  }
+
+  /** Master cell text on the page this linked site is showing (v0.195). */
+  function masterTextForSitePage(master, idx, site, i) {
+    const entry = cloneCellPagesEntry(getCellPages(master, idx));
+    entry.pages[entry.page] = master.cells[idx] == null ? '' : String(master.cells[idx]);
+    keepLocalPageIndex(entry, site.cellPages && site.cellPages[i]);
+    return entry.pages[entry.page] == null ? '' : String(entry.pages[entry.page]);
+  }
+
+  function keepLocalPageIndex(entry, local) {
+    if (!entry || !local || !Number.isInteger(local.page) || !entry.pages || !entry.pages.length) return;
+    entry.page = Math.max(0, Math.min(local.page, entry.pages.length - 1));
+  }
+
+  function keepLocalNestPages(nests, localNests) {
+    if (!Array.isArray(nests) || !Array.isArray(localNests)) return;
+    for (let n = 0; n < nests.length && n < localNests.length; n++) {
+      if (nests[n] && localNests[n]) keepLocalPageIndex(nests[n], localNests[n]);
+    }
   }
 
   function findMasterIndexForText(text, preferCol, masterCols) {
@@ -2682,7 +2705,7 @@
       const cols = site.tab.cols || 1;
       const idx = lock.masterCellIndex;
       const sourceOk = masterSourceHasContent(master, idx);
-      if (sourceOk && trimEndText(master.cells[idx] || '') === trimEndText(text)) {
+      if (sourceOk && trimEndText(masterTextForSitePage(master, idx, site, i)) === trimEndText(text)) {
         if (writeLockSiteFromMaster(site, i, idx)) out.resynced++;
         return;
       }
@@ -2694,8 +2717,7 @@
         return;
       }
       if (sourceOk) {
-        writeLockSiteFromMaster(site, i, idx);
-        out.resynced++;
+        if (writeLockSiteFromMaster(site, i, idx)) out.resynced++;
         return;
       }
       site.cellLocks[i] = null;
@@ -7425,12 +7447,37 @@
     return n;
   }
 
+  /**
+   * v0.195: a linked part cell may show a different page than Master's own view.
+   * Overwrite matches Master by the edited page's original text, so show that
+   * page on the Master cell first (view index only; no text changes).
+   */
+  function alignMasterPageForCellEdit(edit) {
+    if (!edit || edit.kind !== 'cell' || !edit.originalPages) return;
+    const tab = state.tabs.find(function (t) { return t.id === edit.tabId; });
+    const master = state.tabs.find(isMasterTab);
+    if (!tab || !master || master === tab) return;
+    const lock = getCellLock(tab, edit.cellIndex);
+    const mIdx = lock && Number.isInteger(lock.masterCellIndex) ? lock.masterCellIndex : -1;
+    if (mIdx < 0 || mIdx >= master.cells.length) return;
+    ensureCellPages(master);
+    const entry = master.cellPages[mIdx];
+    if (!entry || !entry.pages || entry.pages.length < 2) return;
+    const want = edit.originalPages.page || 0;
+    if (want === (entry.page || 0) || want >= entry.pages.length) return;
+    entry.pages[entry.page || 0] = master.cells[mIdx] == null ? '' : String(master.cells[mIdx]);
+    if (trimEndText(entry.pages[want] || '') !== trimEndText(edit.originalText || '')) return;
+    entry.page = want;
+    master.cells[mIdx] = String(entry.pages[want] || '');
+  }
+
   function overwriteMasterFromSegmentEdit(confirmedOthers) {
     if (!masterSegmentEdit) {
       hideMasterSegmentDialog();
       return;
     }
     const edit = masterSegmentEdit;
+    alignMasterPageForCellEdit(edit);
     if (!confirmedOthers) {
       // v0.157: Overwrite also rewrites unlinked cells holding the same old text —
       // ask first (Cancel keeps the dialog + edit open, nothing changes).
