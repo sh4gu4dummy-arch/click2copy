@@ -3165,3 +3165,9 @@ textarea.cell.cell-range-selected::selection {
   animation: copyFlash 600ms ease-out;
 }
 @keyframes copyFlash { 0% { opacity: 0; } 35% { opacity: .22; } 100% { opacity: 0; } }
+
+/* v0.196: the ▾ value menu's filter hides rows with [hidden]; display:block above overrode it. */
+.col1-value-option[hidden],
+.col1-value-empty[hidden] {
+  display: none;
+}
