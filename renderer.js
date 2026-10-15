@@ -10116,6 +10116,12 @@
       rows.push(r);
     }
     autoAdjustSigs[tab.id] = next;
+    // Col A grows once its value is committed (focus left that Col A cell).
+    const typingCol1 = !!(a && a.tagName === 'TEXTAREA' && !a.readOnly && a.dataset && a.dataset.col === '0' &&
+      el.cellGrid.contains(a));
+    if (!typingCol1 && fitCol1Width(tab, { growOnly: true })) {
+      for (let r = 0; r < tab.rows; r++) if (rows.indexOf(r) < 0 && r !== typingRow) rows.push(r);
+    }
     if (rows.length) fitGridRows(tab, rows);
   }
 
@@ -10165,10 +10171,57 @@
    * Shrinks tall empty/short rows as well as growing clipped ones — replaces any
    * prior persisted rowHeights / manual resize pins (not grow-only).
    */
+  /**
+   * v0.193: Col A width fits its widest value on one line (real font/text size +
+   * the checkbox/▾/+ chrome around the textarea), capped at 40% of the grid
+   * view (longer values wrap). Only Col A changes; other columns keep their
+   * current pixel widths. growOnly (Auto adjust) never shrinks.
+   */
+  function fitCol1Width(tab, opts) {
+    opts = opts || {};
+    if (!tab || !el.cellGrid || (tab.cols || 0) < 2) return false;
+    const ta = el.cellGrid.querySelector('textarea.cell[data-col="0"]');
+    const header = el.cellGrid.querySelector('.column-header[data-col="0"]');
+    if (!ta || !header || !(ta.offsetWidth > 0)) return false;
+    const colW = header.getBoundingClientRect().width;
+    const chrome = Math.max(0, colW - ta.getBoundingClientRect().width);
+    const cs = window.getComputedStyle(ta);
+    const ctx = (fitCol1Width.cv || (fitCol1Width.cv = document.createElement('canvas'))).getContext('2d');
+    ctx.font = cs.font;
+    const ls = parseFloat(cs.letterSpacing) || 0;
+    let textW = 0;
+    for (let r = 0; r < tab.rows; r++) {
+      String(tab.cells[r * tab.cols] || '').split('\n').forEach(function (line) {
+        const w = ctx.measureText(line).width + ls * line.length;
+        if (w > textW) textW = w;
+      });
+    }
+    const pad = (parseFloat(cs.paddingLeft) || 0) + (parseFloat(cs.paddingRight) || 0) +
+      (parseFloat(cs.borderLeftWidth) || 0) + (parseFloat(cs.borderRightWidth) || 0);
+    const view = el.cellGrid.parentElement ? el.cellGrid.parentElement.clientWidth : 0;
+    const cap = Math.max(MIN_COLUMN_WIDTH, Math.floor((view || 1000) * 0.4));
+    let want = Math.ceil(textW + pad + chrome + 4);
+    want = Math.min(cap, Math.max(MIN_COLUMN_WIDTH, want));
+    const widths = Array.isArray(tab.columnWidths) && tab.columnWidths.length === tab.cols
+      ? tab.columnWidths.slice() : currentColumnWidths(tab);
+    if (!widths) return false;
+    const cur = Math.round(widths[0]);
+    if (want === cur || (opts.growOnly && want <= cur)) return false;
+    widths[0] = want;
+    for (let c = 1; c < widths.length; c++) widths[c] = Math.round(widths[c]);
+    tab.columnWidths = widths;
+    applyGridColumns(tab);
+    scheduleSave();
+    return true;
+  }
+
   function autoFitAllRowHeights() {
     const tab = activeTab();
     if (!tab || !el.cellGrid) return;
     pushHistory();
+    prepareWrapWidthsForFitMeasure(el.cellGrid);
+    // Chrome width is read from live layout; a second pass settles it.
+    if (fitCol1Width(tab)) fitCol1Width(tab);
     // Drop old pinned heights so measure/apply can shrink empty rows.
     clearPinnedHeightsForFitMeasure(el.cellGrid);
     // Match post-fit wrap widths before measuring (no scrollbar gutter).
