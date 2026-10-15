@@ -2525,8 +2525,10 @@
       ensureCellLocks(tab);
       ensureCellPages(tab);
       ensureNestedCells(tab);
+      const nPages = Array.isArray(tab.pages) ? tab.pages.length : 1;
       const live = { tab: tab, live: true, cells: tab.cells, cellLocks: tab.cellLocks,
-        cellPages: tab.cellPages, nestedCells: tab.nestedCells };
+        cellPages: tab.cellPages, nestedCells: tab.nestedCells,
+        cols: tab.cols, pageIndex: tab.page || 0, pageCount: nPages };
       for (let i = 0; i < tab.cellLocks.length; i++) {
         const lock = tab.cellLocks[i];
         if (lock && lock.masterOrigin === true) cb(live, i, lock);
@@ -2540,7 +2542,8 @@
         if (!Array.isArray(snap.cellPages)) snap.cellPages = [];
         if (!Array.isArray(snap.nestedCells)) snap.nestedCells = [];
         const site = { tab: tab, live: false, cells: snap.cells, cellLocks: snap.cellLocks,
-          cellPages: snap.cellPages, nestedCells: snap.nestedCells };
+          cellPages: snap.cellPages, nestedCells: snap.nestedCells,
+          cols: snap.cols || tab.cols, pageIndex: k, pageCount: nPages };
         for (let i = 0; i < Math.min(n, snap.cellLocks.length); i++) {
           const lock = snap.cellLocks[i];
           if (lock && lock.masterOrigin === true) cb(site, i, lock);
@@ -4813,8 +4816,36 @@
       if (!isMasterTab(tab) && getCellLock(tab, idx)) { anyWork = true; break; }
       if (clearNests && cellHasClearableNestContent(tab, idx)) { anyWork = true; break; }
     }
+    if (!anyWork && isMasterTab(tab) && linkedPartLocations(uniq).length) anyWork = true;
     if (!anyWork) {
       setStatus('Nothing to clear', 'ok');
+      return;
+    }
+
+    // v0.192: Master cells with linked part cells ALWAYS confirm, listing where.
+    const masterLinked = isMasterTab(tab) && !opts.linkedOk ? linkedPartLocations(uniq) : [];
+    if (masterLinked.length) {
+      const dimsL = tab.cols + 'x' + tab.rows;
+      const againL = Object.assign({}, opts, { confirm: false, linkedOk: true });
+      let filledL = 0;
+      uniq.forEach(function (idx) {
+        if (String(tab.cells[idx] || '').trim() || (clearNests && cellHasClearableNestContent(tab, idx))) filledL++;
+      });
+      openActionConfirm({
+        anchor: opts.anchor || cellWrapAt(uniq[0]),
+        message: (opts.verb || 'Clear') + ' ' + pluralCells(filledL || uniq.length, filledL ? 'filled cell' : 'cell') +
+          (opts.where || '') + '?' + linkedPartSuffix(tab, uniq, 'be cleared and unlinked'),
+        actionLabel: opts.verb || 'Clear',
+        cancelStatus: (opts.verb || 'Clear') + ' cancelled',
+        ariaLabel: 'Confirm clear',
+        onConfirm: function () {
+          if (activeTab() !== tab || (tab.cols + 'x' + tab.rows) !== dimsL) {
+            setStatus((opts.verb || 'Clear') + ' cancelled — grid changed', 'err');
+            return;
+          }
+          clearCellsFromMenu(tab, uniq, againL);
+        }
+      });
       return;
     }
 
@@ -4855,6 +4886,7 @@
       hideMasterSegmentDialog();
     }
 
+    if (typeof opts.onApply === 'function') opts.onApply();
     pushHistory();
     ensureCellPages(tab);
     if (clearNests) ensureNestedCells(tab);
@@ -4879,6 +4911,7 @@
       liveSyncConfirmedLinksForCell(tab.id, idx, undefined, { dropEmpty: true, silent: true });
       if (isMasterTab(tab)) syncLockedPartPagesFromMaster(idx);
     }
+    if (isMasterTab(tab)) releaseLinkedPartCells(uniq);
     if (clearNests) {
       // Nest DOM must rebuild; keep sticky highlight / scroll via normal render.
       renderGrid();
@@ -4936,7 +4969,7 @@
       items: [{
         label: 'Clear this row',
         title: isMasterTab(tab)
-          ? 'Empty every cell in this Master row (linked part cells may sync)'
+          ? 'Empty every cell in this Master row (asks first if part cells are linked; they are cleared and unlinked)'
           : 'Empty every cell in this row and unlink from Master (Master library unchanged)',
         disabled: !anyClearable,
         onClick: function () {
@@ -5160,7 +5193,7 @@
     const anyClearable = indices.some(function (i) {
       if ((tab.cells[i] || '') !== '') return true;
       return !isMasterTab(tab) && !!getCellLock(tab, i);
-    });
+    }) || (isMasterTab(tab) && linkedPartLocations(indices).length > 0);
     const r = Math.floor(cellIndex / tab.cols);
     const c = cellIndex % tab.cols;
     const heading = indices.length > 1
@@ -5214,16 +5247,20 @@
     items.push({
       label: 'Cut',
       title: isMasterTab(tab)
-        ? 'Copy, then empty (Master sync may update linked part cells)'
+        ? 'Copy, then empty (asks first if part cells are linked; they are cleared and unlinked)'
         : 'Copy, then empty and unlink from Master (Master library unchanged)',
       disabled: !anyClearable,
       onClick: function () {
         const payload = clipboardPayloadForCopy();
         // Clipboard write is async; Clear (v0.147) is the one undo step.
-        writeTextToClipboard(payload.text).catch(function () {
-          copyTextWithStatus(payload.text);
-        });
+        // v0.192: written only when the cut actually happens (confirm may cancel).
         clearCellsFromMenu(tab, indices, {
+          verb: 'Cut',
+          onApply: function () {
+            writeTextToClipboard(payload.text).catch(function () {
+              copyTextWithStatus(payload.text);
+            });
+          },
           statusText: indices.length > 1
             ? ('Cut ' + indices.length + ' cells')
             : (isMasterTab(tab) ? 'Cut cell' : 'Cut cell (unlinked from Master)')
@@ -5269,7 +5306,7 @@
     items.push({
       label: 'Clear',
       title: isMasterTab(tab)
-        ? 'Empty this cell (Master sync may update linked part cells)'
+        ? 'Empty this cell (asks first if part cells are linked; they are cleared and unlinked)'
         : 'Empty cell and unlink from Master (Master library unchanged)',
       disabled: !anyClearable,
       onClick: function () {
@@ -8043,6 +8080,28 @@
   }
 
   if (window.click2copy && window.click2copy.onMenuAction) {
+    if (typeof window.click2copy.onZoom === 'function') {
+      // v0.192: brief zoom status (Ctrl+wheel / Ctrl+= / Ctrl+- / Ctrl+0).
+      window.click2copy.onZoom(function (pct) { setStatus('Zoom ' + pct + '%', 'ok'); });
+      if (typeof window.click2copy.zoomStep === 'function') {
+        // Ctrl+wheel zooms the whole app (Ctrl+click is untouched).
+        window.addEventListener('wheel', function (e) {
+          if (!(e.ctrlKey || e.metaKey) || !e.deltaY) return;
+          e.preventDefault();
+          window.click2copy.zoomStep(e.deltaY < 0 ? 1 : -1);
+        }, { passive: false, capture: true });
+        window.addEventListener('keydown', function (e) {
+          if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+          let dir = null;
+          if (e.key === '=' || e.key === '+') dir = 1;
+          else if (e.key === '-' || e.key === '_') dir = -1;
+          else if (e.key === '0') dir = 0;
+          if (dir === null) return;
+          e.preventDefault();
+          window.click2copy.zoomStep(dir);
+        }, true);
+      }
+    }
     window.click2copy.onMenuAction(function (action) {
       if (action === 'new-document') createDocument();
       else if (action === 'open-documents') openDocuments();
@@ -12575,16 +12634,17 @@
       if (v !== '') anyContent = true;
       if (v.trim()) filled++;
     }
-    if (!anyContent) return true;
+    const linkedHere = isMasterTab(tab) ? linkedPartLocations(indices) : [];
+    if (!anyContent && !linkedHere.length) return true;
 
-    if (filled > 0) {
+    if (filled > 0 || linkedHere.length) {
       const active = document.activeElement;
       const anchor = active && active.tagName === 'TEXTAREA' && el.cellGrid && el.cellGrid.contains(active)
         ? active : cellWrapAt(b.rMin * tab.cols + b.cMin);
       const dims = tab.cols + 'x' + tab.rows;
       openActionConfirm({
         anchor: anchor,
-        message: 'Clear ' + pluralCells(filled) + '?' + linkedPartSuffix(tab, indices),
+        message: 'Clear ' + pluralCells(filled) + '?' + linkedPartSuffix(tab, indices, 'be cleared and unlinked'),
         actionLabel: 'Clear',
         cancelStatus: 'Clear cancelled',
         ariaLabel: 'Confirm clear',
@@ -12613,6 +12673,7 @@
       // Same as right-click Clear: a Master clear updates linked part cells.
       if (isMasterTab(tab)) syncLockedPartPagesFromMaster(idx);
     }
+    if (isMasterTab(tab)) releaseLinkedPartCells(indices);
     renderCombinedPrompt();
     applyConfirmedCellHighlights();
     applyAppendCheckedState();
@@ -13872,6 +13933,7 @@
     const pasteCols = matrix[0].length;
     const rows = rowMap || matrix.map(function (_, r) { return startRow + r; });
     ensureTabSize(tab, rows[rows.length - 1] + 1, startCol + pasteCols);
+    const blanked = [];
     for (let r = 0; r < pasteRows; r++) {
       for (let c = 0; c < pasteCols; c++) {
         const idx = rows[r] * tab.cols + (startCol + c);
@@ -13881,8 +13943,11 @@
         revalidateLinksForCell(tab.id, idx, { silent: true });
         // Pasting into Master must push to linked part cells like typing does.
         if (isMasterTab(tab)) syncLockedPartPagesFromMaster(idx);
+        if (isMasterTab(tab) && !String(matrix[r][c] == null ? '' : matrix[r][c])) blanked.push(idx);
       }
     }
+    // v0.192: a blank pasted over a linked Master cell clears + unlinks its part cells.
+    if (blanked.length) releaseLinkedPartCells(blanked);
     renderCombinedPrompt();
     applyConfirmedCellHighlights();
     return {
@@ -14076,7 +14141,23 @@
     // Ash: confirm before a multi-cell paste overwrites filled cells (own text
     // only — Master value → Master value swaps and identical text don't ask).
     const filled = countFilledCellsInPasteRange(tab, startRow, startCol, matrix, rowMap);
-    if (filled > 0) {
+    // v0.192: Master cells with linked part cells always confirm, listing where.
+    let pasteLinkedNote = '';
+    if (isMasterTab(tab)) {
+      const hitIdx = [];
+      for (let r = 0; r < matrix.length; r++) {
+        for (let c = 0; c < matrix[r].length; c++) {
+          const rr = rowMap[r];
+          const cc = startCol + c;
+          if (rr >= tab.rows || cc >= tab.cols) continue;
+          const i = rr * tab.cols + cc;
+          const v = matrix[r][c] == null ? '' : String(matrix[r][c]);
+          if (v !== String(tab.cells[i] || '')) hitIdx.push(i);
+        }
+      }
+      pasteLinkedNote = linkedPartSuffix(tab, hitIdx, 'be updated; blank pastes clear and unlink them');
+    }
+    if (filled > 0 || pasteLinkedNote) {
       const dims = tab.cols + 'x' + tab.rows;
       openPasteOverwriteConfirm(pasteAnchor, filled, function () {
         if (activeTab() !== tab || (tab.cols + 'x' + tab.rows) !== dims) {
@@ -14084,7 +14165,7 @@
           return;
         }
         doPaste();
-      });
+      }, pasteLinkedNote);
       return;
     }
     doPaste();
@@ -14227,11 +14308,11 @@
     cancel.focus();
   }
 
-  function openPasteOverwriteConfirm(anchorEl, count, onConfirm) {
+  function openPasteOverwriteConfirm(anchorEl, count, onConfirm, linkedNote) {
     openActionConfirm({
       anchor: anchorEl,
       focusBack: anchorEl,
-      message: 'Overwrite ' + count + ' filled cell' + (count === 1 ? '' : 's') + '?',
+      message: 'Overwrite ' + count + ' filled cell' + (count === 1 ? '' : 's') + '?' + (linkedNote || ''),
       actionLabel: 'Overwrite',
       cancelStatus: 'Paste cancelled',
       ariaLabel: 'Confirm paste overwrite',
@@ -14274,12 +14355,71 @@
     return n;
   }
 
-  /** Master tab: " (N linked part cells will update)" for clear/replace confirms. */
+  /** v0.192: where the linked part cells are, e.g. "Part 1 B4, Part 2 p2 B7, +3 more". */
+  function linkedPartLocations(masterIndices) {
+    const want = Object.create(null);
+    (masterIndices || []).forEach(function (i) { want[i] = true; });
+    const out = [];
+    forEachPartLockSite(function (site, i, lock) {
+      if (!Number.isInteger(lock.masterCellIndex) || !want[lock.masterCellIndex]) return;
+      const cols = site.cols || site.tab.cols || 1;
+      out.push((site.tab.title || 'Part') +
+        (site.pageCount > 1 ? ' p' + ((site.pageIndex || 0) + 1) : '') + ' ' +
+        columnLetter(i % cols) + (Math.floor(i / cols) + 1));
+    });
+    return out;
+  }
+
+  function formatLinkedLocations(list) {
+    const CAP = 8;
+    if (!list.length) return '';
+    return list.slice(0, CAP).join(', ') + (list.length > CAP ? ', +' + (list.length - CAP) + ' more' : '');
+  }
+
+  /** Master tab: " (N linked part cells will update: Part 1 B4, …)" for confirms. */
   function linkedPartSuffix(tab, indices, verb) {
     if (!tab || !isMasterTab(tab)) return '';
-    const n = countLinkedPartCells(indices);
-    if (!n) return '';
-    return ' (' + pluralCells(n, 'linked part cell') + ' will ' + (verb || 'update') + ')';
+    const list = linkedPartLocations(indices);
+    if (!list.length) return '';
+    return ' (' + pluralCells(list.length, 'linked part cell') + ' will ' + (verb || 'update') +
+      ': ' + formatLinkedLocations(list) + ')';
+  }
+
+  /**
+   * v0.192: a Master Clear/Delete/Cut (or blank paste) clears AND unlocks every
+   * part cell linked to those Master cells (live + stored part pages), and drops
+   * Master origin on their Combined links. Caller pushes history first.
+   */
+  function releaseLinkedPartCells(masterIndices) {
+    const want = Object.create(null);
+    (masterIndices || []).forEach(function (i) { want[i] = true; });
+    const hits = [];
+    forEachPartLockSite(function (site, i, lock) {
+      if (Number.isInteger(lock.masterCellIndex) && want[lock.masterCellIndex]) hits.push({ site: site, i: i });
+    });
+    hits.forEach(function (h) {
+      const site = h.site;
+      const i = h.i;
+      if (site.live && isMasterCellEditFor(site.tab, i)) {
+        masterSegmentEdit = null;
+        hideMasterSegmentDialog();
+      }
+      site.cells[i] = '';
+      site.cellPages[i] = makeEmptyCellPages('');
+      site.nestedCells[i] = [];
+      site.cellLocks[i] = null;
+      if (!site.live) return;
+      syncNestLinksAfterNestReplace(site.tab.id, i);
+      state.confirmedLinks.forEach(function (other) {
+        if (other.tabId !== site.tab.id || other.cellIndex !== i) return;
+        if (!isMasterOriginLink(other)) return;
+        other.masterOrigin = false;
+        other.locked = false;
+        if ('masterCellIndex' in other) delete other.masterCellIndex;
+      });
+      liveSyncConfirmedLinksForCell(site.tab.id, i, undefined, { dropEmpty: true, silent: true });
+    });
+    return hits.length;
   }
 
   function cellWrapAt(index) {
@@ -14356,6 +14496,7 @@
       const tsv = buildCellRangeTsv(tab, sticky.rMin, sticky.cMin, sticky.rMax, sticky.cMax);
       e.clipboardData.setData('text/plain', tsv);
       clearCellsFromMenu(tab, indices, {
+        verb: 'Cut',
         statusText: indices.length > 1 ? ('Cut ' + indices.length + ' cells') : 'Cut cell'
       });
       return;
@@ -14376,7 +14517,7 @@
     e.clipboardData.setData('text/plain', value);
     if (!Number.isNaN(idx) && idx >= 0 && idx < tab.cells.length) {
       // Same path as right-click Cut: Master cuts update linked part cells.
-      clearCellsFromMenu(tab, [idx], { statusText: 'Cut cell' });
+      clearCellsFromMenu(tab, [idx], { verb: 'Cut', statusText: 'Cut cell' });
       return;
     }
     setStatus('Cut cell', 'ok');

@@ -26,6 +26,12 @@ contextBridge.exposeInMainWorld('click2copy', {
     ipcRenderer.on('app:menu-action', listener);
     return () => ipcRenderer.removeListener('app:menu-action', listener);
   },
+  onZoom: (callback) => {
+    const listener = (_event, pct) => callback(pct);
+    ipcRenderer.on('app:zoom', listener);
+    return () => ipcRenderer.removeListener('app:zoom', listener);
+  },
+  zoomStep: (dir) => ipcRenderer.send('app:zoom-step', dir),
   setWindowTitle: (title) => ipcRenderer.send('window:set-title', title),
   onUpdateReady: (callback) => {
     const listener = (_event, payload) => callback(payload);

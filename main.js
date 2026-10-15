@@ -1435,8 +1435,11 @@ function createWindow() {
   });
 
   mainWindow.loadFile('index.html');
+  // Ctrl+wheel → zoom-changed (Electron doesn't zoom on its own).
+  mainWindow.webContents.on('zoom-changed', (_e, dir) => stepAppZoom(dir === 'in' ? 1 : -1));
   mainWindow.webContents.once('did-finish-load', () => {
     mainWindowLoaded = true;
+    setAppZoom(loadAppZoom(), true);
     // Re-apply maximize/fullscreen after content load — some platforms drop it if applied too early.
     applyRestoredChrome();
     while (pendingOpenPaths.length > 0) {
@@ -1465,10 +1468,48 @@ function createApplicationMenu() {
       ]
     },
     { role: 'editMenu' },
-    { role: 'viewMenu' },
+    {
+      label: 'View',
+      submenu: [
+        { role: 'reload' },
+        { role: 'forceReload' },
+        { role: 'toggleDevTools' },
+        { type: 'separator' },
+        // v0.192: app zoom (same steps as Ctrl+wheel), persisted.
+        { label: 'Actual Size', accelerator: 'CmdOrCtrl+0', click: () => setAppZoom(1) },
+        { label: 'Zoom In', accelerator: 'CmdOrCtrl+=', click: () => stepAppZoom(1) },
+        { label: 'Zoom In', accelerator: 'CmdOrCtrl+Plus', visible: false, click: () => stepAppZoom(1) },
+        { label: 'Zoom Out', accelerator: 'CmdOrCtrl+-', click: () => stepAppZoom(-1) },
+        { type: 'separator' },
+        { role: 'togglefullscreen' }
+      ]
+    },
     { role: 'windowMenu' }
   ]);
   Menu.setApplicationMenu(menu);
+}
+
+/* v0.192: whole-app zoom 50%–200% in 10% steps (Ctrl+wheel, Ctrl+=/-, Ctrl+0). */
+const ZOOM_MIN = 0.5;
+const ZOOM_MAX = 2;
+function zoomStatePath() { return path.join(app.getPath('userData'), 'zoom.json'); }
+function loadAppZoom() {
+  try {
+    const z = Number(JSON.parse(fs.readFileSync(zoomStatePath(), 'utf8')).factor);
+    if (Number.isFinite(z)) return Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, z));
+  } catch (e) { /* default */ }
+  return 1;
+}
+function setAppZoom(factor, quiet) {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  const z = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, Math.round(factor * 10) / 10));
+  mainWindow.webContents.setZoomFactor(z);
+  try { fs.writeFileSync(zoomStatePath(), JSON.stringify({ factor: z })); } catch (e) { /* ignore */ }
+  if (!quiet && mainWindowLoaded) mainWindow.webContents.send('app:zoom', Math.round(z * 100));
+}
+function stepAppZoom(dir) {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  setAppZoom(mainWindow.webContents.getZoomFactor() + (dir > 0 ? 0.1 : -0.1));
 }
 
 function sendMenuAction(action) {
@@ -1554,6 +1595,12 @@ ipcMain.handle('app:update-info', () => ({
   runningVersion: startupPackageVersion || app.getVersion(),
   diskVersion: readPackageVersionFromDisk()
 }));
+// v0.192: renderer forwards Ctrl+wheel / Ctrl+= / Ctrl+- / Ctrl+0 (works for any input source).
+ipcMain.on('app:zoom-step', (_event, dir) => {
+  if (dir === 0) setAppZoom(1);
+  else stepAppZoom(dir > 0 ? 1 : -1);
+});
+
 ipcMain.on('window:set-title', (event, title) => {
   const window = BrowserWindow.fromWebContents(event.sender);
   if (window && typeof title === 'string') window.setTitle(`${title} v${app.getVersion()}`);
