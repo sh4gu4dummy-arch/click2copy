@@ -10482,11 +10482,26 @@
 
   /* ── v0.179: Col A type-ahead suggestions (existing Col A values) ── */
   /** Case-, accent- and spacing-insensitive form for Col A matching. */
+  const col1NormCache = new Map();
   function col1SuggestNorm(v) {
+    const key = String(v == null ? '' : v);
+    let hit = col1NormCache.get(key);
+    if (hit !== undefined) return hit;
+    hit = col1SuggestNormRaw(key);
+    if (col1NormCache.size > 20000) col1NormCache.clear();
+    col1NormCache.set(key, hit);
+    return hit;
+  }
+  function col1SuggestNormRaw(v) {
     return String(v == null ? '' : v).normalize('NFD').replace(/[\u0300-\u036f]/g, '')
       .toLowerCase().replace(/\s+/g, ' ').trim();
   }
   let col1SuggestEl = null;
+  let col1SuggestFrame = 0;
+  function cancelCol1SuggestFrame() {
+    if (col1SuggestFrame) window.cancelAnimationFrame(col1SuggestFrame);
+    col1SuggestFrame = 0;
+  }
   let col1SuggestTa = null;
   let col1SuggestHi = -1;
 
@@ -10635,7 +10650,25 @@
 
   function wireCol1Suggest(ta) {
     ta.addEventListener('keydown', onCol1SuggestKey, true);
-    ta.addEventListener('input', function () { updateCol1Suggest(ta); });
+    // v0.194: suggestions are for typing only — paste/drop/undo never open the
+    // list (a block paste re-renders the grid, which used to orphan it). The
+    // list is built once per frame, not per input event.
+    ta.addEventListener('input', function (e) {
+      const t = e && e.inputType ? String(e.inputType) : '';
+      if (t === 'insertFromPaste' || t === 'insertFromDrop' || t === 'insertFromYank' ||
+          t === 'historyUndo' || t === 'historyRedo' || t === 'insertReplacementText') {
+        cancelCol1SuggestFrame();
+        closeCol1Suggest();
+        return;
+      }
+      if (col1SuggestFrame) return;
+      col1SuggestFrame = window.requestAnimationFrame(function () {
+        col1SuggestFrame = 0;
+        if (ta.isConnected && document.activeElement === ta) updateCol1Suggest(ta);
+        else closeCol1Suggest();
+      });
+    });
+    ta.addEventListener('paste', function () { cancelCol1SuggestFrame(); closeCol1Suggest(); }, true);
     ta.addEventListener('blur', function () { if (col1SuggestTa === ta) closeCol1Suggest(); });
   }
 
@@ -11275,6 +11308,10 @@
   }
 
   function renderGrid() {
+    // v0.194: a re-render replaces the cell the Col A list belongs to — drop it.
+    Promise.resolve().then(function () {
+      if (col1SuggestTa && !col1SuggestTa.isConnected) closeCol1Suggest();
+    });
     renderQuickJumps();
     const tab = activeTab();
     const scrollWrap = el.cellGrid.parentElement;
