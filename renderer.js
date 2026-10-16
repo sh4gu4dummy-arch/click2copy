@@ -3393,6 +3393,33 @@
     setStatus('Removed nest page (' + nest.pages.length + ' left)');
   }
 
+  /** v0.198: move the current nest page back/forward (same as cell pages, v0.171). */
+  function moveNestPage(cellIndex, nestIndex, delta) {
+    const tab = activeTab();
+    if (!tab || cellIndex < 0 || cellIndex >= tab.cells.length) return;
+    if (isCellMasterEditBlocked(tab, cellIndex)) {
+      setStatus('Locked Master cell — double-click to unlock before editing', 'err');
+      return;
+    }
+    ensureNestedCells(tab);
+    const nest = tab.nestedCells[cellIndex] && tab.nestedCells[cellIndex][nestIndex];
+    if (!nest || nest.pages.length <= 1) return;
+    const from = nest.page || 0;
+    const to = from + delta;
+    if (to < 0 || to >= nest.pages.length) return;
+    pushHistory();
+    const moved = nest.pages.splice(from, 1)[0];
+    nest.pages.splice(to, 0, moved);
+    nest.page = to; // stay on the moved page
+    liveSyncConfirmedLinksForCell(tab.id, cellIndex, nestIndex, { silent: true });
+    if (isMasterTab(tab)) syncLockedPartNestsFromMaster(cellIndex);
+    renderGrid();
+    renderCombinedPrompt();
+    applyConfirmedCellHighlights();
+    scheduleSave();
+    setStatus('Moved nest page to ' + (to + 1) + '/' + nest.pages.length);
+  }
+
   function stepNestPage(cellIndex, nestIndex, delta) {
     const tab = activeTab();
     if (!tab) return;
@@ -11982,6 +12009,12 @@
                 const blocked = isCellMasterEditBlocked(tab, idx);
                 const lockTip = 'Locked Master cell — double-click to unlock before deleting';
                 openPageCtxMenu({
+                  leading: [
+                    { label: 'Move page back', disabled: blocked || page <= 0,
+                      onClick: function () { moveNestPage(idx, nestIndex, -1); } },
+                    { label: 'Move page forward', disabled: blocked || page >= pageCount - 1,
+                      onClick: function () { moveNestPage(idx, nestIndex, 1); } }
+                  ],
                   heading: 'Nest page ' + (page + 1) + ' (' + (page + 1) + '/' + pageCount + ')',
                   disabled: pageCount <= 1 || blocked,
                   pageDanger: false,
