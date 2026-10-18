@@ -11447,8 +11447,22 @@
       const label = document.createElement('span');
       label.className = 'column-header-label';
       label.textContent = columnLetter(c);
-      label.title = 'Column ' + columnLetter(c) + ' — click to select the whole column';
+      label.title = 'Column ' + columnLetter(c) + ' — click to select the whole column; right-click for the cell menu (Extract dupes, Clear, …)';
       header.appendChild(label);
+      // v0.199: right-click a column letter → select that column (unless it is
+      // already in the lit whole-column block) and open the block's cell menu.
+      header.addEventListener('contextmenu', function (ev) {
+        const t = ev.target;
+        if (t && t.closest && t.closest('button, input, .column-resize-handle, .col-resize-handle')) return;
+        ev.preventDefault();
+        ev.stopPropagation();
+        const cur = getStickyCellRange();
+        const inBlock = cur && cur.rMin === 0 && cur.rMax === tab.rows - 1 && c >= cur.cMin && c <= cur.cMax;
+        if (!inBlock) selectWholeGridLine('col', c, false);
+        const b = getStickyCellRange();
+        const focusIdx = b ? (b.rMin * tab.cols + b.cMin) : c;
+        openCellShadeMenu(focusIdx, ev.clientX, ev.clientY);
+      });
 
       if (c === 1 && isMasterTab(tab)) {
         // Always present (visibility toggled) so the count never shifts the header.
