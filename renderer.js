@@ -7354,6 +7354,37 @@
     }, 150);
   }
 
+  // v0.203: the session used to end only on blur of the cell/nest textareas. Focus
+  // that left via an in-cell button (+ page, ◀ ▶) or the add-page menu never came
+  // back through those handlers, so the session (amber outline, free typing) stayed
+  // open and the next tab switch / reload re-synced the cell from Master, dropping
+  // the typing. Any press or focus outside the edited cell now finishes it.
+  const MASTER_EDIT_KEEP_SEL = '.part-page-menu, .tab-icon-picker, .add-page-choice-menu, .paste-confirm, .modal-overlay, .col1-value-menu';
+  function masterEditSessionWrap() {
+    const e = masterSegmentEdit;
+    const tab = activeTab();
+    if (!e || e.kind !== 'cell' || !tab || tab.id !== e.tabId || toolsTabActive || !el.cellGrid) return null;
+    const ta = el.cellGrid.querySelector('textarea.cell[data-idx="' + e.cellIndex + '"]');
+    return ta && ta.closest ? ta.closest('.cell-wrap') : null;
+  }
+  function onMasterEditOutsideActivity(ev) {
+    if (!isMasterCellEditSession() || masterSegmentDialogOpen) return;
+    const t = ev.target;
+    if (t && t.closest && t.closest(MASTER_EDIT_KEEP_SEL)) return;
+    const wrap = masterEditSessionWrap();
+    if (wrap && t && wrap.contains(t)) return;
+    window.setTimeout(function () {
+      if (!isMasterCellEditSession() || masterSegmentDialogOpen) return;
+      if (document.querySelector('.paste-confirm, .add-page-choice-menu, .part-page-menu')) return;
+      const w = masterEditSessionWrap();
+      const a = document.activeElement;
+      if (w && a && w.contains(a)) return;
+      requestMasterSegmentFinish();
+    }, 0);
+  }
+  document.addEventListener('mousedown', onMasterEditOutsideActivity, true);
+  document.addEventListener('focusin', onMasterEditOutsideActivity, true);
+
   function requestMasterSegmentFinish(opts) {
     opts = opts || {};
     if (!masterSegmentEdit || masterSegmentDialogOpen) return;
