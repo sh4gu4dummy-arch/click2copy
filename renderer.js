@@ -2754,6 +2754,20 @@
   }
 
   /** Extra nests / other cell pages on a lock site (live or stored page snapshot). */
+  /** v0.202: part cell is Master-linked and its pages + nests equal Master's (nothing of its own). */
+  function partCellMirrorsMaster(tab, i, master) {
+    const lock = getCellLock(tab, i);
+    if (!lock || lock.masterOrigin !== true || !Number.isInteger(lock.masterCellIndex)) return false;
+    const mIdx = lock.masterCellIndex;
+    if (!master || mIdx < 0 || mIdx >= master.cells.length) return false;
+    const src = cloneCellPagesEntry(getCellPages(master, mIdx));
+    src.pages[src.page || 0] = master.cells[mIdx] == null ? '' : String(master.cells[mIdx]);
+    const mine = cloneCellPagesEntry(getCellPages(tab, i));
+    mine.pages[mine.page || 0] = tab.cells[i] == null ? '' : String(tab.cells[i]);
+    return cellPagesContentEqual(mine, src) &&
+      nestsContentEqual(getCellNests(tab, i), getCellNests(master, mIdx));
+  }
+
   function siteHasOwnExtraContent(site, index) {
     if (!site || index < 0) return false;
     const nests = (site.nestedCells && site.nestedCells[index]) || [];
@@ -5061,8 +5075,26 @@
       ensureNestedCells(tab);
       ensureCellPages(tab);
       let filled = 0;
+      // v0.202: on part tabs, Master-linked cells whose pages + nests fully mirror
+      // Master (and a Col A equal to that Master row's Col A) are recoverable from
+      // Master — they don't count as text you would lose (same as Delete on them).
+      const master = !isMasterTab(tab) ? state.tabs.find(isMasterTab) : null;
+      const mirrored = Object.create(null);
+      const masterColA = [];
+      if (master) {
+        for (let i = rowStart; i < rowEnd; i++) {
+          if (!partCellMirrorsMaster(tab, i, master)) continue;
+          mirrored[i] = true;
+          const mRow = Math.floor(getCellLock(tab, i).masterCellIndex / master.cols);
+          masterColA.push(String(master.cells[mRow * master.cols] || '').trim());
+        }
+      }
       for (let i = rowStart; i < rowEnd; i++) {
-        if (String(tab.cells[i] || '').trim() || siteHasOwnExtraContent(tab, i)) filled++;
+        if (mirrored[i]) continue;
+        const own = String(tab.cells[i] || '').trim();
+        if (master && i === rowStart && own && !siteHasOwnExtraContent(tab, i) &&
+            masterColA.indexOf(own) >= 0) continue;
+        if (own || siteHasOwnExtraContent(tab, i)) filled++;
       }
       if (filled > 0) {
         const dims = tab.cols + 'x' + tab.rows;
