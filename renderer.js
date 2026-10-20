@@ -9522,8 +9522,8 @@
           ? 'Click: filter rows to this value (again = clear) · type or F2 to edit · ▾ / Alt+↓ to pick' : '';
       }
     }
-    [[0, countInvalidCol1Cells(tab), ' Column A value', ' not in Master Column A (kept; marked). Pick from ▾ to fix.'],
-     [1, countInvalidCol2Cells(tab), ' Column B value', ' not allowed for that row\'s Column A (kept; marked). Pick from ▾ to fix.']
+    [[0, countInvalidCol1Cells(tab), ' Column A value', ' not in Master Column A (kept; marked). Pick from ▾ to fix. Click to jump to the next one.'],
+     [1, countInvalidCol2Cells(tab), ' Column B value', ' not allowed for that row\'s Column A (kept; marked). Pick from ▾ to fix. Click to jump to the next one.']
     ].forEach(function (d) {
       const header = el.cellGrid.querySelector('.column-header[data-col="' + d[0] + '"]');
       if (!header) return;
@@ -9538,6 +9538,45 @@
       badge.textContent = '⚠ ' + d[1];
       badge.title = d[1] + d[2] + (d[1] === 1 ? '' : 's') + d[3];
     });
+  }
+
+  /** v0.200: header ⚠ click → next not-allowed cell in this column (cycles), near the top. */
+  let lastInvalidJump = null;
+  function jumpToNextInvalidInColumn(col) {
+    const tab = activeTab();
+    if (!tab || !el.cellGrid) return;
+    const rows = [];
+    let hidden = 0;
+    for (let r = 0; r < tab.rows; r++) {
+      const idx = r * tab.cols + col;
+      const ta = el.cellGrid.querySelector('textarea.cell[data-idx="' + idx + '"]');
+      const wrap = ta && ta.closest ? ta.closest('.cell-wrap') : null;
+      if (!wrap || !wrap.classList.contains('col1-invalid')) continue;
+      if (!rowShownInGrid(tab, r)) { hidden++; continue; }
+      rows.push(r);
+    }
+    if (!rows.length) {
+      setStatus(hidden ? (pluralCells(hidden, 'marked cell') + ' in rows hidden by the filter — show All to see them')
+        : 'No marked cells in Column ' + columnLetter(col), hidden ? 'err' : 'ok');
+      return;
+    }
+    let after = -1;
+    if (lastInvalidJump && lastInvalidJump.tabId === tab.id && lastInvalidJump.col === col) after = lastInvalidJump.row;
+    let k = rows.findIndex(function (r) { return r > after; });
+    if (k < 0) k = 0;
+    const row = rows[k];
+    lastInvalidJump = { tabId: tab.id, col: col, row: row };
+    const idx = row * tab.cols + col;
+    clearStickyCellRange();
+    clearKeyboardCellRange();
+    scrollGridRowNearTop(tab, row);
+    const ta = el.cellGrid.querySelector('textarea.cell[data-idx="' + idx + '"]');
+    if (ta) {
+      try { ta.focus({ preventScroll: true }); } catch (err) { ta.focus(); }
+    }
+    flashCol1Invalid(idx);
+    setStatus('⚠ ' + (k + 1) + '/' + rows.length + ' ' + cellAddress(row, col) + ': ' +
+      ((ta && ta.title) || 'value not allowed') + (hidden ? ' (+' + hidden + ' in hidden rows)' : ''), 'err');
   }
 
   function flashCol2Invalid(idx) {
@@ -11476,7 +11515,7 @@
         bad.className = 'col1-invalid-count';
         bad.textContent = '⚠ ' + col2InvalidCount;
         bad.title = col2InvalidCount + ' Column B value' + (col2InvalidCount === 1 ? '' : 's') +
-          ' not allowed for that row\'s Column A (kept; marked). Pick from ▾ to fix.';
+          ' not allowed for that row\'s Column A (kept; marked). Pick from ▾ to fix. Click to jump to the next one.';
         header.appendChild(bad);
       }
 
@@ -11487,7 +11526,7 @@
           bad.className = 'col1-invalid-count';
           bad.textContent = '⚠ ' + col1InvalidCount;
           bad.title = col1InvalidCount + ' Column A value' + (col1InvalidCount === 1 ? '' : 's') +
-            ' not in Master Column A (kept; marked). Pick from ▾ to fix.';
+            ' not in Master Column A (kept; marked). Pick from ▾ to fix. Click to jump to the next one.';
           header.appendChild(bad);
         }
         const sortControls = document.createElement('span');
@@ -11573,8 +11612,16 @@
         resizeColumnByKeyboard(tab, c, e.key === 'ArrowRight' ? 16 : -16);
       });
       header.appendChild(handle);
+      // v0.200: the ⚠ N badge jumps to the next marked cell (never selects the column).
+      header.addEventListener('click', function (ev) {
+        const badge = ev.target && ev.target.closest && ev.target.closest('.col1-invalid-count');
+        if (!badge) return;
+        ev.preventDefault();
+        ev.stopPropagation();
+        jumpToNextInvalidInColumn(c);
+      });
       wireHeaderSelect(header,
-        'button, .column-resize-handle, .column-col1-filter, .column-col1-filter-menu, .column-sort-controls',
+        'button, .column-resize-handle, .column-col1-filter, .column-col1-filter-menu, .column-sort-controls, .col1-invalid-count',
         function (extend) { selectWholeGridLine('col', c, extend); }, 'col', c);
       el.cellGrid.appendChild(header);
     }
