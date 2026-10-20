@@ -5406,6 +5406,15 @@
         onClick: function () { addCellToMaster(tab, cellIndex); }
       });
     }
+    // v0.201: linked part cell (locked or unlocked) → jump to its Master origin.
+    const originLock = !isMasterTab(tab) ? getCellLock(tab, cellIndex) : null;
+    if (originLock && originLock.masterOrigin === true && Number.isInteger(originLock.masterCellIndex)) {
+      items.push({
+        label: 'Jump to Master',
+        title: 'Show the Master cell this cell is linked to',
+        onClick: function () { jumpToMasterOrigin(tab, cellIndex); }
+      });
+    }
     openCtxMenu({ heading: heading, items: items, x: x, y: y, className: 'cell-shade-menu' });
   }
 
@@ -5951,6 +5960,56 @@
       focusedCell = { tabId: master.id, index: mIdx };
     }
     setStatus('Jumped to Master ' + cellAddress(Math.floor(mIdx / master.cols), mIdx % master.cols), 'ok');
+  }
+
+  /** v0.201: right-click → Jump to Master: open the origin cell on the page this cell shows. */
+  function jumpToMasterOrigin(tab, idx) {
+    const master = state.tabs.find(isMasterTab);
+    const lock = getCellLock(tab, idx);
+    const mIdx = lock && Number.isInteger(lock.masterCellIndex) ? lock.masterCellIndex : -1;
+    if (!master || mIdx < 0 || mIdx >= master.cells.length) {
+      setStatus('Master cell for this link not found', 'err');
+      return;
+    }
+    // Show Master on the same cell page (view index only; no text changes).
+    ensureCellPages(master);
+    ensureCellPages(tab);
+    const mine = tab.cellPages[idx];
+    const mEntry = master.cellPages[mIdx];
+    if (mine && mEntry && mEntry.pages.length > 1 && Number.isInteger(mine.page) &&
+        mine.page < mEntry.pages.length && mine.page !== (mEntry.page || 0)) {
+      mEntry.pages[mEntry.page || 0] = master.cells[mIdx] == null ? '' : String(master.cells[mIdx]);
+      mEntry.page = mine.page;
+      syncCellTextFromPages(master, mIdx);
+    }
+    closePasteOverwriteConfirm();
+    selectTab(master.id);
+    const row = Math.floor(mIdx / master.cols);
+    const addr = cellAddress(row, mIdx % master.cols);
+    if (!rowShownInGrid(master, row)) {
+      setStatus('Master ' + addr + ' is in a row hidden by the filter — click All to see it', 'err');
+      return;
+    }
+    clearStickyCellRange();
+    clearKeyboardCellRange();
+    const land = function () {
+      if (activeTab() !== master) return;
+      scrollGridRowNearTop(master, row);
+      const ta = el.cellGrid && el.cellGrid.querySelector('textarea.cell[data-idx="' + mIdx + '"]');
+      if (!ta) return;
+      try { ta.focus({ preventScroll: true }); } catch (err) { ta.focus(); }
+      focusedCell = { tabId: master.id, index: mIdx };
+      flashCopiedCell(ta);
+    };
+    land();
+    // Leaving an unlocked linked cell can finish its edit session and re-render
+    // the grid right after the switch — land again once that has settled.
+    window.setTimeout(function () {
+      const ta = el.cellGrid && el.cellGrid.querySelector('textarea.cell[data-idx="' + mIdx + '"]');
+      if (!ta || document.activeElement !== ta) land();
+    }, 50);
+    const ent = master.cellPages[mIdx];
+    setStatus('Jumped to Master ' + addr + (ent && ent.pages.length > 1 ? ' (page ' + ((ent.page || 0) + 1) + '/' + ent.pages.length + ')' : ''), 'ok');
   }
 
   function openFindSimilar(tab, idx, x, y) {
