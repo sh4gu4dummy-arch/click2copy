@@ -10525,9 +10525,20 @@
    */
   function rowShownInGrid(tab, rowIndex) {
     if (!tab || tab !== activeTab()) return true;
+    if (rowPinnedForEdit(tab, rowIndex)) return true;
+    return rowMatchesFilter(tab, rowIndex);
+  }
+
+  // The row being typed in stays visible until its edit ends: a Col A edit
+  // (v0.143) or, v0.204, an unlocked Master-linked cell session (hiding the row
+  // blurred the cell mid-typing and popped Overwrite, so Enter could confirm it).
+  function rowPinnedForEdit(tab, rowIndex) {
+    if (!tab || !tab.cols) return false;
     if (col1EditCell && col1EditCell.tabId === tab.id &&
         Math.floor(col1EditCell.index / tab.cols) === rowIndex) return true;
-    return rowMatchesFilter(tab, rowIndex);
+    return !!(masterSegmentEdit && masterSegmentEdit.kind === 'cell' &&
+      masterSegmentEdit.tabId === tab.id &&
+      Math.floor(masterSegmentEdit.cellIndex / tab.cols) === rowIndex);
   }
 
   /**
@@ -10565,8 +10576,7 @@
       if (Number.isNaN(row)) continue;
       // v0.143: the Col A cell being typed in stays visible until the edit ends
       // (hiding a focused cell blurs it mid-typing).
-      const pinned = !!(col1EditCell && col1EditCell.tabId === tab.id &&
-        Math.floor(col1EditCell.index / tab.cols) === row);
+      const pinned = rowPinnedForEdit(tab, row);
       const hidden = !pinned && !rowMatchesFilter(tab, row);
       controls.classList.toggle('is-row-filtered', hidden);
       const wraps = el.cellGrid.querySelectorAll('.cell-wrap[data-row="' + row + '"]');
@@ -12367,7 +12377,7 @@
         el.cellGrid.appendChild(wrap);
       }
 
-      const rowHidden = !rowMatchesFilter(tab, r);
+      const rowHidden = !rowPinnedForEdit(tab, r) && !rowMatchesFilter(tab, r);
       rowControls.classList.toggle('is-row-filtered', rowHidden);
       const rowWraps = el.cellGrid.querySelectorAll('.cell-wrap[data-row="' + r + '"]');
       for (let w = 0; w < rowWraps.length; w++) {
@@ -14566,7 +14576,20 @@
 
   function onPasteConfirmOutside(ev) {
     if (pasteConfirmEl && pasteConfirmEl.contains(ev.target)) return;
+    const back = pasteConfirmFocusBack;
     cancelActionConfirm(false);
+    // v0.204: a confirm over the Master Overwrite prompt (e.g. "Also update N other
+    // cells?") dismissed by an outside click left focus outside the prompt, so its
+    // Esc (bound on the prompt) stopped working. Put focus back in the prompt.
+    if (masterSegmentDialogOpen && back && el.masterSegmentDialog &&
+        el.masterSegmentDialog.contains(back)) {
+      window.setTimeout(function () {
+        if (!masterSegmentDialogOpen || pasteConfirmEl) return;
+        const a = document.activeElement;
+        if (a && el.masterSegmentDialog.contains(a)) return;
+        if (back.isConnected && !back.hidden) back.focus();
+      }, 0);
+    }
   }
 
   function onPasteConfirmKey(ev) {
@@ -16926,6 +16949,14 @@
         event.preventDefault();
         cancelMasterSegmentEdit();
       }
+    });
+    // v0.204: Esc still cancels when focus has strayed outside the open prompt.
+    document.addEventListener('keydown', function (event) {
+      if (event.key !== 'Escape' || !masterSegmentDialogOpen || pasteConfirmEl) return;
+      const a = document.activeElement;
+      if (a && el.masterSegmentDialog.contains(a)) return;
+      event.preventDefault();
+      cancelMasterSegmentEdit();
     });
   }
 
