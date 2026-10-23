@@ -15,6 +15,7 @@ contextBridge.exposeInMainWorld('click2copy', {
   openDocuments: () => ipcRenderer.invoke('documents:open'),
   openDocument: (filePath) => ipcRenderer.invoke('documents:open-path', filePath),
   saveDocument: (filePath, data) => ipcRenderer.invoke('documents:save', filePath, data),
+  checkDocument: (filePath, known) => ipcRenderer.invoke('documents:check', filePath, known),
   saveDocumentAs: (data, suggestedName) => ipcRenderer.invoke('documents:save-as', data, suggestedName),
   onOpenDocument: (callback) => {
     const listener = (_event, filePath) => callback(filePath);

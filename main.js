@@ -1,6 +1,7 @@
 const { app, BrowserWindow, ipcMain, dialog, Menu, screen } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto');
 
 const STORE_FILE = 'click2copy-data.json';
 const SESSION_FILE = 'click2copy-session.json';
@@ -804,14 +805,50 @@ function normalizeDocument(parsed) {
   return normalizeData(parsed);
 }
 
+// v0.205: what the app last read/wrote for an open prompt file (outside-edit check).
+function textFingerprint(text, stat) {
+  return {
+    mtimeMs: stat.mtimeMs,
+    size: stat.size,
+    hash: crypto.createHash('sha1').update(text, 'utf8').digest('hex')
+  };
+}
+
+/**
+ * v0.205: has an open prompt file changed on disk since `known`?
+ * Same mtime + size → unchanged (no read). Otherwise compare content, so a
+ * touch / sync tool rewriting identical bytes is not an outside edit.
+ */
+function checkDocument(filePath, known) {
+  let stat;
+  try {
+    stat = fs.statSync(filePath);
+  } catch (err) {
+    if (err && (err.code === 'ENOENT' || err.code === 'ENOTDIR')) return { ok: true, missing: true };
+    return { ok: false, error: err.message || 'Cannot check file.' };
+  }
+  if (!stat.isFile()) return { ok: true, missing: true };
+  if (known && known.mtimeMs === stat.mtimeMs && known.size === stat.size) {
+    return { ok: true, changed: false, disk: known };
+  }
+  try {
+    const disk = textFingerprint(fs.readFileSync(filePath, 'utf8'), stat);
+    return { ok: true, changed: !known || disk.hash !== known.hash, disk };
+  } catch (err) {
+    return { ok: false, error: err.message || 'Cannot read file.' };
+  }
+}
+
 function readDocument(filePath) {
   try {
-    const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    const text = fs.readFileSync(filePath, 'utf8');
+    const stat = fs.statSync(filePath);
+    const parsed = JSON.parse(text);
     const data = normalizeDocument(parsed);
     if (!data) {
       return { ok: false, error: 'This file is not a valid Click2Copy prompt document.' };
     }
-    return { ok: true, filePath, data };
+    return { ok: true, filePath, data, disk: textFingerprint(text, stat) };
   } catch (err) {
     console.error('Failed to open prompt document:', err);
     return { ok: false, error: err instanceof SyntaxError ? 'File is not valid JSON.' : (err.message || 'Failed to read file.') };
@@ -827,8 +864,9 @@ function writeDocument(filePath, data) {
     : `${filePath}.${DOCUMENT_EXTENSION}`;
   try {
     fs.mkdirSync(path.dirname(targetPath), { recursive: true });
-    fs.writeFileSync(targetPath, JSON.stringify(documentPayload(normalized), null, 2), 'utf8');
-    return { ok: true, filePath: targetPath };
+    const text = JSON.stringify(documentPayload(normalized), null, 2);
+    fs.writeFileSync(targetPath, text, 'utf8');
+    return { ok: true, filePath: targetPath, disk: textFingerprint(text, fs.statSync(targetPath)) };
   } catch (err) {
     console.error('Failed to save prompt document:', err);
     return { ok: false, error: err.message || 'Failed to save file.' };
@@ -1625,6 +1663,7 @@ ipcMain.handle('documents:open', async (event) => {
 });
 ipcMain.handle('documents:open-path', (_event, filePath) => readDocument(filePath));
 ipcMain.handle('documents:save', (_event, filePath, data) => writeDocument(filePath, data));
+ipcMain.handle('documents:check', (_event, filePath, known) => checkDocument(filePath, known));
 ipcMain.handle('documents:save-as', async (event, data, suggestedName) => {
   const result = await dialog.showSaveDialog(BrowserWindow.fromWebContents(event.sender), {
     title: 'Save Click2Copy prompt',

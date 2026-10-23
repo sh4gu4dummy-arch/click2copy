@@ -136,6 +136,49 @@ body {
 }
 
 
+/* v0.205: prompt file changed / missing outside the app. Fixed overlay — never
+   shifts the layout; no animation. */
+.file-change-bar {
+  position: fixed;
+  left: 50%;
+  bottom: 18px;
+  transform: translateX(-50%);
+  z-index: 900;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  max-width: min(860px, calc(100vw - 32px));
+  padding: 9px 12px 9px 14px;
+  background: var(--surface);
+  border: 1px solid var(--master-edit-border);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  color: var(--text);
+}
+
+.file-change-bar[hidden] {
+  display: none !important;
+}
+
+.file-change-bar-text {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.86rem;
+  line-height: 1.35;
+}
+
+.file-change-bar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.document-tab.document-tab-outside .document-tab-title::after {
+  content: ' •';
+  color: var(--master-edit);
+}
+
 .tools-separators {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));

@@ -116,6 +116,13 @@
     saveTimer: null
   };
   let autosaveLocations = null;
+  // v0.205: outside-change check state (see checkOpenPromptFiles).
+  let savePending = false;
+  let fileWritesInFlight = 0;
+  let fileWriteGen = 0;
+  let fileCheckBusy = false;
+  let fileChangeBarEl = null;
+  let fileChangeBarTimer = null;
   let initialized = false;
   let focusedCell = null;
   /**
@@ -1432,11 +1439,14 @@
     scheduleQuickJumpPrune(); // v0.186: Col A changes drop stale quick-jump buttons
     const document = activeDocument();
     if (document) document.data = snapshot();
+    savePending = true;
+    if (document && document.outsideChange) scheduleFileChangeBarRefresh();
     clearTimeout(state.saveTimer);
     state.saveTimer = setTimeout(persist, 250);
   }
 
   async function persist() {
+    savePending = false;
     if (!window.click2copy) return false;
     try {
       const sessionResult = await window.click2copy.saveSession(sessionSnapshot());
@@ -1450,13 +1460,19 @@
       }
 
       const document = activeDocument();
-      if (document && document.filePath) {
+      if (document && document.filePath && document.outsideChange) {
+        // v0.205: file changed/missing outside the app — no writes to it until
+        // Ash picks Reload / Keep mine / Save current as… (session backup above continues).
+        return true;
+      } else if (document && document.filePath) {
         // Named Save As path: autosave only there (do not invent another named path).
-        const result = await window.click2copy.saveDocument(document.filePath, snapshot());
+        const result = await writeDocumentTracked(document.filePath, snapshot(), document);
+        if (result && result.outside) return true; // flagged just before writing
         if (!result || !result.ok) {
           setStatus((result && result.error) || 'Failed to save prompt file', 'err');
           return false;
         }
+        if (result.disk) document.disk = result.disk;
       } else {
         // Untitled: userData JSON store + mirrored latest .c2copy / .json in backup folders.
         const saved = await window.click2copy.saveData(snapshot());
@@ -7359,7 +7375,7 @@
   // back through those handlers, so the session (amber outline, free typing) stayed
   // open and the next tab switch / reload re-synced the cell from Master, dropping
   // the typing. Any press or focus outside the edited cell now finishes it.
-  const MASTER_EDIT_KEEP_SEL = '.part-page-menu, .tab-icon-picker, .add-page-choice-menu, .paste-confirm, .modal-overlay, .col1-value-menu';
+  const MASTER_EDIT_KEEP_SEL = '.part-page-menu, .tab-icon-picker, .add-page-choice-menu, .paste-confirm, .modal-overlay, .col1-value-menu, .file-change-bar';
   function masterEditSessionWrap() {
     const e = masterSegmentEdit;
     const tab = activeTab();
@@ -8001,8 +8017,13 @@
 
       const select = document.createElement('button');
       select.type = 'button';
-      select.className = 'document-tab' + (promptDocument.id === state.activeDocumentId ? ' active' : '');
+      select.className = 'document-tab' + (promptDocument.id === state.activeDocumentId ? ' active' : '') +
+        (promptDocument.filePath && promptDocument.outsideChange ? ' document-tab-outside' : '');
       select.title = promptDocument.filePath || promptDocument.title;
+      if (promptDocument.filePath && promptDocument.outsideChange) {
+        select.title += promptDocument.outsideChange === 'missing'
+          ? ' — file missing' : ' — changed outside the app';
+      }
       select.setAttribute('role', 'tab');
       select.setAttribute('aria-selected', promptDocument.id === state.activeDocumentId ? 'true' : 'false');
       select.draggable = true;
@@ -8061,6 +8082,7 @@
       el.documentBar.appendChild(item);
     });
 
+    renderFileChangeBar();
     const activePrompt = activeDocument();
     if (window.click2copy && window.click2copy.setWindowTitle) {
       window.click2copy.setWindowTitle(activePrompt ? activePrompt.title + ' - Click2Copy' : 'Click2Copy');
@@ -8088,6 +8110,289 @@
         return tab.cells.every(function (cell) { return !cell; });
       });
   }
+
+  // ---- v0.205: prompt file changed / missing outside the app -------------
+
+  async function writeDocumentTracked(filePath, data, doc) {
+    fileWritesInFlight++;
+    fileWriteGen++;
+    try {
+      // Last look before writing: an outside edit (or delete) since our last
+      // read/write must not be overwritten by this autosave.
+      // Keep mine / Save again: the user chose to overwrite, so skip the look once.
+      const forced = !!(doc && doc.forceNextWrite);
+      if (doc) doc.forceNextWrite = false;
+      if (!forced && doc && doc.disk && typeof window.click2copy.checkDocument === 'function') {
+        const chk = await window.click2copy.checkDocument(filePath, doc.disk);
+        if (chk && chk.ok && (chk.missing || chk.changed)) {
+          flagOutsideChange(doc, chk.missing ? 'missing' : 'changed', true);
+          return { ok: true, outside: true };
+        }
+        if (chk && chk.ok && chk.disk) doc.disk = chk.disk;
+      }
+      return await window.click2copy.saveDocument(filePath, data);
+    } finally {
+      fileWritesInFlight--;
+      fileWriteGen++;
+    }
+  }
+
+  /** Startup + Reload: file data, keeping session greens for legacy files without links. */
+  function mergeFileReloadData(sessionData, fileData) {
+    // Named-file reload must not wipe greens: legacy/.c2copy without confirmedLinks
+    // keeps session links when Combined text still matches.
+    const fileLinks = normalizeConfirmedLinks(fileData && fileData.confirmedLinks);
+    const sessionLinks = normalizeConfirmedLinks(sessionData && sessionData.confirmedLinks);
+    if (fileLinks.length === 0 && sessionLinks.length > 0) {
+      const fileCombined = typeof fileData.combinedPrompt === 'string' ? fileData.combinedPrompt : '';
+      const sessionCombined = typeof sessionData.combinedPrompt === 'string' ? sessionData.combinedPrompt : '';
+      if (fileCombined === sessionCombined) {
+        fileData.confirmedLinks = sessionLinks;
+        if (sessionData.partPrompts && typeof sessionData.partPrompts === 'object') {
+          fileData.partPrompts = sessionData.partPrompts;
+        }
+      }
+    } else if (fileLinks.length > 0) {
+      fileData.confirmedLinks = fileLinks;
+    }
+    return fileData;
+  }
+
+  function documentLiveJson(doc) {
+    try {
+      return JSON.stringify(doc === activeDocument() ? snapshot() : doc.data);
+    } catch (err) {
+      return '';
+    }
+  }
+
+  /** App-side changes not in the file (made after, or pending at, the outside change). */
+  function documentHasLocalChanges(doc) {
+    if (!doc.outsideChange) return false;
+    if (doc.outsideLocalPending) return true;
+    return doc.outsideBaseJson !== null && documentLiveJson(doc) !== doc.outsideBaseJson;
+  }
+
+  function flagOutsideChange(doc, kind, localPending) {
+    doc.outsideChange = kind;
+    doc.outsideLocalPending = !!localPending || (doc === activeDocument() && savePending);
+    doc.outsideBaseJson = documentLiveJson(doc);
+    renderDocuments();
+    pushEvent((kind === 'missing' ? 'File missing: ' : 'File changed outside the app: ') + doc.title, 'err');
+  }
+
+  function clearOutsideChange(doc) {
+    doc.outsideChange = null;
+    doc.outsideLocalPending = false;
+    doc.outsideBaseJson = null;
+  }
+
+  async function checkOpenPromptFiles() {
+    if (fileCheckBusy || !window.click2copy || typeof window.click2copy.checkDocument !== 'function') return;
+    if (fileWritesInFlight > 0) return;
+    fileCheckBusy = true;
+    try {
+      const docs = state.documents.filter(function (d) { return d.filePath && !d.outsideChange; });
+      for (const doc of docs) {
+        const gen = fileWriteGen;
+        const path = doc.filePath;
+        let res = null;
+        try {
+          res = await window.click2copy.checkDocument(path, doc.disk || null);
+        } catch (err) {
+          continue;
+        }
+        // Our own save raced the check → ignore; the next poll sees the recorded state.
+        if (gen !== fileWriteGen || fileWritesInFlight > 0) continue;
+        if (!res || !res.ok || doc.filePath !== path || !state.documents.includes(doc)) continue;
+        if (res.missing) {
+          flagOutsideChange(doc, 'missing');
+        } else if (!doc.disk) {
+          doc.disk = res.disk || null;
+        } else if (res.changed) {
+          flagOutsideChange(doc, 'changed');
+        } else if (res.disk) {
+          doc.disk = res.disk; // touched / rewritten with the same content
+        }
+      }
+    } finally {
+      fileCheckBusy = false;
+    }
+  }
+
+  function scheduleFileChangeBarRefresh() {
+    clearTimeout(fileChangeBarTimer);
+    fileChangeBarTimer = setTimeout(renderFileChangeBar, 120);
+  }
+
+  function fileChangeBarButton(label, cls, title, onClick) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'btn ' + cls;
+    b.textContent = label;
+    if (title) b.title = title;
+    b.addEventListener('click', onClick);
+    return b;
+  }
+
+  function renderFileChangeBar() {
+    const doc = activeDocument();
+    if (!doc || !doc.filePath || !doc.outsideChange) {
+      if (fileChangeBarEl) fileChangeBarEl.hidden = true;
+      return;
+    }
+    if (!fileChangeBarEl) {
+      fileChangeBarEl = document.createElement('div');
+      fileChangeBarEl.className = 'file-change-bar';
+      fileChangeBarEl.id = 'file-change-bar';
+      fileChangeBarEl.setAttribute('role', 'alert');
+      document.body.appendChild(fileChangeBarEl);
+    }
+    const bar = fileChangeBarEl;
+    const missing = doc.outsideChange === 'missing';
+    const local = !missing && documentHasLocalChanges(doc);
+    const key = doc.id + '|' + doc.outsideChange + '|' + local + '|' + doc.title;
+    bar.hidden = false;
+    if (bar.dataset.key === key) return;
+    bar.dataset.key = key;
+    bar.textContent = '';
+    const text = document.createElement('span');
+    text.className = 'file-change-bar-text';
+    text.textContent = missing
+      ? 'File missing — “' + doc.title + '” was deleted or renamed outside the app. Autosave to it is paused.'
+      : 'File changed outside the app — “' + doc.title + '”' +
+        (local ? '. You also have changes here that are not in the file.' : '.') +
+        ' Autosave to it is paused.';
+    bar.appendChild(text);
+    const actions = document.createElement('div');
+    actions.className = 'file-change-bar-actions';
+    const saveAs = fileChangeBarButton('Save current as…', 'btn-secondary',
+      'Write the app\'s version to a new file' + (missing ? '' : '; the outside edit stays in the original'),
+      function () { saveCurrentAsFromBar(doc); });
+    if (missing) {
+      actions.appendChild(fileChangeBarButton('Save again', 'btn-primary',
+        'Write the app\'s version back to ' + doc.filePath, function () { keepMineFromBar(doc); }));
+      actions.appendChild(saveAs);
+      actions.appendChild(fileChangeBarButton('Close', 'btn-secondary',
+        'Close this tab without writing the file', function () { closeDocument(doc.id, { force: true }); }));
+    } else {
+      actions.appendChild(fileChangeBarButton(local ? 'Reload (discard mine)' : 'Reload', 'btn-primary',
+        'Load the file as it is on disk now', function () { reloadDocumentFromDisk(doc); }));
+      actions.appendChild(fileChangeBarButton(local ? 'Keep mine (overwrite file)' : 'Keep mine', 'btn-secondary',
+        'Keep the app\'s version and save it over the outside edit', function () { keepMineFromBar(doc); }));
+      actions.appendChild(saveAs);
+    }
+    bar.appendChild(actions);
+  }
+
+  function promptFileChangeChoice(doc, why) {
+    renderFileChangeBar();
+    const first = fileChangeBarEl && fileChangeBarEl.querySelector('button');
+    if (first) first.focus();
+    setStatus((doc.outsideChange === 'missing' ? 'File missing' : 'File changed outside the app') +
+      ' — choose an option in the bar' + (why === 'closing' ? ' before closing' : why === 'saving' ? ' before saving' : ''), 'err');
+  }
+
+  /** Close any open Master edit / Overwrite prompt / confirm (cancelled, nothing changed). */
+  function cancelOpenEditPromptsForReload() {
+    if (pasteConfirmEl) closePasteOverwriteConfirm();
+    if (masterSegmentEdit || masterSegmentDialogOpen) cancelMasterSegmentEdit();
+  }
+
+  async function reloadDocumentFromDisk(doc) {
+    if (!state.documents.includes(doc) || !doc.filePath) return;
+    if (doc === activeDocument()) cancelOpenEditPromptsForReload();
+    const result = await window.click2copy.openDocument(doc.filePath);
+    if (!result || !result.ok) {
+      const check = await window.click2copy.checkDocument(doc.filePath, null);
+      if (check && check.ok && check.missing) {
+        doc.outsideChange = 'missing';
+        renderDocuments();
+      }
+      setStatus((result && result.error) || 'Could not reload the file', 'err');
+      return;
+    }
+    const sessionData = doc === activeDocument() ? snapshot() : doc.data;
+    const data = mergeFileReloadData(sessionData, result.data);
+    doc.data = data;
+    doc.disk = result.disk || null;
+    clearOutsideChange(doc);
+    if (doc === activeDocument()) {
+      clearTimeout(state.saveTimer);
+      clearHistory();
+      applyData(data);
+    }
+    renderDocuments();
+    scheduleSave();
+    setStatus('Reloaded ' + doc.title + ' from disk', 'ok');
+  }
+
+  async function keepMineFromBar(doc) {
+    if (doc !== activeDocument()) await selectDocument(doc.id);
+    const missing = doc.outsideChange === 'missing';
+    clearOutsideChange(doc);
+    renderDocuments();
+    doc.forceNextWrite = true;
+    const saved = await flushCurrentDocument();
+    doc.forceNextWrite = false;
+    if (!saved) return;
+    setStatus(missing ? 'Saved ' + doc.title + ' again' : 'Kept your version — saved over the outside edit in ' + doc.title, 'ok');
+  }
+
+  /**
+   * "Save current as…": the app's version goes to a new file and this tab follows
+   * it; the original (with the outside edit) reopens from disk as its own tab.
+   */
+  async function saveCurrentAsFromBar(doc) {
+    if (doc !== activeDocument()) await selectDocument(doc.id);
+    const origPath = doc.filePath;
+    const wasChanged = doc.outsideChange === 'changed';
+    let result;
+    try {
+      const base = String(doc.title || 'Prompt').replace(/\.c2copy$/i, '');
+      result = await window.click2copy.saveDocumentAs(snapshot(), base + ' (mine).c2copy');
+    } catch (err) {
+      console.error(err);
+      setStatus('Save failed', 'err');
+      return;
+    }
+    if (!result || result.canceled) return;
+    if (!result.ok) {
+      setStatus(result.error || 'Save failed', 'err');
+      return;
+    }
+    const samePath = normalizedPath(result.filePath) === normalizedPath(origPath);
+    doc.filePath = result.filePath;
+    doc.title = documentName(result.filePath);
+    doc.data = snapshot();
+    doc.disk = result.disk || null;
+    clearOutsideChange(doc);
+    let reopened = false;
+    if (wasChanged && !samePath) {
+      const orig = await window.click2copy.openDocument(origPath);
+      const origData = documentDataFromResult(orig);
+      if (origData) {
+        const index = state.documents.indexOf(doc);
+        state.documents.splice(index + 1, 0, {
+          id: uid(),
+          title: documentName(orig.filePath || origPath),
+          filePath: orig.filePath || origPath,
+          data: origData,
+          disk: orig.disk || null
+        });
+        reopened = true;
+      }
+    }
+    renderDocuments();
+    await flushCurrentDocument();
+    setStatus('Saved your version as ' + doc.title +
+      (reopened ? ' — the outside edit stays in ' + documentName(origPath) + ' (opened as a tab)' : ''), 'ok');
+  }
+
+  setInterval(function () {
+    if (document.hasFocus()) checkOpenPromptFiles();
+  }, 2000);
+  window.addEventListener('focus', function () { checkOpenPromptFiles(); });
 
   async function flushCurrentDocument() {
     clearTimeout(state.saveTimer);
@@ -8156,7 +8461,8 @@
       id: uid(),
       title: documentName(result.filePath || filePath),
       filePath: result.filePath || filePath,
-      data: data
+      data: data,
+      disk: result.disk || null
     };
     state.documents.push(document);
     state.activeDocumentId = document.id;
@@ -8200,7 +8506,8 @@
           id: uid(),
           title: documentName(documentResult.filePath),
           filePath: documentResult.filePath,
-          data: data
+          data: data,
+          disk: documentResult.disk || null
         });
       }
 
@@ -8240,6 +8547,10 @@
   async function saveActiveDocument() {
     const document = activeDocument();
     if (!document) return;
+    if (document.filePath && document.outsideChange) {
+      promptFileChangeChoice(document, 'saving');
+      return;
+    }
     if (!document.filePath) {
       await saveActiveDocumentAs();
       return;
@@ -8252,6 +8563,10 @@
   async function saveActiveDocumentAs() {
     const document = activeDocument();
     if (!document) return;
+    if (document.filePath && document.outsideChange) {
+      await saveCurrentAsFromBar(document);
+      return;
+    }
     try {
       const suggestedName = /\.c2copy$/i.test(document.title)
         ? document.title
@@ -8265,6 +8580,7 @@
       document.filePath = result.filePath;
       document.title = documentName(result.filePath);
       document.data = snapshot();
+      document.disk = result.disk || null;
       renderDocuments();
       const saved = await flushCurrentDocument();
       if (!saved) return;
@@ -8306,9 +8622,14 @@
     });
   }
 
-  async function closeDocument(id) {
+  async function closeDocument(id, opts) {
     const document = state.documents.find(function (item) { return item.id === id; });
     if (!document) return;
+    if (document.filePath && document.outsideChange && !(opts && opts.force)) {
+      if (state.activeDocumentId !== id) await selectDocument(id);
+      promptFileChangeChoice(document, 'closing');
+      return;
+    }
     if (!document.filePath && !window.confirm('Close this unsaved prompt?')) return;
     await flushCurrentDocument();
     const index = state.documents.indexOf(document);
@@ -17067,24 +17388,8 @@
         const sessionData = promptDocument.data;
         const result = await window.click2copy.openDocument(promptDocument.filePath);
         if (result && result.ok) {
-          const fileData = result.data;
-          // Named-file reload must not wipe greens: legacy/.c2copy without confirmedLinks
-          // keeps session links when Combined text still matches.
-          const fileLinks = normalizeConfirmedLinks(fileData && fileData.confirmedLinks);
-          const sessionLinks = normalizeConfirmedLinks(sessionData && sessionData.confirmedLinks);
-          if (fileLinks.length === 0 && sessionLinks.length > 0) {
-            const fileCombined = typeof fileData.combinedPrompt === 'string' ? fileData.combinedPrompt : '';
-            const sessionCombined = typeof sessionData.combinedPrompt === 'string' ? sessionData.combinedPrompt : '';
-            if (fileCombined === sessionCombined) {
-              fileData.confirmedLinks = sessionLinks;
-              if (sessionData.partPrompts && typeof sessionData.partPrompts === 'object') {
-                fileData.partPrompts = sessionData.partPrompts;
-              }
-            }
-          } else if (fileLinks.length > 0) {
-            fileData.confirmedLinks = fileLinks;
-          }
-          promptDocument.data = fileData;
+          promptDocument.data = mergeFileReloadData(sessionData, result.data);
+          promptDocument.disk = result.disk || null;
           promptDocument.title = documentName(promptDocument.filePath);
         } else {
           failedFile = true;
