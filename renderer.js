@@ -5444,12 +5444,15 @@
       disabled: !String(tab.cells[cellIndex] || '').trim(),
       onClick: function () { openFindSimilar(tab, cellIndex, x, y); }
     });
-    // v0.180: Add to Master (part-tab Column B only).
+    // v0.180 / v0.206: Add to Master (part-tab Column A or Column B).
     if (!isMasterTab(tab)) {
       const why = addToMasterBlockReason(tab, cellIndex);
+      const col = cellIndex % tab.cols;
+      const tipA = 'Copy this Column A type into the first fully empty Master row (and this row\'s Column B text if any), then lock to it';
+      const tipB = 'Copy this cell (all pages + nests, and this row\'s Column A) into the first fully empty Master row, then lock to it';
       items.push({
         label: 'Add to Master',
-        title: why || 'Copy this cell (all pages + nests, and this row\'s Column A) into the first fully empty Master row, then lock to it',
+        title: why || (col === 0 ? tipA : tipB),
         disabled: !!why,
         onClick: function () { addCellToMaster(tab, cellIndex); }
       });
@@ -5475,7 +5478,8 @@
    */
   function addToMasterBlockReason(tab, idx) {
     if (!tab || isMasterTab(tab) || !tab.cols) return 'Master tab';
-    if (idx % tab.cols !== 1) return 'Add to Master works on Column B cells';
+    const col = idx % tab.cols;
+    if (col !== 0 && col !== 1) return 'Add to Master works on Column A or Column B cells';
     if (!String(tab.cells[idx] || '').trim()) return 'Empty cell — nothing to add';
     if (isCellMasterLocked(tab, idx)) return 'Already locked to a Master cell';
     if (!state.tabs.find(isMasterTab)) return 'No Master tab';
@@ -5524,12 +5528,14 @@
     const why = addToMasterBlockReason(tab, idx);
     if (why) { setStatus(why, 'err'); return; }
     const master = state.tabs.find(isMasterTab);
-    if (!master.cols || master.cols < 2) { setStatus('Master needs a Column B', 'err'); return; }
+    const col = idx % tab.cols;
+    if (!master.cols) { setStatus('Master has no columns', 'err'); return; }
+    if (col === 1 && master.cols < 2) { setStatus('Master needs a Column B', 'err'); return; }
     const text = String(tab.cells[idx] || '');
-    // Already there (Column B, trailing whitespace ignored) → link only, no Master change.
+    // Already there (same Master column, trailing whitespace ignored) → link only.
     const want = trimEndText(text);
     for (let r = 0; r < master.rows; r++) {
-      const mi = r * master.cols + 1;
+      const mi = r * master.cols + col;
       if (trimEndText(master.cells[mi]) !== want) continue;
       const addr = cellAddressFromIndex(master, mi);
       if (cellHasOwnExtraContent(tab, idx)) {
@@ -5574,17 +5580,31 @@
       setStatus('Add to Master stopped — target row is not empty (nothing changed)', 'err');
       return;
     }
-    const mi = row * master.cols + 1;
-    const src = tab.cellPages[idx] || makeEmptyCellPages(text);
-    const entry = cloneCellPagesEntry(src);
-    entry.pages[entry.page] = text;
-    master.cellPages[mi] = entry;
-    master.cells[mi] = text;
-    master.nestedCells[mi] = cloneNestList(tab.nestedCells[idx] || []);
-    const colA = String(tab.cells[Math.floor(idx / tab.cols) * tab.cols] || '');
-    if (colA.trim()) {
-      master.cells[row * master.cols] = colA;
-      master.cellPages[row * master.cols] = makeEmptyCellPages(colA);
+    const mi = row * master.cols + col;
+    if (col === 1) {
+      const src = tab.cellPages[idx] || makeEmptyCellPages(text);
+      const entry = cloneCellPagesEntry(src);
+      entry.pages[entry.page] = text;
+      master.cellPages[mi] = entry;
+      master.cells[mi] = text;
+      master.nestedCells[mi] = cloneNestList(tab.nestedCells[idx] || []);
+      const colA = String(tab.cells[Math.floor(idx / tab.cols) * tab.cols] || '');
+      if (colA.trim()) {
+        master.cells[row * master.cols] = colA;
+        master.cellPages[row * master.cols] = makeEmptyCellPages(colA);
+      }
+    } else {
+      // v0.206: new Column A type from a part tab.
+      master.cells[mi] = text;
+      master.cellPages[mi] = makeEmptyCellPages(text);
+      if (master.cols >= 2 && tab.cols >= 2) {
+        const bIdx = Math.floor(idx / tab.cols) * tab.cols + 1;
+        const colB = String(tab.cells[bIdx] || '');
+        if (colB.trim()) {
+          master.cells[row * master.cols + 1] = colB;
+          master.cellPages[row * master.cols + 1] = makeEmptyCellPages(colB);
+        }
+      }
     }
     applyMasterLinkToCell(tab, idx, mi, text);
     // Same rule as typing into Master: other part cells with this exact text lock (lock only).
@@ -9516,21 +9536,20 @@
     window.setTimeout(function () { wrap.classList.remove('col1-invalid-flash'); }, 900);
   }
 
-  /** Typed/pasted Col1 value not in the Master list → revert (returns true). */
+  /**
+   * Typed/pasted Col1 value not in the Master list.
+   * v0.206: keep it (amber mark) so right-click → Add to Master can promote a new
+   * Column A type from a part tab. Returning true skips auto Master-link (no match).
+   * (Older builds reverted, which made adding a new Master Col A type impossible.)
+   */
   function revertInvalidCol1Commit(tab, idx, ta) {
     if (isMasterCellEditFor(tab, idx)) return false; // v0.187: see Col B
     if (!isPartTabCol1Cell(tab, idx)) return false;
     const value = tab.cells[idx] || '';
     if (isCol1ValueAllowed(value)) return false;
-    const key = tab.id + ':' + idx;
-    const prev = Object.prototype.hasOwnProperty.call(col1FocusValues, key) ? col1FocusValues[key] : '';
-    writeCellCurrentPage(tab, idx, prev);
-    if (ta) ta.value = prev;
-    liveSyncConfirmedLinksForCell(tab.id, idx, null, { silent: true });
-    applyAppendCheckedState();
-    scheduleSave();
+    scheduleValidationMarks();
     flashCol1Invalid(idx);
-    setStatus('“' + value.trim() + '” is not in Master Column A — reverted (use the ▾ list)', 'err');
+    setStatus('“' + value.trim() + '” is not in Master Column A yet — right-click → Add to Master (or pick from ▾)', 'err');
     return true;
   }
 
@@ -9948,7 +9967,7 @@
       let title = null;
       if (isPartTabCol1Cell(tab, idx)) {
         bad = !isCol1ValueAllowed(tab.cells[idx], allowedA);
-        if (bad) title = 'Not in Master Column A — keep or pick a value from ▾';
+        if (bad) title = 'Not in Master Column A — right-click Add to Master, or pick from ▾';
       } else if (isPartTabCol2Cell(tab, idx)) {
         const dd2 = wrap.querySelector('.col2-dropdown-btn');
         if (dd2) setCol2DropdownState(dd2, tab, r);
@@ -9965,7 +9984,7 @@
           ? 'Click: filter rows to this value (again = clear) · type or F2 to edit · ▾ / Alt+↓ to pick' : '';
       }
     }
-    [[0, countInvalidCol1Cells(tab), ' Column A value', ' not in Master Column A (kept; marked). Pick from ▾ to fix. Click to jump to the next one.'],
+    [[0, countInvalidCol1Cells(tab), ' Column A value', ' not in Master Column A (kept; marked). Right-click Add to Master, or pick from ▾. Click to jump to the next one.'],
      [1, countInvalidCol2Cells(tab), ' Column B value', ' not allowed for that row\'s Column A (kept; marked). Pick from ▾ to fix. Click to jump to the next one.']
     ].forEach(function (d) {
       const header = el.cellGrid.querySelector('.column-header[data-col="' + d[0] + '"]');
@@ -12379,7 +12398,7 @@
           ta.classList.add('cell-col1-validated');
           if (!isCol1ValueAllowed(tab.cells[idx], col1Allowed)) {
             wrap.classList.add('col1-invalid');
-            ta.title = 'Not in Master Column A — keep or pick a value from ▾';
+            ta.title = 'Not in Master Column A — right-click Add to Master, or pick from ▾';
           }
         }
         if (isPartTabCol2Cell(tab, idx)) {
@@ -14698,7 +14717,6 @@
     const rowMap = pasteTargetRows(tab, startRow, matrix.length);
     // Col A / Col B data validation: values not allowed keep the cell's
     // previous value (never silently stored).
-    let col1Rejected = 0;
     let col2Rejected = 0;
     const pastedRaw = matrix.map(function (row) { return row.slice(); });
     if (!isMasterTab(tab)) {
@@ -14708,11 +14726,8 @@
           const rr = rowMap[r];
           const cc = startCol + c;
           const v = matrix[r][c];
-          if (cc === 0) {
-            if (isCol1ValueAllowed(v, allowedA)) continue;
-            matrix[r][c] = rr < tab.rows ? (tab.cells[rr * tab.cols] || '') : '';
-            col1Rejected++;
-          } else if (cc === 1 && (tab.cols || 0) >= 2) {
+          // v0.206: Column A paste keeps new types (amber mark; Add to Master promotes).
+          if (cc === 1 && (tab.cols || 0) >= 2) {
             // Col A for this row: prefer the value being pasted into Col A, else current.
             let colA = '';
             if (startCol === 0) colA = String(matrix[r][0] == null ? '' : matrix[r][0]).trim();
@@ -14816,9 +14831,8 @@
         ' (' + tab.cols + '×' + tab.rows + ' grid)' +
         (pasteLinked ? ' — ' + pasteLinked + ' matched Master (linked + locked)' : '') +
         (pasteBlocked ? ' — ' + pasteBlocked + ' Master match(es) not linked (own nests/pages)' : '') +
-        (col1Rejected ? ' — ' + col1Rejected + ' Column A value(s) not in Master kept previous' : '') +
         (col2Rejected ? ' — ' + col2Rejected + ' Column B value(s) not allowed for that Column A kept previous' : ''),
-        (col1Rejected || col2Rejected) ? 'err' : 'ok'
+        col2Rejected ? 'err' : 'ok'
       );
     }
 
