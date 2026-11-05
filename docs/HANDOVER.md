@@ -23,6 +23,7 @@ that is not in the code or in `README.md`, especially Ash's rules and the memory
   | `styles.css` | Soft dark charcoal theme (teal accents, amber Tools tab / amber edit outline) |
   | `index.html` | UI skeleton |
   | `scripts/ensure-electron.js`, `scripts/register-file-association.js` | Setup helpers (Electron binary repair; `.c2copy` association) |
+  | `scripts/electron-tests/` | Real-Electron Playwright harness (`auh.mjs` + example tests; see that folder's README) |
   | `Click2Copy.vbs` | Windows launcher, no console window (Ash's normal way to start it) |
   | `Start Click2Copy.bat`, `Initial Setup.bat` | Visible-console launcher / first-time setup fallback |
 
@@ -201,7 +202,7 @@ that is not in the code or in `README.md`, especially Ash's rules and the memory
 
 - **Idle.** Last ship **v0.206** (`425c7c5`, tag pushed). Working tree clean apart from this docs commit. No unpushed work.
 - No folds pending. No branches besides `main`.
-- Local-only material on the box (not in repo, see §7/§10): `/workspace/click2copy-tests/` test harness.
+- In-repo harness: `scripts/electron-tests/` (launcher + examples). Older one-off scratch still on the box at `/workspace/click2copy-tests/` (not in git; see §7).
 
 ## 6. Waiting on Ash
 
@@ -215,16 +216,20 @@ that is not in the code or in `README.md`, especially Ash's rules and the memory
 - No ports, tunnels or Pages. It is a desktop app. Ash runs it himself. Screenshots are the only "preview" and must use placeholder data.
 - **Run locally (box):** `cd /workspace/click2copy && npm start` needs a display. On the box use
   `xvfb-run -a …`. The Electron binary is `node_modules/electron/dist/electron` (33.4.11). Pass `--no-sandbox` as root/box.
-- **Test harness (box-local scratch, NOT in repo):** `/workspace/click2copy-tests/`
+- **Test harness (in repo):** `scripts/electron-tests/`
   - `auh.mjs` is the helper: `launch(name, data)` writes a throwaway session into a temp `XDG_CONFIG_HOME`
     (`/tmp/c2c-au-<name>`), launches **real Electron 33** via Playwright `_electron`, and gives helpers
     (`cells()`, `status()`, `cell(i)`, `locked()`, `tab(name)`, clipboard get/set, `close()`).
-  - Depends on `/tmp/c2c-pw/node_modules/playwright` (1.48.2) and `/tmp/e33/node_modules/electron` (33.4.11).
-    `/tmp` may be wiped; reinstall with `npm i playwright@1.48.2` in `/tmp/c2c-pw` and `npm i electron@33` in `/tmp/e33`,
-    or point `executablePath` at the repo's `node_modules/electron/dist/electron`.
-  - Run one test: `cd /workspace/click2copy-tests && xvfb-run -a node atm206.mjs`. Prints PASS/FAIL lines.
-  - ~150 one-off `*.mjs` scripts named per feature/version (e.g. `atm206.mjs` = Add to Master Col A, `au195.mjs`,
-    `elmvpg.mjs` = move page). `stub*.js` / `main*.cjs` are older stub-bridge experiments (browser-only, less trustworthy).
+  - Resolves Playwright from `PLAYWRIGHT_NODE_MODULES`, repo `node_modules/playwright`, or `/tmp/c2c-pw`.
+    Resolves Electron from `ELECTRON_PATH`, repo `node_modules/electron/dist/electron`, or `/tmp/e33`.
+    `/tmp` may be wiped; reinstall with `npm i playwright@1.48.2` in `/tmp/c2c-pw` and (fallback)
+    `npm i electron@33` in `/tmp/e33`, or run `npm run setup` in the repo for the Electron binary.
+  - Run one test: `cd scripts/electron-tests && xvfb-run -a node atm206.mjs`. Prints PASS/FAIL lines.
+  - Shipped examples: `atm206.mjs` (Add to Master Col A), `atm206b.mjs` (companion Col B + undo). See
+    `scripts/electron-tests/README.md`.
+  - Box-local scratch (NOT in repo, may delete anytime): `/workspace/click2copy-tests/` still holds ~150
+    one-off `*.mjs` scripts named per feature/version plus old `stub*.js` / `main*.cjs` browser stubs
+    (less trustworthy). Prefer the in-repo harness for new tests.
   - Fixtures use placeholder values only. Keep it that way.
 - **Ship commands:**
   ```bash
@@ -239,6 +244,7 @@ that is not in the code or in `README.md`, especially Ash's rules and the memory
 
 - `README.md`: full feature list, data shape (tab JSON fields), autosave locations, install/run. Long but accurate up to v0.206.
 - `docs/HANDOVER.md`: this file.
+- `scripts/electron-tests/README.md`: how to run the real-Electron Playwright harness.
 - No START-HERE / AGENTS / qa-howto files exist in this repo.
 - Meta-AI repo (`sh4gu4dummy-arch/Meta-AI`): `handover-guide-standard.md`, `project-bot-status.md`, `START-HERE.md`
   for cross-project agent rules.

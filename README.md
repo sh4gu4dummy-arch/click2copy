@@ -85,6 +85,14 @@ This launches Electron with the Click2Copy window.
 
 On Windows, double-click **`Click2Copy.vbs`** (repo root) to start the app with **no console window** — you can pin a shortcut to it. It runs `node_modules\electron\dist\electron.exe` for this folder (passing a `.c2copy` path through if given); if Electron isn't installed yet it falls back to **Start Click2Copy.bat** (visible, so setup runs). Update-ready Restart works the same either way.
 
+## Testing (agents / box)
+
+Real Electron UI tests live in [`scripts/electron-tests/`](scripts/electron-tests/) (Playwright `_electron` + throwaway session). See that folder's README. Quick run on the box:
+
+```bash
+cd scripts/electron-tests && xvfb-run -a node atm206.mjs
+```
+
 ## Project layout
 
 | File | Role |
@@ -94,6 +102,7 @@ On Windows, double-click **`Click2Copy.vbs`** (repo root) to start the app with 
 | `index.html` | UI structure |
 | `styles.css` | Soft dark charcoal theme (teal accents, amber Tools; Combined confirmed = soft sage/teal outline) |
 | `renderer.js` | Tabs, cell grid, append, copy, and autosave logic |
+| `scripts/electron-tests/` | Real-Electron Playwright harness for agent regression tests |
 
 ## Data shape
 
