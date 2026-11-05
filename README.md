@@ -1,5 +1,7 @@
 # Click2Copy
 
+> **New agent / maintainer?** Start with [docs/HANDOVER.md](docs/HANDOVER.md): Ash's rules, project memory, status, and how to test and ship.
+
 A simple Electron desktop app for composing prompts from reusable parts.
 
 ## Features
